@@ -17,7 +17,10 @@ import {
   Palmtree,
   Download,
   Send,
-  HelpCircle
+  HelpCircle,
+  Check,
+  X,
+  AlertTriangle
 } from 'lucide-react';
 
 interface Empleado {
@@ -60,11 +63,18 @@ interface Turno {
 
 interface Solicitud {
   id: string;
+  empleado_id: string;
   tipo: string;
   fecha_inicio: string;
   fecha_fin: string;
   motivo: string;
   estado: 'pendiente' | 'aprobado' | 'rechazado';
+  fecha_solicitud?: string;
+  empleados?: {
+    nombre: string;
+    apellidos: string;
+    dni_nie: string;
+  };
 }
 
 type TipoFichaje = 'entrada' | 'inicio_descanso' | 'fin_descanso' | 'salida';
@@ -91,7 +101,7 @@ export default function StaffPortal() {
   const [turnos, setTurnos] = useState<Turno[]>([]);
   const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
 
-  // Formulario de permisos
+  // Formulario de permisos del empleado
   const [tipoPermiso, setTipoPermiso] = useState('vacaciones');
   const [fechaInicioPermiso, setFechaInicioPermiso] = useState('');
   const [fechaFinPermiso, setFechaFinPermiso] = useState('');
@@ -100,16 +110,20 @@ export default function StaffPortal() {
 
   // Estados del visor de administración
   const [vistaAdmin, setVistaAdmin] = useState(false);
+  const [tabAdmin, setTabAdmin] = useState<'fichajes' | 'solicitudes'>('fichajes');
   const [fichajes, setFichajes] = useState<RegistroFichaje[]>([]);
   const [filtroPeriodo, setFiltroPeriodo] = useState<'hoy' | 'semana' | 'mes'>('hoy');
   const [loadingFichajes, setLoadingFichajes] = useState(false);
+
+  // Solicitudes globales para administración
+  const [todasSolicitudes, setTodasSolicitudes] = useState<Solicitud[]>([]);
+  const [loadingSolicitudes, setLoadingSolicitudes] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setHoraActual(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Consultar el último fichaje del empleado para saber su estado actual
   const consultarUltimoFichaje = async (empleadoId: string) => {
     setLoadingEstado(true);
     try {
@@ -130,7 +144,37 @@ export default function StaffPortal() {
     }
   };
 
-  // Cargar datos cuando se verifica el empleado
+  const cargarTodasSolicitudesAdmin = async () => {
+    setLoadingSolicitudes(true);
+    try {
+      const { data, error } = await supabase
+        .from('solicitudes_permisos')
+        .select(`
+          id,
+          empleado_id,
+          tipo,
+          fecha_inicio,
+          fecha_fin,
+          motivo,
+          estado,
+          fecha_solicitud,
+          empleados (
+            nombre,
+            apellidos,
+            dni_nie
+          )
+        `)
+        .order('fecha_solicitud', { ascending: false });
+
+      if (error) throw error;
+      setTodasSolicitudes((data as unknown as Solicitud[]) || []);
+    } catch (err) {
+      console.error('Error al cargar solicitudes de personal:', err);
+    } finally {
+      setLoadingSolicitudes(false);
+    }
+  };
+
   useEffect(() => {
     if (!empleado) return;
 
@@ -160,6 +204,10 @@ export default function StaffPortal() {
     };
 
     cargarDatosEmpleado();
+
+    if (empleado.rol === 'admin') {
+      cargarTodasSolicitudesAdmin();
+    }
   }, [empleado]);
 
   const handleNumero = (num: string) => {
@@ -207,7 +255,6 @@ export default function StaffPortal() {
     }
   };
 
-  // Registrar el fichaje tras la confirmación
   const confirmarYRegistrarFichaje = async () => {
     if (!empleado || !fichajeAConfirmar) return;
 
@@ -251,21 +298,17 @@ export default function StaffPortal() {
     }
   };
 
-  // Reglas de negocio para habilitar o deshabilitar botones
   const estaHabilitado = (tipo: TipoFichaje): boolean => {
     if (loading || loadingEstado) return false;
 
-    // Caso 1: Sin fichajes previos o habiendo finalizado turno con 'salida' -> Solo Entrada
     if (!ultimoEstado || ultimoEstado === 'salida') {
       return tipo === 'entrada';
     }
 
-    // Caso 2: Ha fichado 'entrada' o 'fin_descanso' (está trabajando) -> Puede hacer Pausa o Salir
     if (ultimoEstado === 'entrada' || ultimoEstado === 'fin_descanso') {
       return tipo === 'inicio_descanso' || tipo === 'salida';
     }
 
-    // Caso 3: Está en pausa ('inicio_descanso') -> Solo puede volver al puesto (Fin Pausa)
     if (ultimoEstado === 'inicio_descanso') {
       return tipo === 'fin_descanso';
     }
@@ -310,11 +353,59 @@ export default function StaffPortal() {
       setFechaFinPermiso('');
       setMotivoPermiso('');
       setMensaje({ tipo: 'ok', texto: 'Solicitud enviada para revisión por la empresa.' });
+
+      if (empleado.rol === 'admin') {
+        cargarTodasSolicitudesAdmin();
+      }
     } catch (err: any) {
       setMensaje({ tipo: 'error', texto: 'Error al enviar la solicitud: ' + err.message });
     } finally {
       setEnviandoPermiso(false);
     }
+  };
+
+  // Función para aprobar o rechazar solicitudes desde administración
+  const resolverSolicitud = async (id: string, nuevoEstado: 'aprobado' | 'rechazado') => {
+    try {
+      const { error } = await supabase
+        .from('solicitudes_permisos')
+        .update({ estado: nuevoEstado })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      setTodasSolicitudes((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, estado: nuevoEstado } : s))
+      );
+
+      setMensaje({
+        tipo: 'ok',
+        texto: `Solicitud ${nuevoEstado === 'aprobado' ? 'aprobada' : 'rechazada'} correctamente.`
+      });
+
+      setTimeout(() => setMensaje(null), 3000);
+    } catch (err: any) {
+      setMensaje({ tipo: 'error', texto: 'Error al actualizar: ' + err.message });
+    }
+  };
+
+  // Algoritmo de detección de solapamientos entre empleados
+  const obtenerSolapamientos = (solicitudActual: Solicitud) => {
+    const inicioA = new Date(solicitudActual.fecha_inicio).getTime();
+    const finA = new Date(solicitudActual.fecha_fin).getTime();
+
+    return todasSolicitudes.filter((s) => {
+      // Ignorar a la misma persona o solicitudes rechazadas
+      if (s.id === solicitudActual.id || s.empleado_id === solicitudActual.empleado_id || s.estado === 'rechazado') {
+        return false;
+      }
+
+      const inicioB = new Date(s.fecha_inicio).getTime();
+      const finB = new Date(s.fecha_fin).getTime();
+
+      // Comprobar colisión de rangos de fechas
+      return inicioA <= finB && finA >= inicioB;
+    });
   };
 
   const cargarFichajes = async () => {
@@ -355,10 +446,13 @@ export default function StaffPortal() {
   };
 
   useEffect(() => {
-    if (vistaAdmin) {
+    if (vistaAdmin && tabAdmin === 'fichajes') {
       cargarFichajes();
     }
-  }, [vistaAdmin, filtroPeriodo]);
+    if (vistaAdmin && tabAdmin === 'solicitudes') {
+      cargarTodasSolicitudesAdmin();
+    }
+  }, [vistaAdmin, tabAdmin, filtroPeriodo]);
 
   const exportarCSV = () => {
     if (fichajes.length === 0) return;
@@ -401,6 +495,8 @@ export default function StaffPortal() {
     }
   };
 
+  const totalPendientes = todasSolicitudes.filter((s) => s.estado === 'pendiente').length;
+
   return (
     <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
       {/* Cabecera */}
@@ -430,115 +526,266 @@ export default function StaffPortal() {
       {/* Contenido principal */}
       <main className="flex-1 flex items-center justify-center p-4">
         {vistaAdmin ? (
-          /* VISTA ADMINISTRACIÓN */
+          /* VISTA ADMINISTRACIÓN AVANZADA */
           <div className="w-full max-w-4xl bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
               <div>
-                <span className="text-xs text-cyan-400 font-semibold uppercase tracking-wider">Auditoría Laboral</span>
-                <h2 className="text-2xl font-bold text-white">Registro Histórico de Fichajes</h2>
+                <span className="text-xs text-cyan-400 font-semibold uppercase tracking-wider">Panel de Control Directivo</span>
+                <h2 className="text-2xl font-bold text-white">Supervisión y Dimensionamiento</h2>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={exportarCSV}
-                  disabled={fichajes.length === 0}
-                  className="flex items-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 transition-all disabled:opacity-40 cursor-pointer"
-                >
-                  <FileSpreadsheet className="h-4 w-4" />
-                  Descargar Excel/CSV
-                </button>
+                {tabAdmin === 'fichajes' && (
+                  <button
+                    onClick={exportarCSV}
+                    disabled={fichajes.length === 0}
+                    className="flex items-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 transition-all disabled:opacity-40 cursor-pointer"
+                  >
+                    <FileSpreadsheet className="h-4 w-4" />
+                    Descargar Excel/CSV
+                  </button>
+                )}
                 <button
                   onClick={() => setVistaAdmin(false)}
                   className="flex items-center gap-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 px-4 py-2 text-xs text-slate-300 transition-all cursor-pointer"
                 >
                   <ArrowLeft className="h-4 w-4" />
-                  Volver al Panel
+                  Volver al Teclado
                 </button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-1.5 text-slate-400">
-                <Filter className="h-4 w-4 text-cyan-400" />
-                <span>Periodo:</span>
-                <div className="flex bg-white/5 p-1 rounded-xl border border-white/10 ml-2">
-                  <button
-                    onClick={() => setFiltroPeriodo('hoy')}
-                    className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
-                      filtroPeriodo === 'hoy' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Hoy
-                  </button>
-                  <button
-                    onClick={() => setFiltroPeriodo('semana')}
-                    className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
-                      filtroPeriodo === 'semana' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Últimos 7 días
-                  </button>
-                  <button
-                    onClick={() => setFiltroPeriodo('mes')}
-                    className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
-                      filtroPeriodo === 'mes' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Este mes
-                  </button>
+            {/* Selector de módulo de administración */}
+            <div className="flex gap-2 border-b border-white/10 pb-4">
+              <button
+                onClick={() => setTabAdmin('fichajes')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  tabAdmin === 'fichajes'
+                    ? 'bg-cyan-500 text-slate-950 shadow-md'
+                    : 'text-slate-400 hover:text-white bg-white/5'
+                }`}
+              >
+                <Clock className="h-4 w-4" />
+                Histórico de Fichajes
+              </button>
+
+              <button
+                onClick={() => setTabAdmin('solicitudes')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer relative ${
+                  tabAdmin === 'solicitudes'
+                    ? 'bg-cyan-500 text-slate-950 shadow-md'
+                    : 'text-slate-400 hover:text-white bg-white/5'
+                }`}
+              >
+                <Palmtree className="h-4 w-4" />
+                Vacaciones y Permisos
+                {totalPendientes > 0 && (
+                  <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 animate-pulse">
+                    {totalPendientes} pendientes
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* MÓDULO 1: HISTÓRICO DE FICHAJES */}
+            {tabAdmin === 'fichajes' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1.5 text-slate-400">
+                    <Filter className="h-4 w-4 text-cyan-400" />
+                    <span>Periodo:</span>
+                    <div className="flex bg-white/5 p-1 rounded-xl border border-white/10 ml-2">
+                      <button
+                        onClick={() => setFiltroPeriodo('hoy')}
+                        className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+                          filtroPeriodo === 'hoy' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Hoy
+                      </button>
+                      <button
+                        onClick={() => setFiltroPeriodo('semana')}
+                        className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+                          filtroPeriodo === 'semana' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Últimos 7 días
+                      </button>
+                      <button
+                        onClick={() => setFiltroPeriodo('mes')}
+                        className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+                          filtroPeriodo === 'mes' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Este mes
+                      </button>
+                    </div>
+                  </div>
+
+                  <span className="text-slate-500">{fichajes.length} registros cargados</span>
+                </div>
+
+                <div className="border border-white/10 rounded-2xl overflow-hidden bg-black/30 max-h-[380px] overflow-y-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-white/[0.03] text-slate-400 border-b border-white/10 uppercase tracking-wider font-semibold sticky top-0 backdrop-blur-md">
+                      <tr>
+                        <th className="py-3 px-4">Empleado</th>
+                        <th className="py-3 px-4">DNI</th>
+                        <th className="py-3 px-4">Fecha</th>
+                        <th className="py-3 px-4">Hora</th>
+                        <th className="py-3 px-4">Registro</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-slate-300">
+                      {loadingFichajes ? (
+                        <tr>
+                          <td colSpan={5} className="py-8 text-center text-slate-500">
+                            Cargando registros...
+                          </td>
+                        </tr>
+                      ) : fichajes.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-8 text-center text-slate-500">
+                            No hay fichajes registrados en este periodo.
+                          </td>
+                        </tr>
+                      ) : (
+                        fichajes.map((f) => {
+                          const fecha = new Date(f.timestamp_fichaje);
+                          return (
+                            <tr key={f.id} className="hover:bg-white/[0.02] transition-colors">
+                              <td className="py-3 px-4 font-semibold text-white">
+                                {f.empleados?.nombre} {f.empleados?.apellidos}
+                              </td>
+                              <td className="py-3 px-4 text-slate-400">{f.empleados?.dni_nie}</td>
+                              <td className="py-3 px-4">{fecha.toLocaleDateString('es-ES')}</td>
+                              <td className="py-3 px-4 font-mono text-cyan-400 font-bold">
+                                {fecha.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </td>
+                              <td className="py-3 px-4">{formatearTipo(f.tipo)}</td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
+            )}
 
-              <span className="text-slate-500">{fichajes.length} registros cargados</span>
-            </div>
+            {/* MÓDULO 2: GESTIÓN DE PERMISOS Y DETECCIÓN DE SOLAPAMIENTOS */}
+            {tabAdmin === 'solicitudes' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>Revisión de peticiones y control de plantilla simultánea</span>
+                  <span>{todasSolicitudes.length} peticiones registradas</span>
+                </div>
 
-            <div className="border border-white/10 rounded-2xl overflow-hidden bg-black/30 max-h-[380px] overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-white/[0.03] text-slate-400 border-b border-white/10 uppercase tracking-wider font-semibold sticky top-0 backdrop-blur-md">
-                  <tr>
-                    <th className="py-3 px-4">Empleado</th>
-                    <th className="py-3 px-4">DNI</th>
-                    <th className="py-3 px-4">Fecha</th>
-                    <th className="py-3 px-4">Hora</th>
-                    <th className="py-3 px-4">Registro</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5 text-slate-300">
-                  {loadingFichajes ? (
-                    <tr>
-                      <td colSpan={5} className="py-8 text-center text-slate-500">
-                        Cargando registros...
-                      </td>
-                    </tr>
-                  ) : fichajes.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-8 text-center text-slate-500">
-                        No hay fichajes registrados en este periodo.
-                      </td>
-                    </tr>
-                  ) : (
-                    fichajes.map((f) => {
-                      const fecha = new Date(f.timestamp_fichaje);
+                {loadingSolicitudes ? (
+                  <div className="py-12 text-center text-xs text-slate-500">Cargando solicitudes...</div>
+                ) : todasSolicitudes.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 bg-white/[0.01] rounded-2xl border border-white/5">
+                    No hay solicitudes registradas de vacaciones o permisos.
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[420px] overflow-y-auto">
+                    {todasSolicitudes.map((sol) => {
+                      const solapados = obtenerSolapamientos(sol);
+                      const haySolapamiento = solapados.length > 0;
+
                       return (
-                        <tr key={f.id} className="hover:bg-white/[0.02] transition-colors">
-                          <td className="py-3 px-4 font-semibold text-white">
-                            {f.empleados?.nombre} {f.empleados?.apellidos}
-                          </td>
-                          <td className="py-3 px-4 text-slate-400">{f.empleados?.dni_nie}</td>
-                          <td className="py-3 px-4">{fecha.toLocaleDateString('es-ES')}</td>
-                          <td className="py-3 px-4 font-mono text-cyan-400 font-bold">
-                            {fecha.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                          </td>
-                          <td className="py-3 px-4">{formatearTipo(f.tipo)}</td>
-                        </tr>
+                        <div
+                          key={sol.id}
+                          className={`p-4 rounded-2xl border transition-all ${
+                            sol.estado === 'pendiente'
+                              ? 'bg-white/[0.03] border-white/10 hover:border-white/20'
+                              : 'bg-black/30 border-white/5 opacity-80'
+                          }`}
+                        >
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-white text-sm">
+                                  {sol.empleados?.nombre} {sol.empleados?.apellidos}
+                                </span>
+                                <span className="text-[10px] text-slate-400">DNI: {sol.empleados?.dni_nie}</span>
+                                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-500/30 text-cyan-300">
+                                  {sol.tipo.replace('_', ' ')}
+                                </span>
+                              </div>
+
+                              <div className="text-xs text-slate-300 mt-1 flex items-center gap-2">
+                                <span className="font-semibold text-white">
+                                  📅 {new Date(sol.fecha_inicio).toLocaleDateString('es-ES')} al {new Date(sol.fecha_fin).toLocaleDateString('es-ES')}
+                                </span>
+                                {sol.motivo && (
+                                  <span className="text-slate-400 italic">«{sol.motivo}»</span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Estado y botones de acción */}
+                            <div className="flex items-center gap-2 self-end sm:self-center">
+                              {sol.estado === 'pendiente' ? (
+                                <>
+                                  <button
+                                    onClick={() => resolverSolicitud(sol.id, 'aprobado')}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs transition-colors cursor-pointer shadow-md"
+                                  >
+                                    <Check className="h-3.5 w-3.5" /> Aprobar
+                                  </button>
+                                  <button
+                                    onClick={() => resolverSolicitud(sol.id, 'rechazado')}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition-colors cursor-pointer shadow-md"
+                                  >
+                                    <X className="h-3.5 w-3.5" /> Rechazar
+                                  </button>
+                                </>
+                              ) : (
+                                <span
+                                  className={`text-xs font-bold uppercase px-3 py-1 rounded-xl border ${
+                                    sol.estado === 'aprobado'
+                                      ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                                      : 'bg-rose-950/50 border-rose-500/40 text-rose-300'
+                                  }`}
+                                >
+                                  {sol.estado}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* ALERTA DE COINCIDENCIA / SOLAPAMIENTO */}
+                          <div className="mt-3 pt-3 border-t border-white/5">
+                            {haySolapamiento ? (
+                              <div className="flex items-start gap-2 p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/30 text-amber-300 text-xs">
+                                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                                <div>
+                                  <span className="font-bold">¡Atención, solapamiento detectado!</span> Coincide con:{' '}
+                                  {solapados.map((s, idx) => (
+                                    <span key={s.id} className="underline font-semibold">
+                                      {s.empleados?.nombre} ({new Date(s.fecha_inicio).toLocaleDateString('es-ES')} - {new Date(s.fecha_fin).toLocaleDateString('es-ES')} · {s.estado})
+                                      {idx < solapados.length - 1 ? ', ' : ''}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 text-[11px] text-emerald-400">
+                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                                <span>Sin coincidencias en estas fechas. Plantilla disponible.</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
-          /* PORTAL DEL EMPLEADO */
+          /* PORTAL DEL EMPLEADO / TECLADO PIN */
           <div className="w-full max-w-xl bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl">
             {!empleado ? (
               /* PANTALLA 1: TECLADO PIN */
@@ -597,7 +844,7 @@ export default function StaffPortal() {
                 </div>
               </div>
             ) : (
-              /* PANTALLA 2: VISTA DEL EMPLEADO AUTENTICADO */
+              /* PANTALLA 2: VISTA DEL EMPLEADO */
               <div className="space-y-6">
                 <div className="flex items-center justify-between pb-4 border-b border-white/10">
                   <div>
@@ -620,7 +867,7 @@ export default function StaffPortal() {
                   </button>
                 </div>
 
-                {/* Pestañas */}
+                {/* Pestañas de trabajador */}
                 <div className="grid grid-cols-4 gap-1 p-1 bg-white/[0.03] border border-white/5 rounded-2xl text-xs font-semibold">
                   <button
                     onClick={() => setTabActiva('fichar')}
@@ -664,10 +911,9 @@ export default function StaffPortal() {
                   </button>
                 </div>
 
-                {/* Pestaña Fichar */}
+                {/* Fichar */}
                 {tabActiva === 'fichar' && (
                   <div className="space-y-4">
-                    {/* Indicador de estado actual */}
                     <div className="flex items-center justify-between px-4 py-2.5 rounded-xl bg-white/[0.02] border border-white/5 text-xs">
                       <span className="text-slate-400">Estado de tu turno:</span>
                       {loadingEstado ? (
@@ -690,9 +936,7 @@ export default function StaffPortal() {
                       )}
                     </div>
 
-                    {/* Botones de acción con bloqueo condicional */}
                     <div className="grid grid-cols-2 gap-3">
-                      {/* Entrada */}
                       <button
                         type="button"
                         disabled={!estaHabilitado('entrada')}
@@ -708,7 +952,6 @@ export default function StaffPortal() {
                         <span className="text-[10px]">Inicio jornada</span>
                       </button>
 
-                      {/* Salida */}
                       <button
                         type="button"
                         disabled={!estaHabilitado('salida')}
@@ -724,7 +967,6 @@ export default function StaffPortal() {
                         <span className="text-[10px]">Fin jornada</span>
                       </button>
 
-                      {/* Inicio Pausa */}
                       <button
                         type="button"
                         disabled={!estaHabilitado('inicio_descanso')}
@@ -740,7 +982,6 @@ export default function StaffPortal() {
                         <span className="text-[10px]">Inicio descanso</span>
                       </button>
 
-                      {/* Fin Pausa */}
                       <button
                         type="button"
                         disabled={!estaHabilitado('fin_descanso')}
@@ -759,7 +1000,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* Pestaña Horario */}
+                {/* Horario */}
                 {tabActiva === 'horario' && (
                   <div className="space-y-4">
                     <h3 className="text-sm font-bold text-white">Mi Cuadrante y Turno Asignado</h3>
@@ -783,7 +1024,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* Pestaña Solicitud de Permisos */}
+                {/* Permisos */}
                 {tabActiva === 'permisos' && (
                   <div className="space-y-5">
                     <form onSubmit={solicitarPermiso} className="space-y-3 bg-white/[0.02] p-4 rounded-2xl border border-white/5">
@@ -879,7 +1120,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* Pestaña Nóminas */}
+                {/* Nóminas */}
                 {tabActiva === 'documentos' && (
                   <div className="space-y-3">
                     <h3 className="text-sm font-bold text-white">Nóminas y Contratos Laborales</h3>
@@ -913,7 +1154,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* Enlace para Administrador */}
+                {/* Enlace para Administrador con contador de alertas */}
                 {empleado.rol === 'admin' && (
                   <div className="pt-3 border-t border-white/10">
                     <button
@@ -921,7 +1162,12 @@ export default function StaffPortal() {
                       className="w-full py-2.5 rounded-xl border border-cyan-500/30 bg-cyan-950/30 hover:bg-cyan-900/40 text-cyan-400 text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                     >
                       <Users className="h-4 w-4" />
-                      Abrir Visor de Fichajes de Empresa
+                      Abrir Panel de Supervisión y Vacaciones
+                      {totalPendientes > 0 && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] bg-amber-500 text-slate-950 font-bold">
+                          {totalPendientes} pendientes
+                        </span>
+                      )}
                     </button>
                   </div>
                 )}
@@ -949,7 +1195,7 @@ export default function StaffPortal() {
         )}
       </main>
 
-      {/* MODAL DE CONFIRMACIÓN DE FICHAJE */}
+      {/* Modal confirmación fichaje */}
       {fichajeAConfirmar && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#0e1017] p-6 shadow-2xl space-y-4">
