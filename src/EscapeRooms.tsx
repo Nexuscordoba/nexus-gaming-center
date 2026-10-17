@@ -95,7 +95,7 @@ export default function EscapeRooms() {
       return 180 + (numSesiones - 3) * 50;
     }
     if (modalidad === 'colegio') {
-      return 390; // Tarifa plana jornada completa escolar (7h)
+      return 390;
     }
     return 0;
   };
@@ -105,17 +105,24 @@ export default function EscapeRooms() {
     setEnviando(true);
     setMensaje(null);
 
+    const precioFinal = calcularPrecioEstimado();
+    const fechaFinal = modalidad === 'cafeteria'
+      ? sesionesCafeteria.find(s => s.id === sesionSeleccionada)?.fecha || fechaEvento
+      : fechaEvento;
+
+    let lugarFinal = 'Nexus Cafetería (Chinales 45)';
+    if (modalidad === 'evento_privado') lugarFinal = `Córdoba capital: ${direccionCordoba}`;
+    if (modalidad === 'colegio') lugarFinal = `Córdoba capital: ${direccionColegio}`;
+
     try {
       const payload: any = {
         modalidad,
         nombre_contacto: nombre,
         email_contacto: email,
         telefono_contacto: telefono,
-        fecha_evento: modalidad === 'cafeteria' 
-          ? sesionesCafeteria.find(s => s.id === sesionSeleccionada)?.fecha || fechaEvento 
-          : fechaEvento,
+        fecha_evento: fechaFinal,
         hora_preferente: horaPreferente,
-        observaciones: `Presupuesto estimado: ${calcularPrecioEstimado()} €. ${observaciones}`,
+        observaciones: `Presupuesto estimado: ${precioFinal} €. ${observaciones}`,
         estado: 'pendiente'
       };
 
@@ -124,13 +131,13 @@ export default function EscapeRooms() {
         payload.rango_edad = rangoEdad;
         payload.personas_por_sesion = personasPorSesion;
         payload.num_sesiones = numSesiones;
-        payload.lugar_celebracion = `Córdoba capital: ${direccionCordoba}`;
+        payload.lugar_celebracion = lugarFinal;
       } else if (modalidad === 'colegio') {
         payload.nombre_centro_educativo = nombreColegio;
         payload.curso_edad_alumnos = cursoAlumnos;
         payload.total_alumnos_estimado = totalAlumnos;
-        payload.lugar_celebracion = `Córdoba capital: ${direccionColegio}`;
-        payload.num_sesiones = 7; // Jornada completa
+        payload.lugar_celebracion = lugarFinal;
+        payload.num_sesiones = 7;
       } else if (modalidad === 'cafeteria') {
         const sesion = sesionesCafeteria.find(s => s.id === sesionSeleccionada);
         payload.observaciones = `Noche de Escape en Cafetería: ${sesion?.titulo || ''} (${incluyeConsumicion ? 'Con consumición/tapa' : 'Solo juego'}). ${observaciones}`;
@@ -140,9 +147,31 @@ export default function EscapeRooms() {
       const { error } = await supabase.from('reservas_escape_room').insert([payload]);
       if (error) throw error;
 
+      // Envío de correo de confirmación al cliente mediante Resend
+      try {
+        await fetch('/api/send-confirmation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email,
+            nombre,
+            modalidad,
+            fechaEvento: fechaFinal,
+            horaPreferente,
+            tematica: modalidad === 'evento_privado' ? tematica : null,
+            numSesiones: modalidad === 'colegio' ? 7 : numSesiones,
+            personas: personasPorSesion,
+            precioEstimado: precioFinal,
+            lugar: lugarFinal
+          })
+        });
+      } catch (mailErr) {
+        console.warn('No se pudo enviar el correo de confirmación:', mailErr);
+      }
+
       setMensaje({
         tipo: 'ok',
-        texto: '¡Solicitud recibida correctamente! Nos pondremos en contacto contigo para verificar disponibilidad y formalizar la reserva.'
+        texto: '¡Solicitud recibida correctamente! Te hemos enviado un correo de confirmación con los datos.'
       });
 
       setNombre('');
@@ -423,7 +452,6 @@ export default function EscapeRooms() {
                 </p>
               </div>
 
-              {/* Indicador de Precio Calculado */}
               <div className="bg-cyan-950/60 border border-cyan-500/40 px-3.5 py-1.5 rounded-2xl text-right">
                 <span className="text-[10px] text-slate-400 block uppercase font-bold">Total Estimado</span>
                 <span className="text-xl font-black text-cyan-300 font-mono">
