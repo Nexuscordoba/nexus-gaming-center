@@ -23,40 +23,40 @@ export default function App() {
         </div>
       </header>
 
-      {/* Hero Principal con imagen gaming de fondo */}
+      {/* Hero Principal con imagen gaming de fondo visible */}
       <section className="relative overflow-hidden py-24 sm:py-32 border-b border-white/[0.06]">
-        {/* Imagen de fondo con overlay oscuro y gradiente */}
+        {/* Capa de imagen con opacidad reforzada */}
         <div className="absolute inset-0 z-0">
           <img
             src="https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=2000&q=80"
             alt="Ambiente Gaming y Competición"
-            className="w-full h-full object-cover object-center opacity-25 scale-105 transition-transform duration-1000 ease-out"
+            className="w-full h-full object-cover object-center opacity-60 scale-105 transition-transform duration-1000 ease-out"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/80 to-[#08090d]/60" />
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-cyan-950/30 via-transparent to-transparent pointer-events-none" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/60 to-[#08090d]/40" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-cyan-950/20 via-transparent to-transparent pointer-events-none" />
         </div>
 
         <div className="max-w-4xl mx-auto px-5 text-center relative z-10">
-          <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-950/60 backdrop-blur-md px-4 py-1.5 text-xs text-cyan-300 mb-6 shadow-[0_0_20px_rgba(0,242,254,0.15)]">
+          <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-950/80 backdrop-blur-md px-4 py-1.5 text-xs text-cyan-300 mb-6 shadow-[0_0_20px_rgba(0,242,254,0.2)]">
             <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
             El nuevo punto de encuentro en Córdoba
           </div>
-          <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight leading-tight uppercase drop-shadow-md">
+          <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight leading-tight uppercase drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)]">
             El nexo donde confluyen <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-sky-300 to-blue-500">el juego y la comunidad</span>
           </h1>
-          <p className="mt-6 text-base sm:text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
+          <p className="mt-6 text-base sm:text-lg text-slate-200 max-w-2xl mx-auto leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
             Cafetería de especialidad, torneos oficiales de cartas coleccionables, zona de consolas y un espacio diseñado para compartir partidas.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-4 text-xs font-semibold uppercase tracking-wider">
             <a
               href="#eventos"
-              className="rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-6 py-3 text-slate-950 shadow-[0_0_25px_rgba(0,242,254,0.3)] hover:opacity-95 transition-all"
+              className="rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-6 py-3 text-slate-950 shadow-[0_0_25px_rgba(0,242,254,0.4)] hover:opacity-95 transition-all"
             >
               Explorar Actividades
             </a>
             <a
               href="#contacto"
-              className="rounded-xl border border-white/20 bg-white/[0.05] px-6 py-3 text-white backdrop-blur hover:bg-white/[0.1] transition-all"
+              className="rounded-xl border border-white/30 bg-black/50 px-6 py-3 text-white backdrop-blur hover:bg-black/70 transition-all"
             >
               Cómo llegar
             </a>
@@ -68,7 +68,7 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-5 py-16 space-y-12">
         <div className="grid gap-6 md:grid-cols-3">
           {/* Tarjeta 1: Bar & Cafetería */}
-          <div id="cafeteria" className="rounded-2xl border border-white/10 bg-[#0c0d14]/70 backdrop-blur p-6 flex flex-col justify-between hover:border-amber-400/40 transition-all group shadow-lg">
+          <div id="cafeteria" className="rounded-2xl border border-white/10 bg-[#0c0d14]/80 backdrop-blur p-6 flex flex-col justify-between hover:border-amber-400/40 transition-all group shadow-lg">
             <div>
               <div className="h-12 w-12 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
                 <Coffee className="h-6 w-6" />
@@ -85,7 +85,7 @@ export default function App() {
           </div>
 
           {/* Tarjeta 2: Eventos & TCG (Enlace a compra de entradas) */}
-          <div id="eventos" className="rounded-2xl border border-cyan-500/40 bg-gradient-to-b from-cyan-950/30 to-[#0c0d14]/80 backdrop-blur p-6 flex flex-col justify-between hover:border-cyan-400 transition-all group relative overflow-hidden shadow-[0_0_30px_rgba(0,242,254,0.1)]">
+          <div id="eventos" className="rounded-2xl border border-cyan-500/40 bg-gradient-to-b from-cyan-950/30 to-[#0c0d14]/90 backdrop-blur p-6 flex flex-col justify-between hover:border-cyan-400 transition-all group relative overflow-hidden shadow-[0_0_30px_rgba(0,242,254,0.1)]">
             <div>
               <div className="h-12 w-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
                 <Calendar className="h-6 w-6" />
@@ -112,7 +112,7 @@ export default function App() {
           </div>
 
           {/* Tarjeta 3: Gaming Zone */}
-          <div id="gaming" className="rounded-2xl border border-white/10 bg-[#0c0d14]/70 backdrop-blur p-6 flex flex-col justify-between hover:border-purple-400/40 transition-all group shadow-lg">
+          <div id="gaming" className="rounded-2xl border border-white/10 bg-[#0c0d14]/80 backdrop-blur p-6 flex flex-col justify-between hover:border-purple-400/40 transition-all group shadow-lg">
             <div>
               <div className="h-12 w-12 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
                 <Gamepad2 className="h-6 w-6" />
