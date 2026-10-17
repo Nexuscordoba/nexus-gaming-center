@@ -82,7 +82,6 @@ export default function EscapeRooms() {
     cargarSesiones();
   }, []);
 
-  // Cálculo de precio en tiempo real
   const calcularPrecioEstimado = (): number => {
     if (modalidad === 'cafeteria') {
       const precioBase = incluyeConsumicion ? 15 : 12;
@@ -144,18 +143,14 @@ export default function EscapeRooms() {
         payload.personas_por_sesion = personasPorSesion;
       }
 
-      const { error } = await supabase.from('reservas_escape_room').insert([payload]);
-      if (error) throw error;
+      // 1. Guardar en Supabase
+      const { error: dbError } = await supabase.from('reservas_escape_room').insert([payload]);
+      if (dbError) throw dbError;
 
-      // Envío de correo de confirmación con logging visible en consola
+      // 2. Disparar el envío de correo
+      let avisoEmail = '';
       try {
-        const apiBase = window.location.hostname.includes('escape.') 
-          ? `https://${window.location.hostname.replace('escape.', 'www.')}`
-          : '';
-
-        console.log('Intentando enviar email a través de:', `${apiBase}/api/send-confirmation`);
-
-        const res = await fetch(`${apiBase}/api/send-confirmation`, {
+        const emailResponse = await fetch('/api/send-confirmation', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -172,19 +167,22 @@ export default function EscapeRooms() {
           })
         });
 
-        const resData = await res.json().catch(() => null);
-        console.log('Respuesta de la API de email:', res.status, resData);
+        const emailResult = await emailResponse.json().catch(() => null);
 
-        if (!res.ok) {
-          console.error('Fallo en el servicio de email:', resData);
+        if (!emailResponse.ok) {
+          console.error('Error reportado por API de Resend:', emailResult);
+          avisoEmail = ` (Aviso: No se pudo enviar el correo automático: ${emailResult?.error || 'error en API'}).`;
+        } else {
+          console.log('Correo enviado correctamente por Resend:', emailResult);
         }
-      } catch (mailErr) {
-        console.error('Error de red al llamar a /api/send-confirmation:', mailErr);
+      } catch (errRed: any) {
+        console.error('Error de conexión con /api/send-confirmation:', errRed);
+        avisoEmail = ' (Aviso: No se pudo conectar con el servicio de correo).';
       }
 
       setMensaje({
         tipo: 'ok',
-        texto: '¡Solicitud recibida correctamente! Te hemos enviado un correo de confirmación con los datos.'
+        texto: `¡Reserva guardada con éxito!${avisoEmail ? avisoEmail : ' Te hemos enviado un correo de confirmación.'}`
       });
 
       setNombre('');
@@ -200,7 +198,7 @@ export default function EscapeRooms() {
     } catch (err: any) {
       setMensaje({
         tipo: 'error',
-        texto: 'Error al enviar la solicitud: ' + (err.message || 'Inténtalo de nuevo')
+        texto: 'Error al tramitar la reserva: ' + (err.message || 'Inténtalo de nuevo')
       });
     } finally {
       setEnviando(false);
@@ -269,7 +267,7 @@ export default function EscapeRooms() {
           </p>
         </div>
 
-        {/* TARIFAS TRANSPARENTES */}
+        {/* TARIFAS */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
           <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 flex flex-col justify-between">
             <div>
@@ -327,7 +325,7 @@ export default function EscapeRooms() {
           </div>
         </div>
 
-        {/* GALERÍA DE IMÁGENES INMERSIVA */}
+        {/* GALERÍA */}
         <div className="mb-16">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
             <div>
@@ -398,7 +396,7 @@ export default function EscapeRooms() {
           </div>
         </div>
 
-        {/* SELECTOR DE MODALIDAD DEL FORMULARIO */}
+        {/* SELECTOR DE MODALIDAD */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <button
             type="button"
@@ -446,7 +444,7 @@ export default function EscapeRooms() {
           </button>
         </div>
 
-        {/* FORMULARIO Y CALCULADORA DINÁMICA */}
+        {/* FORMULARIO */}
         <div className="max-w-3xl mx-auto bg-[#0d0f17] border border-white/10 rounded-3xl p-6 sm:p-10 shadow-2xl">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-white/10 gap-2">
@@ -472,7 +470,7 @@ export default function EscapeRooms() {
               </div>
             </div>
 
-            {/* OPCIONES DE EVENTOS PRIVADOS */}
+            {/* EVENTOS PRIVADOS */}
             {modalidad === 'evento_privado' && (
               <div className="space-y-4">
                 <div>
@@ -601,7 +599,7 @@ export default function EscapeRooms() {
               </div>
             )}
 
-            {/* OPCIONES DE CAFETERÍA */}
+            {/* CAFETERÍA */}
             {modalidad === 'cafeteria' && (
               <div className="space-y-4">
                 <label className="text-xs font-semibold text-slate-300 block">Fechas programadas en Cafetería:</label>
@@ -673,7 +671,7 @@ export default function EscapeRooms() {
               </div>
             )}
 
-            {/* OPCIONES DE COLEGIOS */}
+            {/* COLEGIOS */}
             {modalidad === 'colegio' && (
               <div className="space-y-4">
                 <div className="p-3.5 rounded-2xl bg-cyan-950/30 border border-cyan-500/30 text-xs text-cyan-300 flex items-center justify-between">
