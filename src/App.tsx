@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import StaffPortal from './StaffPortal';
 import { 
   Coffee, 
   UtensilsCrossed, 
@@ -18,19 +19,22 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'bar' | 'staff'>('home');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
-  // Detectar la ruta en la URL (ej. nexusgamingcenter.es/#bar)
   useEffect(() => {
     const handleLocationChange = () => {
+      const hostname = window.location.hostname.toLowerCase();
       const hash = window.location.hash.toLowerCase();
-      if (hash === '#bar' || hash === '#/bar') {
+
+      if (hostname.startsWith('equipo') || hash === '#equipo' || hash === '#/equipo') {
+        setCurrentView('staff');
+      } else if (hash === '#bar' || hash === '#/bar') {
         setCurrentView('bar');
-        window.scrollTo(0, 0);
       } else {
         setCurrentView('home');
       }
+      window.scrollTo(0, 0);
     };
 
     handleLocationChange();
@@ -38,11 +42,22 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleLocationChange);
   }, []);
 
-  const navigateTo = (view: 'home' | 'bar') => {
-    window.location.hash = view === 'bar' ? 'bar' : '';
+  const navigateTo = (view: 'home' | 'bar' | 'staff') => {
+    if (view === 'staff') {
+      window.location.hash = 'equipo';
+    } else if (view === 'bar') {
+      window.location.hash = 'bar';
+    } else {
+      window.location.hash = '';
+    }
     setCurrentView(view);
     window.scrollTo(0, 0);
   };
+
+  // Si entra al subdominio o vista de empleados
+  if (currentView === 'staff') {
+    return <StaffPortal />;
+  }
 
   return (
     <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans selection:bg-cyan-500 selection:text-black flex flex-col justify-between">
@@ -89,11 +104,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* CONTENIDO SEGÚN LA VISTA SELECCIONADA */}
       {currentView === 'bar' ? (
-        /* VISTA EXCLUSIVA DE LA CAFETERÍA (/bar) */
+        /* VISTA CAFETERÍA */
         <main className="flex-grow">
-          {/* Hero de Cafetería */}
           <section className="relative overflow-hidden py-16 sm:py-24 border-b border-white/[0.06]">
             <div className="absolute inset-0 z-0">
               <img
@@ -129,10 +142,8 @@ export default function App() {
             </div>
           </section>
 
-          {/* Bloque Desayunos y Menú */}
           <section className="max-w-6xl mx-auto px-5 py-16">
             <div className="grid gap-8 md:grid-cols-2">
-              {/* Tarjeta Desayunos */}
               <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/90 p-8 shadow-xl">
                 <div className="h-12 w-12 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mb-6">
                   <Coffee className="h-6 w-6" />
@@ -157,7 +168,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Tarjeta Menú del Día */}
               <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/90 p-8 shadow-xl">
                 <div className="h-12 w-12 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-400 flex items-center justify-center mb-6">
                   <UtensilsCrossed className="h-6 w-6" />
@@ -183,7 +193,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Promociones */}
             <div className="mt-12 rounded-2xl border border-amber-500/20 bg-amber-950/10 p-8">
               <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2 text-amber-400">
                 <Tag className="h-5 w-5" /> Promociones Activas en Cafetería
@@ -212,9 +221,8 @@ export default function App() {
           </section>
         </main>
       ) : (
-        /* VISTA PRINCIPAL / PORTAL GENERAL */
+        /* VISTA PRINCIPAL / GAMING */
         <main className="flex-grow">
-          {/* Hero General con imagen gaming */}
           <section className="relative overflow-hidden py-24 sm:py-32 border-b border-white/[0.06]">
             <div className="absolute inset-0 z-0">
               <img
@@ -258,10 +266,8 @@ export default function App() {
             </div>
           </section>
 
-          {/* Tres Pilares Centrales */}
           <section className="max-w-6xl mx-auto px-5 py-16 space-y-12">
             <div className="grid gap-6 md:grid-cols-3">
-              {/* Tarjeta 1: Acceso a la Cafetería */}
               <div 
                 onClick={() => navigateTo('bar')}
                 className="rounded-2xl border border-white/10 bg-[#0c0d14]/80 backdrop-blur p-6 flex flex-col justify-between hover:border-amber-400/50 transition-all group shadow-lg cursor-pointer"
@@ -281,7 +287,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Tarjeta 2: Eventos & TCG */}
               <div className="rounded-2xl border border-cyan-500/40 bg-gradient-to-b from-cyan-950/30 to-[#0c0d14]/90 backdrop-blur p-6 flex flex-col justify-between hover:border-cyan-400 transition-all group relative overflow-hidden shadow-[0_0_30px_rgba(0,242,254,0.1)]">
                 <div>
                   <div className="h-12 w-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
@@ -308,7 +313,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Tarjeta 3: Gaming Zone */}
               <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/80 backdrop-blur p-6 flex flex-col justify-between hover:border-purple-400/40 transition-all group shadow-lg">
                 <div>
                   <div className="h-12 w-12 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
@@ -327,7 +331,6 @@ export default function App() {
             </div>
           </section>
 
-          {/* Bloque Eventos de Tarde */}
           <section id="eventos-tarde" className="max-w-6xl mx-auto px-5 pb-16">
             <div className="rounded-2xl border border-cyan-500/40 bg-gradient-to-b from-cyan-950/20 via-[#0c0d14]/80 to-[#08090d] p-8 sm:p-10">
               <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6 mb-8 pb-6 border-b border-cyan-500/20">
@@ -366,7 +369,7 @@ export default function App() {
         </main>
       )}
 
-      {/* SECCIÓN DE CONTACTO & UBICACIÓN (COMÚN) */}
+      {/* UBICACIÓN */}
       <section id="ubicacion" className="max-w-6xl mx-auto px-5 pb-12 w-full">
         <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/80 p-8 shadow-xl">
           <div className="grid gap-8 md:grid-cols-2">
@@ -411,7 +414,7 @@ export default function App() {
         </div>
       </section>
 
-      {/* Modal Informativo de Carta */}
+      {/* Modal Carta */}
       {menuModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4"
@@ -461,7 +464,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Pie de página */}
+      {/* Footer con enlace a Staff */}
       <footer className="border-t border-white/[0.06] bg-[#050608] text-slate-500 text-xs py-8">
         <div className="max-w-6xl mx-auto px-5 flex flex-col sm:flex-row items-center justify-between gap-4">
           <p>© {new Date().getFullYear()} NEXUS CORDOBA SL. NIF: B93887990. Todos los derechos reservados.</p>
@@ -470,12 +473,12 @@ export default function App() {
               <Shield className="h-3.5 w-3.5" /> Empresa registrada
             </span>
             <span>·</span>
-            <a
-              href="https://equipo.nexusgamingcenter.es"
-              className="flex items-center gap-1 hover:text-cyan-400 transition-colors"
+            <button
+              onClick={() => navigateTo('staff')}
+              className="flex items-center gap-1 hover:text-cyan-400 transition-colors cursor-pointer"
             >
               <Lock className="h-3 w-3" /> Acceso Staff
-            </a>
+            </button>
           </div>
         </div>
       </footer>
