@@ -7,7 +7,6 @@ import {
   Calendar, 
   Tag, 
   ArrowRight, 
-  Sparkles, 
   FileText, 
   Shield, 
   Lock, 
