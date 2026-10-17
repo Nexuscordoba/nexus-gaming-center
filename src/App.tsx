@@ -7,15 +7,14 @@ import {
   MapPin, 
   Menu, 
   X, 
-  ArrowRight,
-  ShieldCheck,
-  KeyRound,
-  Clock,
-  UtensilsCrossed,
-  Tag,
-  Wifi,
-  Zap,
-  Calendar
+  ArrowRight, 
+  ShieldCheck, 
+  KeyRound, 
+  Clock, 
+  UtensilsCrossed, 
+  Tag, 
+  Wifi, 
+  Zap 
 } from 'lucide-react';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
