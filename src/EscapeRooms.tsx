@@ -125,6 +125,7 @@ export default function EscapeRooms() {
       setLugarEvento('');
       setNombreColegio('');
       setCursoAlumnos('');
+      setTotalAlumnos(25);
     } catch (err: any) {
       setMensaje({
         tipo: 'error',
@@ -338,6 +339,17 @@ export default function EscapeRooms() {
                     </select>
                   </div>
                 </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">Lugar de celebración (opcional):</label>
+                  <input
+                    type="text"
+                    placeholder="Salón, domicilio o espacio del evento"
+                    value={lugarEvento}
+                    onChange={(e) => setLugarEvento(e.target.value)}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                  />
+                </div>
               </div>
             )}
 
@@ -378,28 +390,54 @@ export default function EscapeRooms() {
 
             {/* COLEGIOS */}
             {modalidad === 'colegio' && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-semibold text-slate-300 block mb-1">Centro Educativo:</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Nombre del colegio / IES"
-                    value={nombreColegio}
-                    onChange={(e) => setNombreColegio(e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                  />
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Centro Educativo:</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Nombre del colegio / IES"
+                      value={nombreColegio}
+                      onChange={(e) => setNombreColegio(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Curso / Nivel:</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. 6º Primaria, 3º ESO"
+                      value={cursoAlumnos}
+                      onChange={(e) => setCursoAlumnos(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-300 block mb-1">Curso / Nivel:</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ej. 6º Primaria, 3º ESO"
-                    value={cursoAlumnos}
-                    onChange={(e) => setCursoAlumnos(e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                  />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Alumnos Estimados:</label>
+                    <input
+                      type="number"
+                      min={10}
+                      max={300}
+                      value={totalAlumnos}
+                      onChange={(e) => setTotalAlumnos(Number(e.target.value))}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Espacio Disponible:</label>
+                    <input
+                      type="text"
+                      placeholder="Ej. Gimnasio, biblioteca, aulas"
+                      value={lugarEvento}
+                      onChange={(e) => setLugarEvento(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                    />
+                  </div>
                 </div>
               </div>
             )}
