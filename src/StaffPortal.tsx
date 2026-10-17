@@ -11,7 +11,6 @@ import {
   Delete,
   ArrowLeft,
   FileSpreadsheet,
-  Calendar,
   Filter,
   Users
 } from 'lucide-react';
@@ -254,7 +253,7 @@ export default function StaffPortal() {
       {/* Contenido principal */}
       <main className="flex-1 flex items-center justify-center p-4">
         {vistaAdmin ? (
-          /* PANTALLA 3: VISOR DE INFORMES Y AUDITORÍA */
+          /* PANTALLA: VISOR DE INFORMES Y AUDITORÍA */
           <div className="w-full max-w-4xl bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
               <div>
@@ -367,7 +366,6 @@ export default function StaffPortal() {
           /* TERMINAL HABITUAL (TECLADO O PANTALLA DE ACCIONES) */
           <div className="w-full max-w-md bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl">
             {!empleado ? (
-              /* PANTALLA 1: TECLADO PIN */
               <div className="space-y-6">
                 <div className="text-center">
                   <h2 className="text-lg font-bold text-white">Identificación de Empleado</h2>
@@ -423,7 +421,6 @@ export default function StaffPortal() {
                 </div>
               </div>
             ) : (
-              /* PANTALLA 2: ACCIONES DE FICHAJE */
               <div className="space-y-6">
                 <div className="flex items-center justify-between pb-4 border-b border-white/10">
                   <div>
@@ -489,7 +486,6 @@ export default function StaffPortal() {
                   </button>
                 </div>
 
-                {/* Si es Administrador, mostrar botón para abrir el visor */}
                 {empleado.rol === 'admin' && (
                   <div className="pt-3 border-t border-white/10">
                     <button
