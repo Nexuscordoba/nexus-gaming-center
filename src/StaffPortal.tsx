@@ -20,7 +20,8 @@ import {
   HelpCircle,
   Check,
   X,
-  AlertTriangle
+  AlertTriangle,
+  Home
 } from 'lucide-react';
 
 interface Empleado {
@@ -123,6 +124,15 @@ export default function StaffPortal() {
     const timer = setInterval(() => setHoraActual(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Función para volver a la página web principal
+  const volverAWebPrincipal = () => {
+    if (window.location.hash) {
+      window.location.hash = '';
+    } else {
+      window.location.href = '/';
+    }
+  };
 
   const consultarUltimoFichaje = async (empleadoId: string) => {
     setLoadingEstado(true);
@@ -364,7 +374,6 @@ export default function StaffPortal() {
     }
   };
 
-  // Función para aprobar o rechazar solicitudes desde administración
   const resolverSolicitud = async (id: string, nuevoEstado: 'aprobado' | 'rechazado') => {
     try {
       const { error } = await supabase
@@ -389,13 +398,11 @@ export default function StaffPortal() {
     }
   };
 
-  // Algoritmo de detección de solapamientos entre empleados
   const obtenerSolapamientos = (solicitudActual: Solicitud) => {
     const inicioA = new Date(solicitudActual.fecha_inicio).getTime();
     const finA = new Date(solicitudActual.fecha_fin).getTime();
 
     return todasSolicitudes.filter((s) => {
-      // Ignorar a la misma persona o solicitudes rechazadas
       if (s.id === solicitudActual.id || s.empleado_id === solicitudActual.empleado_id || s.estado === 'rechazado') {
         return false;
       }
@@ -403,7 +410,6 @@ export default function StaffPortal() {
       const inicioB = new Date(s.fecha_inicio).getTime();
       const finB = new Date(s.fecha_fin).getTime();
 
-      // Comprobar colisión de rangos de fechas
       return inicioA <= finB && finA >= inicioB;
     });
   };
@@ -502,23 +508,39 @@ export default function StaffPortal() {
       {/* Cabecera */}
       <header className="border-b border-white/10 bg-[#08090d]/80 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-500/30 bg-cyan-950/40 text-cyan-400">
-            <ShieldCheck className="h-6 w-6" />
-          </div>
+          <button
+            type="button"
+            onClick={volverAWebPrincipal}
+            title="Volver a la web principal"
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white transition-all cursor-pointer"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
           <div>
-            <h1 className="font-bold text-white text-base tracking-wide">
+            <h1 className="font-bold text-white text-base tracking-wide flex items-center gap-2">
               NEXUS <span className="text-cyan-400">PORTAL DEL EQUIPO</span>
             </h1>
             <p className="text-[11px] text-slate-400">Gestión de Personal · Chinales 45</p>
           </div>
         </div>
 
-        <div className="text-right">
-          <div className="text-xl sm:text-2xl font-mono font-bold text-cyan-400">
-            {horaActual.toLocaleTimeString('es-ES')}
-          </div>
-          <div className="text-xs text-slate-400 capitalize">
-            {horaActual.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' })}
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={volverAWebPrincipal}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer"
+          >
+            <Home className="h-3.5 w-3.5 text-cyan-400" />
+            Web Principal
+          </button>
+
+          <div className="text-right">
+            <div className="text-xl sm:text-2xl font-mono font-bold text-cyan-400">
+              {horaActual.toLocaleTimeString('es-ES')}
+            </div>
+            <div className="text-xs text-slate-400 capitalize">
+              {horaActual.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' })}
+            </div>
           </div>
         </div>
       </header>
@@ -672,7 +694,7 @@ export default function StaffPortal() {
               </div>
             )}
 
-            {/* MÓDULO 2: GESTIÓN DE PERMISOS Y DETECCIÓN DE SOLAPAMIENTOS */}
+            {/* MÓDULO 2: GESTIÓN DE PERMISOS */}
             {tabAdmin === 'solicitudes' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between text-xs text-slate-400">
@@ -723,7 +745,6 @@ export default function StaffPortal() {
                               </div>
                             </div>
 
-                            {/* Estado y botones de acción */}
                             <div className="flex items-center gap-2 self-end sm:self-center">
                               {sol.estado === 'pendiente' ? (
                                 <>
@@ -754,7 +775,6 @@ export default function StaffPortal() {
                             </div>
                           </div>
 
-                          {/* ALERTA DE COINCIDENCIA / SOLAPAMIENTO */}
                           <div className="mt-3 pt-3 border-t border-white/5">
                             {haySolapamiento ? (
                               <div className="flex items-start gap-2 p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/30 text-amber-300 text-xs">
@@ -788,8 +808,19 @@ export default function StaffPortal() {
           /* PORTAL DEL EMPLEADO / TECLADO PIN */
           <div className="w-full max-w-xl bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl">
             {!empleado ? (
-              /* PANTALLA 1: TECLADO PIN */
+              /* PANTALLA 1: TECLADO PIN CON BOTÓN DE RETORNO */
               <div className="space-y-6 max-w-md mx-auto">
+                <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                  <button
+                    type="button"
+                    onClick={volverAWebPrincipal}
+                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-xl border border-white/10 transition-colors cursor-pointer"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" /> Volver a la web
+                  </button>
+                  <span className="text-[11px] text-slate-500 font-mono">Modo Terminal</span>
+                </div>
+
                 <div className="text-center">
                   <h2 className="text-lg font-bold text-white">Identificación de Empleado</h2>
                   <p className="text-xs text-slate-400 mt-1">Introduce tu PIN de 4 dígitos para acceder al portal</p>
@@ -1154,7 +1185,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* Enlace para Administrador con contador de alertas */}
+                {/* Enlace para Administrador */}
                 {empleado.rol === 'admin' && (
                   <div className="pt-3 border-t border-white/10">
                     <button
