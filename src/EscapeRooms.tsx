@@ -147,9 +147,15 @@ export default function EscapeRooms() {
       const { error } = await supabase.from('reservas_escape_room').insert([payload]);
       if (error) throw error;
 
-      // Envío de correo de confirmación al cliente mediante Resend
+      // Envío de correo de confirmación con logging visible en consola
       try {
-        await fetch('/api/send-confirmation', {
+        const apiBase = window.location.hostname.includes('escape.') 
+          ? `https://${window.location.hostname.replace('escape.', 'www.')}`
+          : '';
+
+        console.log('Intentando enviar email a través de:', `${apiBase}/api/send-confirmation`);
+
+        const res = await fetch(`${apiBase}/api/send-confirmation`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -165,8 +171,15 @@ export default function EscapeRooms() {
             lugar: lugarFinal
           })
         });
+
+        const resData = await res.json().catch(() => null);
+        console.log('Respuesta de la API de email:', res.status, resData);
+
+        if (!res.ok) {
+          console.error('Fallo en el servicio de email:', resData);
+        }
       } catch (mailErr) {
-        console.warn('No se pudo enviar el correo de confirmación:', mailErr);
+        console.error('Error de red al llamar a /api/send-confirmation:', mailErr);
       }
 
       setMensaje({
@@ -243,7 +256,6 @@ export default function EscapeRooms() {
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[700px] h-[400px] bg-cyan-500/10 blur-[140px] pointer-events-none rounded-full" />
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 relative z-10">
-        {/* Cabecera */}
         <div className="text-center max-w-3xl mx-auto mb-14">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-cyan-500/30 bg-cyan-950/40 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-4">
             <KeyRound className="h-4 w-4" />
