@@ -13,8 +13,6 @@ import {
   CheckCircle2, 
   AlertCircle,
   MapPin,
-  Clock,
-  Euro,
   Image as ImageIcon
 } from 'lucide-react';
 
@@ -155,6 +153,7 @@ export default function EscapeRooms() {
       setDireccionCordoba('');
       setNombreColegio('');
       setCursoAlumnos('');
+      setTotalAlumnos(60);
       setDireccionColegio('');
     } catch (err: any) {
       setMensaje({
@@ -402,7 +401,7 @@ export default function EscapeRooms() {
             <School className={`h-6 w-6 mb-2 ${modalidad === 'colegio' ? 'text-cyan-400' : 'text-slate-400'}`} />
             <h4 className="font-bold text-white text-base">Escape en tu Colegio</h4>
             <span className="text-xs text-cyan-400 font-semibold block mt-1">Jornada 7h · 390 €</span>
-            <p className="text-xs text-slate-400 mt-1">Córdoba capital y centros concertados/públicos.</p>
+            <p className="text-xs text-slate-400 mt-1">Córdoba capital y centros educativos.</p>
           </button>
         </div>
 
@@ -655,15 +654,26 @@ export default function EscapeRooms() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs font-semibold text-slate-300 block mb-1">Cursos / Alumnos:</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ej. 5º y 6º Primaria (unos 60 alumnos)"
-                      value={cursoAlumnos}
-                      onChange={(e) => setCursoAlumnos(e.target.value)}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                    />
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Cursos y Alumnos Estimados:</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej. 5º y 6º Primaria"
+                        value={cursoAlumnos}
+                        onChange={(e) => setCursoAlumnos(e.target.value)}
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                      />
+                      <input
+                        type="number"
+                        min={10}
+                        max={400}
+                        placeholder="Total alumnos"
+                        value={totalAlumnos}
+                        onChange={(e) => setTotalAlumnos(Number(e.target.value))}
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono"
+                      />
+                    </div>
                   </div>
                 </div>
 
