@@ -7,7 +7,6 @@ import {
   LogOut, 
   CheckCircle2, 
   AlertCircle, 
-  ShieldCheck, 
   Delete,
   ArrowLeft,
   FileSpreadsheet,
