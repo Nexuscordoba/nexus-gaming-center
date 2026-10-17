@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from './supabase';
 import { 
   Clock, 
@@ -16,7 +16,8 @@ import {
   FileText,
   Palmtree,
   Download,
-  Send
+  Send,
+  HelpCircle
 } from 'lucide-react';
 
 interface Empleado {
@@ -66,6 +67,8 @@ interface Solicitud {
   estado: 'pendiente' | 'aprobado' | 'rechazado';
 }
 
+type TipoFichaje = 'entrada' | 'inicio_descanso' | 'fin_descanso' | 'salida';
+
 export default function StaffPortal() {
   const [pin, setPin] = useState('');
   const [empleado, setEmpleado] = useState<Empleado | null>(null);
@@ -76,7 +79,14 @@ export default function StaffPortal() {
   // Navegación dentro del portal del empleado
   const [tabActiva, setTabActiva] = useState<'fichar' | 'horario' | 'permisos' | 'documentos'>('fichar');
 
-  // Datos del empleado
+  // Estado laboral actual del empleado
+  const [ultimoEstado, setUltimoEstado] = useState<TipoFichaje | null>(null);
+  const [loadingEstado, setLoadingEstado] = useState(false);
+
+  // Modal de confirmación para evitar errores
+  const [fichajeAConfirmar, setFichajeAConfirmar] = useState<TipoFichaje | null>(null);
+
+  // Datos complementarios
   const [documentos, setDocumentos] = useState<Documento[]>([]);
   const [turnos, setTurnos] = useState<Turno[]>([]);
   const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
@@ -99,12 +109,34 @@ export default function StaffPortal() {
     return () => clearInterval(timer);
   }, []);
 
-  // Cargar información complementaria cuando entra un empleado
+  // Consultar el último fichaje del empleado para saber su estado actual
+  const consultarUltimoFichaje = async (empleadoId: string) => {
+    setLoadingEstado(true);
+    try {
+      const { data, error } = await supabase
+        .from('fichajes')
+        .select('tipo')
+        .eq('empleado_id', empleadoId)
+        .order('timestamp_fichaje', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+      setUltimoEstado(data ? (data.tipo as TipoFichaje) : null);
+    } catch (err) {
+      console.error('Error al consultar estado laboral:', err);
+    } finally {
+      setLoadingEstado(false);
+    }
+  };
+
+  // Cargar datos cuando se verifica el empleado
   useEffect(() => {
     if (!empleado) return;
 
+    consultarUltimoFichaje(empleado.id);
+
     const cargarDatosEmpleado = async () => {
-      // 1. Documentos
       const { data: docs } = await supabase
         .from('empleado_documentos')
         .select('*')
@@ -112,7 +144,6 @@ export default function StaffPortal() {
         .order('fecha_subida', { ascending: false });
       if (docs) setDocumentos(docs);
 
-      // 2. Turnos
       const { data: t } = await supabase
         .from('turnos_semanales')
         .select('*')
@@ -120,7 +151,6 @@ export default function StaffPortal() {
         .eq('activo', true);
       if (t) setTurnos(t);
 
-      // 3. Solicitudes de permisos
       const { data: sol } = await supabase
         .from('solicitudes_permisos')
         .select('*')
@@ -177,10 +207,14 @@ export default function StaffPortal() {
     }
   };
 
-  const registrarFichaje = async (tipo: 'entrada' | 'inicio_descanso' | 'fin_descanso' | 'salida') => {
-    if (!empleado) return;
+  // Registrar el fichaje tras la confirmación
+  const confirmarYRegistrarFichaje = async () => {
+    if (!empleado || !fichajeAConfirmar) return;
 
+    const tipo = fichajeAConfirmar;
+    setFichajeAConfirmar(null);
     setLoading(true);
+
     try {
       const { error } = await supabase.from('fichajes').insert([
         {
@@ -192,6 +226,8 @@ export default function StaffPortal() {
 
       if (error) throw error;
 
+      setUltimoEstado(tipo);
+
       const titulos = {
         entrada: 'Entrada registrada',
         inicio_descanso: 'Inicio de descanso registrado',
@@ -201,7 +237,7 @@ export default function StaffPortal() {
 
       setMensaje({
         tipo: 'ok',
-        texto: `¡${titulos[tipo]} con éxito a las ${new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}!`
+        texto: `¡${titulos[tipo]} confirmada a las ${new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}!`
       });
 
       setTimeout(() => {
@@ -212,6 +248,41 @@ export default function StaffPortal() {
       setMensaje({ tipo: 'error', texto: 'No se pudo guardar el fichaje: ' + err.message });
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Reglas de negocio para habilitar o deshabilitar botones
+  const estaHabilitado = (tipo: TipoFichaje): boolean => {
+    if (loading || loadingEstado) return false;
+
+    // Caso 1: Sin fichajes previos o habiendo finalizado turno con 'salida' -> Solo Entrada
+    if (!ultimoEstado || ultimoEstado === 'salida') {
+      return tipo === 'entrada';
+    }
+
+    // Caso 2: Ha fichado 'entrada' o 'fin_descanso' (está trabajando) -> Puede hacer Pausa o Salir
+    if (ultimoEstado === 'entrada' || ultimoEstado === 'fin_descanso') {
+      return tipo === 'inicio_descanso' || tipo === 'salida';
+    }
+
+    // Caso 3: Está en pausa ('inicio_descanso') -> Solo puede volver al puesto (Fin Pausa)
+    if (ultimoEstado === 'inicio_descanso') {
+      return tipo === 'fin_descanso';
+    }
+
+    return false;
+  };
+
+  const getTextoConfirmacion = (tipo: TipoFichaje) => {
+    switch (tipo) {
+      case 'entrada':
+        return '¿Confirmas el inicio de tu jornada laboral?';
+      case 'salida':
+        return '¿Confirmas la salida y cierre de tu jornada?';
+      case 'inicio_descanso':
+        return '¿Confirmas el inicio de tu pausa / café?';
+      case 'fin_descanso':
+        return '¿Confirmas el fin del descanso y vuelta al puesto?';
     }
   };
 
@@ -246,7 +317,6 @@ export default function StaffPortal() {
     }
   };
 
-  // Cargar registros para el visor de administración
   const cargarFichajes = async () => {
     setLoadingFichajes(true);
     try {
@@ -332,7 +402,7 @@ export default function StaffPortal() {
   };
 
   return (
-    <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
+    <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
       {/* Cabecera */}
       <header className="border-b border-white/10 bg-[#08090d]/80 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -360,7 +430,7 @@ export default function StaffPortal() {
       {/* Contenido principal */}
       <main className="flex-1 flex items-center justify-center p-4">
         {vistaAdmin ? (
-          /* PANTALLA: VISOR DE INFORMES Y AUDITORÍA (ADMIN) */
+          /* VISTA ADMINISTRACIÓN */
           <div className="w-full max-w-4xl bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
               <div>
@@ -468,7 +538,7 @@ export default function StaffPortal() {
             </div>
           </div>
         ) : (
-          /* PANEL DEL EMPLEADO / TECLADO PIN */
+          /* PORTAL DEL EMPLEADO */
           <div className="w-full max-w-xl bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl">
             {!empleado ? (
               /* PANTALLA 1: TECLADO PIN */
@@ -527,9 +597,8 @@ export default function StaffPortal() {
                 </div>
               </div>
             ) : (
-              /* PANTALLA 2: PORTAL MULTI-PESTAÑA DEL TRABAJADOR */
+              /* PANTALLA 2: VISTA DEL EMPLEADO AUTENTICADO */
               <div className="space-y-6">
-                {/* Cabecera del trabajador */}
                 <div className="flex items-center justify-between pb-4 border-b border-white/10">
                   <div>
                     <span className="text-xs text-cyan-400 font-semibold uppercase">Empleado verificado</span>
@@ -543,6 +612,7 @@ export default function StaffPortal() {
                       setEmpleado(null);
                       setPin('');
                       setMensaje(null);
+                      setUltimoEstado(null);
                     }}
                     className="text-xs text-slate-400 hover:text-white flex items-center gap-1 bg-white/5 px-3 py-1.5 rounded-lg border border-white/10 cursor-pointer"
                   >
@@ -550,7 +620,7 @@ export default function StaffPortal() {
                   </button>
                 </div>
 
-                {/* Barra de pestañas */}
+                {/* Pestañas */}
                 <div className="grid grid-cols-4 gap-1 p-1 bg-white/[0.03] border border-white/5 rounded-2xl text-xs font-semibold">
                   <button
                     onClick={() => setTabActiva('fichar')}
@@ -594,58 +664,102 @@ export default function StaffPortal() {
                   </button>
                 </div>
 
-                {/* CONTENIDO SEGÚN LA PESTAÑA */}
-
-                {/* 1. Pestaña Fichar */}
+                {/* Pestaña Fichar */}
                 {tabActiva === 'fichar' && (
                   <div className="space-y-4">
-                    <p className="text-xs text-center text-slate-300">Selecciona el tipo de registro laboral:</p>
+                    {/* Indicador de estado actual */}
+                    <div className="flex items-center justify-between px-4 py-2.5 rounded-xl bg-white/[0.02] border border-white/5 text-xs">
+                      <span className="text-slate-400">Estado de tu turno:</span>
+                      {loadingEstado ? (
+                        <span className="text-slate-500">Consultando...</span>
+                      ) : !ultimoEstado || ultimoEstado === 'salida' ? (
+                        <span className="text-rose-400 font-bold flex items-center gap-1.5">
+                          <span className="h-2 w-2 rounded-full bg-rose-500 animate-pulse"></span>
+                          Fuera de servicio
+                        </span>
+                      ) : ultimoEstado === 'inicio_descanso' ? (
+                        <span className="text-amber-400 font-bold flex items-center gap-1.5">
+                          <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse"></span>
+                          En descanso / pausa
+                        </span>
+                      ) : (
+                        <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                          Jornada activa
+                        </span>
+                      )}
+                    </div>
 
+                    {/* Botones de acción con bloqueo condicional */}
                     <div className="grid grid-cols-2 gap-3">
+                      {/* Entrada */}
                       <button
-                        disabled={loading}
-                        onClick={() => registrarFichaje('entrada')}
-                        className="flex flex-col items-center justify-center p-4 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-400 hover:bg-emerald-900/50 active:scale-95 transition-all cursor-pointer shadow-lg"
+                        type="button"
+                        disabled={!estaHabilitado('entrada')}
+                        onClick={() => setFichajeAConfirmar('entrada')}
+                        className={`flex flex-col items-center justify-center p-4 rounded-2xl border transition-all ${
+                          estaHabilitado('entrada')
+                            ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-400 hover:bg-emerald-900/50 active:scale-95 shadow-lg cursor-pointer'
+                            : 'bg-white/[0.01] border-white/5 text-slate-600 opacity-30 cursor-not-allowed'
+                        }`}
                       >
                         <LogIn className="h-6 w-6 mb-2" />
                         <span className="font-bold text-sm">Entrada</span>
-                        <span className="text-[10px] text-emerald-300/70">Inicio jornada</span>
+                        <span className="text-[10px]">Inicio jornada</span>
                       </button>
 
+                      {/* Salida */}
                       <button
-                        disabled={loading}
-                        onClick={() => registrarFichaje('salida')}
-                        className="flex flex-col items-center justify-center p-4 rounded-2xl bg-rose-950/40 border border-rose-500/40 text-rose-400 hover:bg-rose-900/50 active:scale-95 transition-all cursor-pointer shadow-lg"
+                        type="button"
+                        disabled={!estaHabilitado('salida')}
+                        onClick={() => setFichajeAConfirmar('salida')}
+                        className={`flex flex-col items-center justify-center p-4 rounded-2xl border transition-all ${
+                          estaHabilitado('salida')
+                            ? 'bg-rose-950/40 border-rose-500/50 text-rose-400 hover:bg-rose-900/50 active:scale-95 shadow-lg cursor-pointer'
+                            : 'bg-white/[0.01] border-white/5 text-slate-600 opacity-30 cursor-not-allowed'
+                        }`}
                       >
                         <LogOut className="h-6 w-6 mb-2" />
                         <span className="font-bold text-sm">Salida</span>
-                        <span className="text-[10px] text-rose-300/70">Fin jornada</span>
+                        <span className="text-[10px]">Fin jornada</span>
                       </button>
 
+                      {/* Inicio Pausa */}
                       <button
-                        disabled={loading}
-                        onClick={() => registrarFichaje('inicio_descanso')}
-                        className="flex flex-col items-center justify-center p-4 rounded-2xl bg-amber-950/40 border border-amber-500/40 text-amber-400 hover:bg-amber-900/50 active:scale-95 transition-all cursor-pointer shadow-lg"
+                        type="button"
+                        disabled={!estaHabilitado('inicio_descanso')}
+                        onClick={() => setFichajeAConfirmar('inicio_descanso')}
+                        className={`flex flex-col items-center justify-center p-4 rounded-2xl border transition-all ${
+                          estaHabilitado('inicio_descanso')
+                            ? 'bg-amber-950/40 border-amber-500/50 text-amber-400 hover:bg-amber-900/50 active:scale-95 shadow-lg cursor-pointer'
+                            : 'bg-white/[0.01] border-white/5 text-slate-600 opacity-30 cursor-not-allowed'
+                        }`}
                       >
                         <Coffee className="h-6 w-6 mb-2" />
                         <span className="font-bold text-sm">Pausa / Café</span>
-                        <span className="text-[10px] text-amber-300/70">Inicio descanso</span>
+                        <span className="text-[10px]">Inicio descanso</span>
                       </button>
 
+                      {/* Fin Pausa */}
                       <button
-                        disabled={loading}
-                        onClick={() => registrarFichaje('fin_descanso')}
-                        className="flex flex-col items-center justify-center p-4 rounded-2xl bg-sky-950/40 border border-sky-500/40 text-sky-400 hover:bg-sky-900/50 active:scale-95 transition-all cursor-pointer shadow-lg"
+                        type="button"
+                        disabled={!estaHabilitado('fin_descanso')}
+                        onClick={() => setFichajeAConfirmar('fin_descanso')}
+                        className={`flex flex-col items-center justify-center p-4 rounded-2xl border transition-all ${
+                          estaHabilitado('fin_descanso')
+                            ? 'bg-sky-950/40 border-sky-500/50 text-sky-400 hover:bg-sky-900/50 active:scale-95 shadow-lg cursor-pointer'
+                            : 'bg-white/[0.01] border-white/5 text-slate-600 opacity-30 cursor-not-allowed'
+                        }`}
                       >
                         <Clock className="h-6 w-6 mb-2" />
                         <span className="font-bold text-sm">Fin Pausa</span>
-                        <span className="text-[10px] text-sky-300/70">Vuelta al puesto</span>
+                        <span className="text-[10px]">Vuelta al puesto</span>
                       </button>
                     </div>
                   </div>
                 )}
 
-                {/* 2. Pestaña Horario */}
+                {/* Pestaña Horario */}
                 {tabActiva === 'horario' && (
                   <div className="space-y-4">
                     <h3 className="text-sm font-bold text-white">Mi Cuadrante y Turno Asignado</h3>
@@ -669,7 +783,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* 3. Pestaña Solicitud de Permisos */}
+                {/* Pestaña Solicitud de Permisos */}
                 {tabActiva === 'permisos' && (
                   <div className="space-y-5">
                     <form onSubmit={solicitarPermiso} className="space-y-3 bg-white/[0.02] p-4 rounded-2xl border border-white/5">
@@ -734,7 +848,6 @@ export default function StaffPortal() {
                       </button>
                     </form>
 
-                    {/* Historial de solicitudes */}
                     <div>
                       <span className="text-xs font-bold text-slate-400 block mb-2">Mis Solicitudes Anteriores</span>
                       {solicitudes.length === 0 ? (
@@ -766,7 +879,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* 4. Pestaña Documentos y Nóminas */}
+                {/* Pestaña Nóminas */}
                 {tabActiva === 'documentos' && (
                   <div className="space-y-3">
                     <h3 className="text-sm font-bold text-white">Nóminas y Contratos Laborales</h3>
@@ -815,7 +928,7 @@ export default function StaffPortal() {
               </div>
             )}
 
-            {/* Mensaje flotante */}
+            {/* Mensajes */}
             {mensaje && (
               <div
                 className={`mt-5 p-3.5 rounded-xl border flex items-center gap-2.5 text-xs ${
@@ -835,6 +948,45 @@ export default function StaffPortal() {
           </div>
         )}
       </main>
+
+      {/* MODAL DE CONFIRMACIÓN DE FICHAJE */}
+      {fichajeAConfirmar && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#0e1017] p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-cyan-400">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-950/50 border border-cyan-500/30">
+                <HelpCircle className="h-5 w-5" />
+              </div>
+              <h3 className="font-bold text-white text-base">Confirmar registro</h3>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              {getTextoConfirmacion(fichajeAConfirmar)}
+            </p>
+
+            <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 text-[11px] text-slate-400">
+              Hora del sistema: <span className="font-mono font-bold text-white">{horaActual.toLocaleTimeString('es-ES')}</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setFichajeAConfirmar(null)}
+                className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-300 font-semibold transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmarYRegistrarFichaje}
+                className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-xs text-slate-950 font-bold transition-colors cursor-pointer shadow-[0_0_15px_rgba(0,242,254,0.3)]"
+              >
+                Sí, registrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pie legal */}
       <footer className="border-t border-white/5 py-4 text-center text-xs text-slate-500">
