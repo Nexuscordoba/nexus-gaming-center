@@ -10,16 +10,16 @@ import {
   Hourglass, 
   Compass, 
   CheckCircle2, 
-  AlertCircle,
-  MapPin,
-  Calendar as CalendarIcon,
-  Image as ImageIcon,
-  Check,
-  Search,
-  ArrowDown,
-  ChevronLeft,
-  ChevronRight,
-  CreditCard
+  AlertCircle, 
+  MapPin, 
+  Calendar as CalendarIcon, 
+  Image as ImageIcon, 
+  Check, 
+  Search, 
+  ArrowDown, 
+  ChevronLeft, 
+  ChevronRight, 
+  Send 
 } from 'lucide-react';
 
 interface SesionCafeteria {
@@ -54,9 +54,11 @@ export default function EscapeRooms() {
   const [fechasOcupadas, setFechasOcupadas] = useState<string[]>([]);
   const [mesActual, setMesActual] = useState(new Date());
 
-  // Dirección y buscador de Córdoba capital
-  const [calleNumero, setCalleNumero] = useState('');
-  const [codigoPostal, setCodigoPostal] = useState('140');
+  // Dirección desglosada
+  const [calleNombre, setCalleNombre] = useState('');
+  const [numeroPortal, setNumeroPortal] = useState('');
+  const [pisoPuerta, setPisoPuerta] = useState('');
+  const [codigoPostal, setCodigoPostal] = useState('14005');
   const [direccionVerificada, setDireccionVerificada] = useState(false);
   const [sugerenciasDir, setSugerenciasDir] = useState<string[]>([]);
   const [buscandoDir, setBuscandoDir] = useState(false);
@@ -78,9 +80,15 @@ export default function EscapeRooms() {
   const [enviando, setEnviando] = useState(false);
   const [mensaje, setMensaje] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
 
-  // Cargar fechas ocupadas
+  const formatFechaLocal = (d: Date): string => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const cargarFechasOcupadas = async () => {
-    const hoy = new Date().toISOString().slice(0, 10);
+    const hoy = formatFechaLocal(new Date());
     const { data } = await supabase
       .from('reservas_escape_room')
       .select('fecha_evento')
@@ -95,21 +103,13 @@ export default function EscapeRooms() {
   useEffect(() => {
     cargarFechasOcupadas();
 
-    // Comprobar retorno de Stripe
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('pago') === 'exito') {
-      setMensaje({
-        tipo: 'ok',
-        texto: '¡Pago completado con éxito! Tu reserva de Escape Room está 100% formalizada y registrada.'
-      });
-    }
-
     const cargarSesiones = async () => {
+      const hoy = formatFechaLocal(new Date());
       const { data, error } = await supabase
         .from('escape_noches_cafeteria')
         .select('*')
         .eq('activa', true)
-        .gte('fecha', new Date().toISOString().slice(0, 10))
+        .gte('fecha', hoy)
         .order('fecha', { ascending: true });
 
       if (!error && data) {
@@ -130,9 +130,8 @@ export default function EscapeRooms() {
     }
   };
 
-  // Buscador de calles de Córdoba fiable (Photon Geocoding API acotada a Córdoba)
   useEffect(() => {
-    if (calleNumero.trim().length < 3 || direccionVerificada) {
+    if (calleNombre.trim().length < 3 || direccionVerificada) {
       setSugerenciasDir([]);
       return;
     }
@@ -140,9 +139,8 @@ export default function EscapeRooms() {
     const timer = setTimeout(async () => {
       setBuscandoDir(true);
       try {
-        // Coordenadas aproximadas de Córdoba capital (37.88, -4.77)
         const res = await fetch(
-          `https://photon.komoot.io/api/?q=${encodeURIComponent(calleNumero)}&lat=37.8882&lon=-4.7794&limit=5`
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(calleNombre)}&lat=37.8882&lon=-4.7794&limit=5`
         );
         const data = await res.json();
         if (data && data.features) {
@@ -153,9 +151,9 @@ export default function EscapeRooms() {
             })
             .map((f: any) => {
               const p = f.properties;
-              return `${p.street || p.name || ''} ${p.housenumber || ''}, ${p.postcode || '14000'} Córdoba`.trim();
+              return `${p.street || p.name || ''}, ${p.postcode || '14000'} Córdoba`.trim();
             });
-          setSugerenciasDir(resultados.length > 0 ? resultados : [`${calleNumero}, Córdoba`]);
+          setSugerenciasDir(resultados.length > 0 ? Array.from(new Set(resultados)) : [`${calleNombre}, Córdoba`]);
         }
       } catch (err) {
         console.warn('Error al buscar calles:', err);
@@ -165,10 +163,15 @@ export default function EscapeRooms() {
     }, 350);
 
     return () => clearTimeout(timer);
-  }, [calleNumero, direccionVerificada]);
+  }, [calleNombre, direccionVerificada]);
 
   const seleccionarDireccion = (dir: string) => {
-    setCalleNumero(dir);
+    const partes = dir.split(',');
+    setCalleNombre(partes[0].trim());
+    if (partes[1]) {
+      const matchCP = partes[1].match(/\b14\d{3}\b/);
+      if (matchCP) setCodigoPostal(matchCP[0]);
+    }
     setSugerenciasDir([]);
     setDireccionVerificada(true);
   };
@@ -194,12 +197,11 @@ export default function EscapeRooms() {
     return fechasOcupadas.includes(fecha);
   };
 
-  // Generador de días del mes para el calendario visual
   const diasEnMes = (mes: Date) => {
     const year = mes.getFullYear();
     const month = mes.getMonth();
-    const primerDia = new Date(year, month, 1).getDay(); // 0 domingo, 1 lunes...
-    const ajustePrimerDia = primerDia === 0 ? 6 : primerDia - 1; // Ajuste a lunes=0
+    const primerDia = new Date(year, month, 1).getDay();
+    const ajustePrimerDia = primerDia === 0 ? 6 : primerDia - 1;
     const totalDias = new Date(year, month + 1, 0).getDate();
 
     const dias = [];
@@ -217,13 +219,47 @@ export default function EscapeRooms() {
     setMesActual(nuevo);
   };
 
+  // Validación estricta de formulario
+  const datosContactoCompletos = 
+    nombre.trim().length >= 3 && 
+    telefono.trim().length >= 9 && 
+    email.trim().includes('@') && 
+    email.trim().includes('.');
+
+  const direccionCompleta = 
+    calleNombre.trim().length >= 3 && 
+    numeroPortal.trim().length >= 1 && 
+    codigoPostal.trim().length === 5;
+
+  const datosColegioCompletos = 
+    nombreColegio.trim().length >= 3 && 
+    cursoAlumnos.trim().length >= 2;
+
+  const esFormularioValido = (): boolean => {
+    if (!datosContactoCompletos) return false;
+
+    if (modalidad === 'cafeteria') {
+      return sesionesCafeteria.length > 0 && !!sesionSeleccionada;
+    }
+
+    if (modalidad === 'evento_privado') {
+      return !!fechaEvento && !esFechaOcupada(fechaEvento) && direccionCompleta;
+    }
+
+    if (modalidad === 'colegio') {
+      return !!fechaEvento && !esFechaOcupada(fechaEvento) && direccionCompleta && datosColegioCompletos;
+    }
+
+    return false;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (modalidad !== 'cafeteria' && esFechaOcupada(fechaEvento)) {
+    if (!esFormularioValido()) {
       setMensaje({
         tipo: 'error',
-        texto: 'La fecha seleccionada ya está ocupada por otro evento. Por favor elige otro día en el calendario.'
+        texto: 'Por favor, completa todos los datos obligatorios de contacto, dirección y fecha antes de confirmar.'
       });
       return;
     }
@@ -236,21 +272,22 @@ export default function EscapeRooms() {
       ? sesionesCafeteria.find(s => s.id === sesionSeleccionada)?.fecha || fechaEvento
       : fechaEvento;
 
-    let lugarFinal = 'Nexus Cafetería (Chinales 45)';
+    let lugarFinal = 'Nexus Cafetería (Chinales 45, Córdoba)';
     if (modalidad !== 'cafeteria') {
-      lugarFinal = `${calleNumero} (CP: ${codigoPostal}, Córdoba)`;
+      const detallesPuerta = pisoPuerta ? `, ${pisoPuerta}` : '';
+      lugarFinal = `${calleNombre}, Nº ${numeroPortal}${detallesPuerta}, CP ${codigoPostal}, Córdoba`;
     }
 
     try {
       const payload: any = {
         modalidad,
-        nombre_contacto: nombre,
-        email_contacto: email,
-        telefono_contacto: telefono,
+        nombre_contacto: nombre.trim(),
+        email_contacto: email.trim(),
+        telefono_contacto: telefono.trim(),
         fecha_evento: fechaFinal,
         hora_preferente: horaPreferente,
         observaciones: `Precio confirmado: ${precioFinal} €. ${observaciones}`,
-        estado: 'pendiente_pago',
+        estado: 'confirmada',
         lugar_celebracion: lugarFinal
       };
 
@@ -260,8 +297,8 @@ export default function EscapeRooms() {
         payload.personas_por_sesion = personasPorSesion;
         payload.num_sesiones = numSesiones;
       } else if (modalidad === 'colegio') {
-        payload.nombre_centro_educativo = nombreColegio;
-        payload.curso_edad_alumnos = cursoAlumnos;
+        payload.nombre_centro_educativo = nombreColegio.trim();
+        payload.curso_edad_alumnos = cursoAlumnos.trim();
         payload.total_alumnos_estimado = totalAlumnos;
         payload.num_sesiones = 7;
       } else if (modalidad === 'cafeteria') {
@@ -270,24 +307,20 @@ export default function EscapeRooms() {
         payload.personas_por_sesion = personasPorSesion;
       }
 
-      // 1. Guardar reserva en Supabase
-      const { data: reservaData, error: dbError } = await supabase
+      const { error: dbError } = await supabase
         .from('reservas_escape_room')
-        .insert([payload])
-        .select()
-        .single();
+        .insert([payload]);
 
       if (dbError) throw dbError;
 
-      // 2. Disparar email de notificación inmediata a Nexus
       try {
         await fetch('/api/send-confirmation', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            email,
-            nombre,
-            telefono,
+            email: email.trim(),
+            nombre: nombre.trim(),
+            telefono: telefono.trim(),
             modalidad,
             fechaEvento: fechaFinal,
             horaPreferente,
@@ -303,34 +336,24 @@ export default function EscapeRooms() {
         console.warn('Aviso email:', mailErr);
       }
 
-      // 3. Crear sesión de pago en Stripe con metadata diferenciada para Escape Room
-      const stripeRes = await fetch('/api/create-checkout-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          reservaId: reservaData.id,
-          nombre,
-          email,
-          modalidad,
-          fechaEvento: fechaFinal,
-          horaPreferente,
-          precioTotal: precioFinal
-        })
+      setMensaje({
+        tipo: 'ok',
+        texto: `¡Reserva confirmada con éxito (${precioFinal} €)! Se ha registrado en el sistema y enviado el correo de confirmación.`
       });
 
-      const stripeData = await stripeRes.json();
-
-      if (stripeData.url) {
-        // Redirigir a la pasarela segura de Stripe
-        window.location.href = stripeData.url;
-      } else {
-        setMensaje({
-          tipo: 'ok',
-          texto: '¡Reserva guardada con éxito! Nos pondremos en contacto contigo para coordinar el cobro y detalles.'
-        });
-      }
-
       setFechasOcupadas((prev) => [...prev, fechaFinal]);
+
+      setNombre('');
+      setEmail('');
+      setTelefono('');
+      setFechaEvento('');
+      setCalleNombre('');
+      setNumeroPortal('');
+      setPisoPuerta('');
+      setDireccionVerificada(false);
+      setObservaciones('');
+      setNombreColegio('');
+      setCursoAlumnos('');
     } catch (err: any) {
       setMensaje({
         tipo: 'error',
@@ -384,7 +407,7 @@ export default function EscapeRooms() {
     ? imagenesGaleria 
     : imagenesGaleria.filter(f => f.categoria === filtroFoto);
 
-  const hoyISO = new Date().toISOString().slice(0, 10);
+  const hoyISO = formatFechaLocal(new Date());
   const diasCalendario = diasEnMes(mesActual);
   const nombresMeses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
@@ -402,11 +425,11 @@ export default function EscapeRooms() {
             VIVE LA EXPERIENCIA <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400">ESCAPE ROOM</span>
           </h2>
           <p className="mt-4 text-sm sm:text-base text-slate-300">
-            Reserva directa con pago seguro. Consulta el calendario en tiempo real y asegura tu fecha en Córdoba capital.
+            Reserva directa sin esperas. Consulta el calendario en tiempo real y asegura tu fecha en Córdoba capital.
           </p>
         </div>
 
-        {/* 1. CUADROS DE TARIFAS CON SCROLL Y SELECCIÓN */}
+        {/* 1. TARIFAS */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
           <div 
             onClick={() => seleccionarModalidadConScroll('cafeteria')}
@@ -469,7 +492,7 @@ export default function EscapeRooms() {
               <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4 mb-4">
                 <li className="flex items-center gap-2">✓ Monitor exclusivo + Desplazamiento</li>
                 <li className="flex items-center gap-2">✓ Material completo y atrezzo</li>
-                <li className="flex items-center gap-2">✓ Pago directo con tarjeta</li>
+                <li className="flex items-center gap-2">✓ Reserva directa confirmada</li>
               </ul>
               <div className="flex items-center justify-between text-xs font-bold text-cyan-400 group-hover:translate-y-0.5 transition-transform">
                 <span>Configurar Evento Privado</span>
@@ -639,8 +662,8 @@ export default function EscapeRooms() {
                 <h3 className="text-xl font-bold text-white flex items-center gap-2">
                   <Sparkles className="h-5 w-5 text-cyan-400" />
                   {modalidad === 'cafeteria' && 'Reserva tu Pase en Cafetería Nexus'}
-                  {modalidad === 'evento_privado' && 'Configura tu Escape Room Privado'}
-                  {modalidad === 'colegio' && 'Reserva de Jornada Escolar (7h)'}
+                  {modalidad === 'evento_privado' && 'Configura y Confirma tu Escape Room Privado'}
+                  {modalidad === 'colegio' && 'Reserva Directa de Jornada Escolar (7h)'}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {modalidad === 'cafeteria' && 'Plazas limitadas por pase. Opcional con consumición y tapa.'}
@@ -650,7 +673,7 @@ export default function EscapeRooms() {
               </div>
 
               <div className="bg-cyan-950/60 border border-cyan-500/40 px-3.5 py-1.5 rounded-2xl text-right">
-                <span className="text-[10px] text-slate-400 block uppercase font-bold">Total a Pagar</span>
+                <span className="text-[10px] text-slate-400 block uppercase font-bold">Precio Confirmado</span>
                 <span className="text-xl font-black text-cyan-300 font-mono">
                   {calcularPrecioEstimado()} €
                 </span>
@@ -682,7 +705,7 @@ export default function EscapeRooms() {
                             onChange={() => setSesionSeleccionada(s.id)}
                             className="accent-cyan-400"
                           />
-                          <span className="font-bold text-white text-xs">{s.titulo} ({new Date(s.fecha).toLocaleDateString('es-ES')})</span>
+                          <span className="font-bold text-white text-xs">{s.titulo} ({new Date(s.fecha + 'T00:00:00').toLocaleDateString('es-ES')})</span>
                         </div>
                         <span className="font-mono text-cyan-400 font-bold text-xs">{s.precio_por_persona} € / pers</span>
                       </label>
@@ -851,7 +874,7 @@ export default function EscapeRooms() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs font-semibold text-slate-300 block mb-1">Centro Educativo (Colegio / IES):</label>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Centro Educativo (Colegio / IES) *:</label>
                     <input
                       type="text"
                       required
@@ -862,7 +885,7 @@ export default function EscapeRooms() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs font-semibold text-slate-300 block mb-1">Cursos y Alumnos Estimados:</label>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">Cursos y Alumnos Estimados *:</label>
                     <div className="grid grid-cols-2 gap-2">
                       <input
                         type="text"
@@ -887,35 +910,27 @@ export default function EscapeRooms() {
               </div>
             )}
 
-            {/* DIRECCIÓN VERIFICADA CON BUSCADOR DE CÓRDOBA CAPITAL */}
+            {/* DIRECCIÓN DESGLOSADA EN CÓRDOBA CAPITAL */}
             {modalidad !== 'cafeteria' && (
-              <div className="space-y-2 pt-2">
+              <div className="space-y-3 pt-2">
                 <label className="text-xs font-semibold text-slate-300 block">
-                  Dirección exacta en Córdoba capital:
+                  Ubicación exacta en Córdoba capital *:
                 </label>
+                
+                {/* Calle con buscador predictivo */}
                 <div className="relative">
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <MapPin className="h-4 w-4 text-cyan-400 absolute left-3 top-3" />
-                      <input
-                        type="text"
-                        required
-                        placeholder="Escribe la calle y número (ej. Calle Escritora Carmen Laforet 4)..."
-                        value={calleNumero}
-                        onChange={(e) => {
-                          setCalleNumero(e.target.value);
-                          setDireccionVerificada(false);
-                        }}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white"
-                      />
-                    </div>
+                  <div className="relative">
+                    <MapPin className="h-4 w-4 text-cyan-400 absolute left-3 top-3" />
                     <input
                       type="text"
                       required
-                      placeholder="C.P."
-                      value={codigoPostal}
-                      onChange={(e) => setCodigoPostal(e.target.value)}
-                      className="w-20 bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white text-center font-mono"
+                      placeholder="Nombre de la calle o avenida (ej. Calle Escritora Carmen Laforet)..."
+                      value={calleNombre}
+                      onChange={(e) => {
+                        setCalleNombre(e.target.value);
+                        setDireccionVerificada(false);
+                      }}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white"
                     />
                   </div>
 
@@ -939,24 +954,60 @@ export default function EscapeRooms() {
                       ))}
                     </div>
                   )}
-
-                  {direccionVerificada && (
-                    <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 mt-1">
-                      <Check className="h-3.5 w-3.5" />
-                      <span>Ubicación validada para el equipo en Córdoba</span>
-                    </div>
-                  )}
                 </div>
+
+                {/* Campos desglosados: Número, Puerta/Bloque y Código Postal */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Nº / Portal *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. 14, Bloque 2"
+                      value={numeroPortal}
+                      onChange={(e) => setNumeroPortal(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Piso / Puerta / Detalles</label>
+                    <input
+                      type="text"
+                      placeholder="Ej. 2º B, Urbanización..."
+                      value={pisoPuerta}
+                      onChange={(e) => setPisoPuerta(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">C.P. (Córdoba) *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="14005"
+                      value={codigoPostal}
+                      onChange={(e) => setCodigoPostal(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono text-center"
+                    />
+                  </div>
+                </div>
+
+                {direccionVerificada && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 mt-1">
+                    <Check className="h-3.5 w-3.5" />
+                    <span>Calle localizada en Córdoba capital</span>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* CALENDARIO VISUAL DE DISPONIBILIDAD (1 EVENTO POR DÍA) */}
+            {/* CALENDARIO VISUAL DE DISPONIBILIDAD */}
             {modalidad !== 'cafeteria' && (
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                     <CalendarIcon className="h-4 w-4 text-cyan-400" />
-                    Calendario de Disponibilidad (1 escape privado por día):
+                    Selecciona Fecha en el Calendario * (1 escape privado por día):
                   </label>
                   <div className="flex items-center gap-3 text-[10px]">
                     <span className="flex items-center gap-1 text-emerald-400">
@@ -968,7 +1019,6 @@ export default function EscapeRooms() {
                   </div>
                 </div>
 
-                {/* Cabecera del Mes */}
                 <div className="p-4 rounded-2xl bg-black/40 border border-white/10">
                   <div className="flex items-center justify-between mb-3 text-xs font-bold text-white">
                     <span>{nombresMeses[mesActual.getMonth()]} {mesActual.getFullYear()}</span>
@@ -976,33 +1026,31 @@ export default function EscapeRooms() {
                       <button
                         type="button"
                         onClick={() => cambiarMes(-1)}
-                        className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
+                        className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 cursor-pointer"
                       >
                         <ChevronLeft className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
                         onClick={() => cambiarMes(1)}
-                        className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
+                        className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 cursor-pointer"
                       >
                         <ChevronRight className="h-4 w-4" />
                       </button>
                     </div>
                   </div>
 
-                  {/* Días de la semana */}
                   <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-slate-500 font-bold mb-2">
                     <span>L</span><span>M</span><span>X</span><span>J</span><span>V</span><span>S</span><span>D</span>
                   </div>
 
-                  {/* Cuadrícula de días */}
                   <div className="grid grid-cols-7 gap-1">
                     {diasCalendario.map((dia, idx) => {
                       if (!dia) {
                         return <div key={`empty-${idx}`} className="h-9" />;
                       }
 
-                      const fechaISO = dia.toISOString().slice(0, 10);
+                      const fechaISO = formatFechaLocal(dia);
                       const esPasado = fechaISO < hoyISO;
                       const ocupado = esFechaOcupada(fechaISO);
                       const seleccionado = fechaEvento === fechaISO;
@@ -1029,15 +1077,14 @@ export default function EscapeRooms() {
                     })}
                   </div>
 
-                  {/* Hora preferente y estado del día seleccionado */}
                   <div className="mt-4 pt-3 border-t border-white/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
                     <div>
                       {fechaEvento ? (
                         <span className="text-emerald-400 font-semibold">
-                          ✓ Día seleccionado: {new Date(fechaEvento).toLocaleDateString('es-ES')}
+                          ✓ Día seleccionado: {new Date(fechaEvento + 'T00:00:00').toLocaleDateString('es-ES')}
                         </span>
                       ) : (
-                        <span className="text-slate-400">Haz clic en un día libre para reservar</span>
+                        <span className="text-amber-400 font-medium">⚠️ Por favor, pulsa un día libre en el calendario</span>
                       )}
                     </div>
                     <div className="flex items-center gap-2">
@@ -1056,32 +1103,47 @@ export default function EscapeRooms() {
 
             {/* DATOS DE CONTACTO */}
             <div className="pt-4 border-t border-white/10 space-y-4">
-              <span className="text-xs font-bold text-white block">Datos de Contacto del Responsable</span>
+              <span className="text-xs font-bold text-white block">Datos de Contacto del Responsable *</span>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <input
-                  type="text"
-                  required
-                  placeholder="Nombre y Apellidos *"
-                  value={nombre}
-                  onChange={(e) => setNombre(e.target.value)}
-                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                />
-                <input
-                  type="tel"
-                  required
-                  placeholder="Teléfono Móvil *"
-                  value={telefono}
-                  onChange={(e) => setTelefono(e.target.value)}
-                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                />
-                <input
-                  type="email"
-                  required
-                  placeholder="Correo Electrónico *"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                />
+                <div>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nombre y Apellidos *"
+                    value={nombre}
+                    onChange={(e) => setNombre(e.target.value)}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                  />
+                  {nombre.trim().length > 0 && nombre.trim().length < 3 && (
+                    <span className="text-[10px] text-amber-400 block mt-0.5">Mínimo 3 caracteres</span>
+                  )}
+                </div>
+                <div>
+                  <input
+                    type="tel"
+                    required
+                    placeholder="Teléfono Móvil (9 dígitos) *"
+                    value={telefono}
+                    onChange={(e) => setTelefono(e.target.value)}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                  />
+                  {telefono.trim().length > 0 && telefono.trim().length < 9 && (
+                    <span className="text-[10px] text-amber-400 block mt-0.5">Mínimo 9 dígitos</span>
+                  )}
+                </div>
+                <div>
+                  <input
+                    type="email"
+                    required
+                    placeholder="Correo Electrónico *"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                  />
+                  {email.trim().length > 0 && (!email.includes('@') || !email.includes('.')) && (
+                    <span className="text-[10px] text-amber-400 block mt-0.5">Introduce un email válido</span>
+                  )}
+                </div>
               </div>
 
               <textarea
@@ -1093,16 +1155,30 @@ export default function EscapeRooms() {
               />
             </div>
 
-            {/* BOTÓN CON REDIRECCIÓN A STRIPE */}
+            {/* Aviso dinámico si faltan campos por rellenar */}
+            {!esFormularioValido() && (
+              <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/20 text-amber-300 text-[11px] flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-amber-400" />
+                <span>
+                  Para habilitar la reserva, completa: 
+                  {!datosContactoCompletos && ' Datos de contacto (Nombre, Teléfono de 9 dígitos y Email) ·'}
+                  {modalidad !== 'cafeteria' && !direccionCompleta && ' Dirección completa (Calle, Nº y CP) ·'}
+                  {modalidad !== 'cafeteria' && !fechaEvento && ' Selección de día en el calendario ·'}
+                  {modalidad === 'colegio' && !datosColegioCompletos && ' Datos del Centro Educativo'}
+                </span>
+              </div>
+            )}
+
+            {/* Botón con bloqueo estricto */}
             <button
               type="submit"
-              disabled={enviando || (modalidad !== 'cafeteria' && (!fechaEvento || esFechaOcupada(fechaEvento)))}
-              className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(0,242,254,0.3)] disabled:opacity-40 transition-all"
+              disabled={enviando || !esFormularioValido()}
+              className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(0,242,254,0.3)] disabled:opacity-30 disabled:cursor-not-allowed transition-all cursor-pointer"
             >
-              <CreditCard className="h-4 w-4" />
+              <Send className="h-4 w-4" />
               {enviando 
-                ? 'Conectando con pasarela segura...' 
-                : `Pagar y Confirmar Reserva · ${calcularPrecioEstimado()} €`}
+                ? 'Confirmando reserva en el sistema...' 
+                : `Confirmar Reserva Directa · ${calcularPrecioEstimado()} €`}
             </button>
 
             {mensaje && (
