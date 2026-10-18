@@ -563,7 +563,6 @@ export default function StaffPortal() {
     }
   };
 
-  // Generador de enlace a Google Calendar
   const generarLinkGoogleCalendar = (reserva: ReservaEscape) => {
     const fechaLimpia = reserva.fecha_evento.replace(/-/g, '');
     const [h, m] = (reserva.hora_preferente || '17:00').split(':');
@@ -589,16 +588,29 @@ export default function StaffPortal() {
 
   const totalPendientes = todasSolicitudes.filter((s) => s.estado === 'pendiente').length;
 
-  // Filtrado de salidas para el empleado actual
   const misSalidasAsignadas = empleado?.rol === 'admin' 
     ? reservasEscape 
     : reservasEscape.filter((r) => r.empleado_asignado_id === empleado?.id);
 
   return (
     <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
-      {/* Cabecera unificada */}
+      {/* Cabecera con Botón de Retorno a la derecha */}
       <header className="border-b border-white/10 bg-[#08090d]/80 px-6 py-4 flex items-center justify-between">
+        {/* Lado izquierdo: Logotipo y descripción */}
         <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-500/30 bg-cyan-950/40 text-cyan-400">
+            <KeyRound className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="font-bold text-white text-base tracking-wide flex items-center gap-2">
+              NEXUS <span className="text-cyan-400">PORTAL DEL EQUIPO</span>
+            </h1>
+            <p className="text-[11px] text-slate-400">Gestión de Personal · Chinales 45</p>
+          </div>
+        </div>
+
+        {/* Lado derecho: Botón unificado y Reloj */}
+        <div className="flex items-center gap-4">
           <button
             type="button"
             onClick={volverAWebPrincipal}
@@ -607,20 +619,14 @@ export default function StaffPortal() {
             <ArrowLeft className="h-4 w-4" />
             <span>Volver a la web principal</span>
           </button>
-          <div className="hidden sm:block">
-            <h1 className="font-bold text-white text-base tracking-wide flex items-center gap-2">
-              NEXUS <span className="text-cyan-400">PORTAL DEL EQUIPO</span>
-            </h1>
-            <p className="text-[11px] text-slate-400">Gestión de Personal · Chinales 45</p>
-          </div>
-        </div>
 
-        <div className="text-right">
-          <div className="text-xl sm:text-2xl font-mono font-bold text-cyan-400">
-            {horaActual.toLocaleTimeString('es-ES')}
-          </div>
-          <div className="text-xs text-slate-400 capitalize">
-            {horaActual.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' })}
+          <div className="text-right border-l border-white/10 pl-4 hidden sm:block">
+            <div className="text-xl font-mono font-bold text-cyan-400">
+              {horaActual.toLocaleTimeString('es-ES')}
+            </div>
+            <div className="text-xs text-slate-400 capitalize">
+              {horaActual.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' })}
+            </div>
           </div>
         </div>
       </header>
@@ -813,13 +819,13 @@ export default function StaffPortal() {
                                 <>
                                   <button
                                     onClick={() => resolverSolicitud(sol.id, 'aprobado')}
-                                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs"
+                                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs cursor-pointer"
                                   >
                                     Aprobar
                                   </button>
                                   <button
                                     onClick={() => resolverSolicitud(sol.id, 'rechazado')}
-                                    className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs"
+                                    className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs cursor-pointer"
                                   >
                                     Rechazar
                                   </button>
@@ -913,7 +919,6 @@ export default function StaffPortal() {
                           </div>
                         )}
 
-                        {/* Desplegable para Asignar Monitor de Forma Manual */}
                         <div className="pt-2 border-t border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                           <div className="flex items-center gap-2 text-slate-300">
                             <UserCheck className="h-4 w-4 text-cyan-400 shrink-0" />
@@ -921,7 +926,7 @@ export default function StaffPortal() {
                             <select
                               value={r.empleado_asignado_id || ''}
                               onChange={(e) => asignarEmpleadoAReserva(r.id, e.target.value)}
-                              className="bg-black/50 border border-white/15 rounded-xl px-2.5 py-1 text-xs text-white focus:border-cyan-400 outline-none"
+                              className="bg-black/50 border border-white/15 rounded-xl px-2.5 py-1 text-xs text-white focus:border-cyan-400 outline-none cursor-pointer"
                             >
                               <option value="">-- Sin asignar --</option>
                               {listaEmpleados.map((emp) => (
@@ -1032,7 +1037,7 @@ export default function StaffPortal() {
                   </button>
                 </div>
 
-                {/* Pestañas de trabajador (incluye Salidas) */}
+                {/* Pestañas de trabajador */}
                 <div className="grid grid-cols-5 gap-1 p-1 bg-white/[0.03] border border-white/5 rounded-2xl text-[11px] font-semibold">
                   <button
                     onClick={() => setTabActiva('fichar')}
@@ -1189,7 +1194,7 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* 3. Salidas Asignadas al Empleado (con botón a Google Calendar) */}
+                {/* 3. Salidas Asignadas al Empleado */}
                 {tabActiva === 'salidas' && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
@@ -1276,7 +1281,7 @@ export default function StaffPortal() {
                         <select
                           value={tipoPermiso}
                           onChange={(e) => setTipoPermiso(e.target.value)}
-                          className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white"
+                          className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white cursor-pointer"
                         >
                           <option value="vacaciones">Vacaciones</option>
                           <option value="asuntos_propios">Asuntos Propios</option>
@@ -1310,7 +1315,7 @@ export default function StaffPortal() {
                       <button
                         type="submit"
                         disabled={enviandoPermiso}
-                        className="w-full py-2.5 rounded-xl bg-cyan-500 font-bold text-slate-950 text-xs hover:bg-cyan-400"
+                        className="w-full py-2.5 rounded-xl bg-cyan-500 font-bold text-slate-950 text-xs hover:bg-cyan-400 cursor-pointer"
                       >
                         {enviandoPermiso ? 'Enviando...' : 'Enviar Solicitud'}
                       </button>
@@ -1349,7 +1354,7 @@ export default function StaffPortal() {
                   <div className="pt-3 border-t border-white/10">
                     <button
                       onClick={() => setVistaAdmin(true)}
-                      className="w-full py-2.5 rounded-xl border border-cyan-500/30 bg-cyan-950/30 hover:bg-cyan-900/40 text-cyan-400 text-xs font-bold flex items-center justify-center gap-2"
+                      className="w-full py-2.5 rounded-xl border border-cyan-500/30 bg-cyan-950/30 hover:bg-cyan-900/40 text-cyan-400 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Users className="h-4 w-4" />
                       Abrir Panel de Supervisión y Salidas
@@ -1388,14 +1393,14 @@ export default function StaffPortal() {
               <button
                 type="button"
                 onClick={() => setFichajeAConfirmar(null)}
-                className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-300"
+                className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-300 cursor-pointer"
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={confirmarYRegistrarFichaje}
-                className="py-2.5 rounded-xl bg-cyan-500 text-xs text-slate-950 font-bold"
+                className="py-2.5 rounded-xl bg-cyan-500 text-xs text-slate-950 font-bold cursor-pointer"
               >
                 Sí, registrar
               </button>
