@@ -17,7 +17,9 @@ import {
   HelpCircle, 
   KeyRound, 
   MapPin, 
-  Phone 
+  Phone,
+  UserCheck,
+  CalendarPlus
 } from 'lucide-react';
 
 interface Empleado {
@@ -89,6 +91,11 @@ interface ReservaEscape {
   nombre_centro_educativo?: string;
   observaciones?: string;
   estado: string;
+  empleado_asignado_id?: string | null;
+  empleados?: {
+    nombre: string;
+    apellidos: string;
+  };
 }
 
 type TipoFichaje = 'entrada' | 'inicio_descanso' | 'fin_descanso' | 'salida';
@@ -109,6 +116,7 @@ export default function StaffPortal() {
   const [turnos, setTurnos] = useState<Turno[]>([]);
   const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
   const [reservasEscape, setReservasEscape] = useState<ReservaEscape[]>([]);
+  const [listaEmpleados, setListaEmpleados] = useState<Empleado[]>([]);
 
   // Formulario de permisos
   const [tipoPermiso, setTipoPermiso] = useState('vacaciones');
@@ -164,12 +172,41 @@ export default function StaffPortal() {
     const hoy = new Date().toISOString().slice(0, 10);
     const { data } = await supabase
       .from('reservas_escape_room')
-      .select('*')
+      .select('*, empleados(nombre, apellidos)')
       .gte('fecha_evento', hoy)
       .order('fecha_evento', { ascending: true });
 
     if (data) {
-      setReservasEscape(data);
+      setReservasEscape(data as ReservaEscape[]);
+    }
+  };
+
+  const cargarEmpleadosActivos = async () => {
+    const { data } = await supabase
+      .from('empleados')
+      .select('*')
+      .eq('activo', true)
+      .order('nombre', { ascending: true });
+
+    if (data) {
+      setListaEmpleados(data);
+    }
+  };
+
+  const asignarEmpleadoAReserva = async (reservaId: string, empId: string | null) => {
+    try {
+      const { error } = await supabase
+        .from('reservas_escape_room')
+        .update({ empleado_asignado_id: empId || null })
+        .eq('id', reservaId);
+
+      if (error) throw error;
+
+      setMensaje({ tipo: 'ok', texto: 'Monitor asignado a la reserva correctamente.' });
+      cargarReservasEscape();
+      setTimeout(() => setMensaje(null), 3000);
+    } catch (err: any) {
+      setMensaje({ tipo: 'error', texto: 'No se pudo asignar el monitor: ' + err.message });
     }
   };
 
@@ -237,6 +274,7 @@ export default function StaffPortal() {
 
     if (empleado.rol === 'admin') {
       cargarTodasSolicitudesAdmin();
+      cargarEmpleadosActivos();
     }
   }, [empleado]);
 
@@ -480,6 +518,7 @@ export default function StaffPortal() {
     }
     if (vistaAdmin && tabAdmin === 'escapes') {
       cargarReservasEscape();
+      cargarEmpleadosActivos();
     }
   }, [vistaAdmin, tabAdmin, filtroPeriodo]);
 
@@ -524,7 +563,36 @@ export default function StaffPortal() {
     }
   };
 
+  // Generador de enlace a Google Calendar
+  const generarLinkGoogleCalendar = (reserva: ReservaEscape) => {
+    const fechaLimpia = reserva.fecha_evento.replace(/-/g, '');
+    const [h, m] = (reserva.hora_preferente || '17:00').split(':');
+    const horaInicioNum = parseInt(h, 10);
+    const duracionHoras = reserva.modalidad === 'colegio' ? 7 : (reserva.num_sesiones || 1);
+    const horaFinNum = Math.min(horaInicioNum + duracionHoras, 23);
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const startIso = `${fechaLimpia}T${pad(horaInicioNum)}${m || '00'}00`;
+    const endIso = `${fechaLimpia}T${pad(horaFinNum)}${m || '00'}00`;
+
+    const titulo = encodeURIComponent(`Escape Room Nexus: ${reserva.nombre_contacto} (${reserva.modalidad.toUpperCase()})`);
+    const ubicacion = encodeURIComponent(reserva.lugar_celebracion || 'Córdoba');
+    const detalles = encodeURIComponent(
+      `Contacto: ${reserva.nombre_contacto} (Tel: ${reserva.telefono_contacto})\n` +
+      `Temática: ${reserva.tematica || 'General'}\n` +
+      `Sesiones/Duración: ${duracionHoras} hora/s\n` +
+      `Detalles: ${reserva.observaciones || ''}`
+    );
+
+    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${titulo}&dates=${startIso}/${endIso}&details=${detalles}&location=${ubicacion}`;
+  };
+
   const totalPendientes = todasSolicitudes.filter((s) => s.estado === 'pendiente').length;
+
+  // Filtrado de salidas para el empleado actual
+  const misSalidasAsignadas = empleado?.rol === 'admin' 
+    ? reservasEscape 
+    : reservasEscape.filter((r) => r.empleado_asignado_id === empleado?.id);
 
   return (
     <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
@@ -565,7 +633,7 @@ export default function StaffPortal() {
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
               <div>
                 <span className="text-xs text-cyan-400 font-semibold uppercase tracking-wider">Panel de Control Directivo</span>
-                <h2 className="text-2xl font-bold text-white">Supervisión General</h2>
+                <h2 className="text-2xl font-bold text-white">Supervisión y Asignaciones</h2>
               </div>
               <div className="flex items-center gap-2">
                 {tabAdmin === 'fichajes' && (
@@ -777,39 +845,41 @@ export default function StaffPortal() {
               </div>
             )}
 
-            {/* TAB ADMIN 3: SALIDAS ESCAPE ROOM */}
+            {/* TAB ADMIN 3: SALIDAS ESCAPE ROOM CON ASIGNACIÓN MANUAL */}
             {tabAdmin === 'escapes' && (
               <div className="space-y-4">
                 <div className="text-xs text-slate-400 flex justify-between">
-                  <span>Próximas salidas y eventos confirmados</span>
-                  <span>{reservasEscape.length} reservas programadas</span>
+                  <span>Asignación de monitores y gestión de salidas</span>
+                  <span>{reservasEscape.length} reservas registradas</span>
                 </div>
 
                 {reservasEscape.length === 0 ? (
                   <div className="py-12 text-center text-xs text-slate-500">No hay reservas programadas próximamente.</div>
                 ) : (
-                  <div className="space-y-3 max-h-[420px] overflow-y-auto">
+                  <div className="space-y-4 max-h-[440px] overflow-y-auto">
                     {reservasEscape.map((r) => (
                       <div key={r.id} className="p-4 rounded-2xl bg-white/[0.02] border border-white/10 space-y-3">
                         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                           <div>
-                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-cyan-950 border border-cyan-500/30 text-cyan-300">
-                              {r.modalidad.toUpperCase()}
-                            </span>
-                            <h4 className="text-base font-bold text-white mt-1">
-                              {r.nombre_contacto} {r.nombre_centro_educativo ? `(${r.nombre_centro_educativo})` : ''}
-                            </h4>
-                            <p className="text-xs text-slate-300">
-                              📅 {new Date(r.fecha_evento).toLocaleDateString('es-ES')} · Hora: <strong>{r.hora_preferente}</strong> ({r.num_sesiones} sesión/es)
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-cyan-950 border border-cyan-500/30 text-cyan-300">
+                                {r.modalidad.toUpperCase()}
+                              </span>
+                              <span className="text-xs font-bold text-white">
+                                {r.nombre_contacto} {r.nombre_centro_educativo ? `(${r.nombre_centro_educativo})` : ''}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-300 mt-1">
+                              📅 {new Date(r.fecha_evento + 'T00:00:00').toLocaleDateString('es-ES')} · Hora: <strong>{r.hora_preferente}</strong> ({r.num_sesiones} sesión/es)
                             </p>
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <a
                               href={`tel:${r.telefono_contacto}`}
-                              className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-200 flex items-center gap-1.5"
+                              className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-200 flex items-center gap-1"
                             >
-                              <Phone className="h-3.5 w-3.5 text-cyan-400" />
+                              <Phone className="h-3 w-3 text-cyan-400" />
                               {r.telefono_contacto}
                             </a>
                             {r.lugar_celebracion && (
@@ -817,12 +887,22 @@ export default function StaffPortal() {
                                 href={`https://maps.google.com/?q=${encodeURIComponent(r.lugar_celebracion)}`}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="px-3 py-1.5 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs flex items-center gap-1 hover:bg-cyan-400"
+                                className="px-2.5 py-1.5 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs flex items-center gap-1 hover:bg-cyan-400"
                               >
-                                <MapPin className="h-3.5 w-3.5" />
+                                <MapPin className="h-3 w-3" />
                                 GPS
                               </a>
                             )}
+                            <a
+                              href={generarLinkGoogleCalendar(r)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs flex items-center gap-1"
+                              title="Agendar en Google Calendar"
+                            >
+                              <CalendarPlus className="h-3.5 w-3.5 text-cyan-400" />
+                              Calendar
+                            </a>
                           </div>
                         </div>
 
@@ -833,11 +913,35 @@ export default function StaffPortal() {
                           </div>
                         )}
 
-                        {r.observaciones && (
-                          <p className="text-[11px] text-slate-400 italic bg-black/40 p-2.5 rounded-xl border border-white/5">
-                            {r.observaciones}
-                          </p>
-                        )}
+                        {/* Desplegable para Asignar Monitor de Forma Manual */}
+                        <div className="pt-2 border-t border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-2 text-slate-300">
+                            <UserCheck className="h-4 w-4 text-cyan-400 shrink-0" />
+                            <span>Monitor responsable:</span>
+                            <select
+                              value={r.empleado_asignado_id || ''}
+                              onChange={(e) => asignarEmpleadoAReserva(r.id, e.target.value)}
+                              className="bg-black/50 border border-white/15 rounded-xl px-2.5 py-1 text-xs text-white focus:border-cyan-400 outline-none"
+                            >
+                              <option value="">-- Sin asignar --</option>
+                              {listaEmpleados.map((emp) => (
+                                <option key={emp.id} value={emp.id}>
+                                  {emp.nombre} {emp.apellidos}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {r.empleados ? (
+                            <span className="text-[11px] text-emerald-400 font-semibold">
+                              ✓ Asignado a {r.empleados.nombre}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-amber-400 font-semibold">
+                              ⚠️ Pendiente de asignar monitor
+                            </span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -928,7 +1032,7 @@ export default function StaffPortal() {
                   </button>
                 </div>
 
-                {/* Pestañas de trabajador (incluye Salidas Escape) */}
+                {/* Pestañas de trabajador (incluye Salidas) */}
                 <div className="grid grid-cols-5 gap-1 p-1 bg-white/[0.03] border border-white/5 rounded-2xl text-[11px] font-semibold">
                   <button
                     onClick={() => setTabActiva('fichar')}
@@ -1085,19 +1189,21 @@ export default function StaffPortal() {
                   </div>
                 )}
 
-                {/* 3. Salidas Escape Room */}
+                {/* 3. Salidas Asignadas al Empleado (con botón a Google Calendar) */}
                 {tabActiva === 'salidas' && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-white">Próximas Salidas Escape</h3>
-                      <span className="text-[11px] text-cyan-400">{reservasEscape.length} programadas</span>
+                      <h3 className="text-sm font-bold text-white">Mis Salidas Asignadas</h3>
+                      <span className="text-[11px] text-cyan-400">{misSalidasAsignadas.length} programadas</span>
                     </div>
 
-                    {reservasEscape.length === 0 ? (
-                      <p className="text-xs text-slate-500 text-center py-6">No hay salidas programadas para estos días.</p>
+                    {misSalidasAsignadas.length === 0 ? (
+                      <p className="text-xs text-slate-500 text-center py-6">
+                        No tienes ninguna salida asignada para estos días.
+                      </p>
                     ) : (
                       <div className="space-y-3 max-h-72 overflow-y-auto">
-                        {reservasEscape.map((r) => (
+                        {misSalidasAsignadas.map((r) => (
                           <div key={r.id} className="p-3.5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-2.5">
                             <div className="flex items-start justify-between gap-2">
                               <div>
@@ -1106,11 +1212,11 @@ export default function StaffPortal() {
                                 </span>
                                 <h4 className="font-bold text-white text-xs mt-1">{r.nombre_contacto}</h4>
                                 <span className="text-[11px] text-slate-400 block">
-                                  📅 {new Date(r.fecha_evento).toLocaleDateString('es-ES')} · <strong>{r.hora_preferente}</strong>
+                                  📅 {new Date(r.fecha_evento + 'T00:00:00').toLocaleDateString('es-ES')} · <strong>{r.hora_preferente}</strong> ({r.num_sesiones} h)
                                 </span>
                               </div>
 
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <a
                                   href={`tel:${r.telefono_contacto}`}
                                   className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-cyan-400 flex items-center gap-1"
@@ -1126,9 +1232,19 @@ export default function StaffPortal() {
                                     className="px-2.5 py-1.5 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs flex items-center gap-1 hover:bg-cyan-400"
                                   >
                                     <MapPin className="h-3.5 w-3.5" />
-                                    Maps
+                                    GPS
                                   </a>
                                 )}
+                                <a
+                                  href={generarLinkGoogleCalendar(r)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs flex items-center gap-1"
+                                  title="Añadir a mi Google Calendar"
+                                >
+                                  <CalendarPlus className="h-3.5 w-3.5 text-cyan-400" />
+                                  Calendar
+                                </a>
                               </div>
                             </div>
 
@@ -1137,6 +1253,12 @@ export default function StaffPortal() {
                                 <MapPin className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
                                 <span className="truncate">{r.lugar_celebracion}</span>
                               </div>
+                            )}
+
+                            {r.observaciones && (
+                              <p className="text-[11px] text-slate-400 italic bg-black/40 p-2.5 rounded-xl border border-white/5">
+                                {r.observaciones}
+                              </p>
                             )}
                           </div>
                         ))}
