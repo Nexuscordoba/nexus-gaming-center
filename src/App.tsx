@@ -15,34 +15,36 @@ import {
   CheckCircle2, 
   Phone, 
   ArrowLeft, 
-  KeyRound 
+  KeyRound,
+  TrendingUp
 } from 'lucide-react';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
+import LoyverseDashboard from './LoyverseDashboard';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
-  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape'>('main');
+  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas'>('main');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
-  // Detección de subdominios y hash de vista (#bar)
   useEffect(() => {
     const handleRouting = () => {
       const hostname = window.location.hostname.toLowerCase();
       const hash = window.location.hash.toLowerCase();
 
-      // Enrutamiento por subdominio
       if (hostname.startsWith('equipo.')) {
         setSubdomainRoute('staff');
         return;
       } else if (hostname.startsWith('escape.')) {
         setSubdomainRoute('escape');
         return;
+      } else if (hostname.startsWith('ventas.') || hostname.startsWith('tpv.')) {
+        setSubdomainRoute('ventas');
+        return;
       } else {
         setSubdomainRoute('main');
       }
 
-      // Enrutamiento dentro del portal principal
       if (hash === '#bar' || hash === '#/bar') {
         setCurrentView('bar');
         window.scrollTo(0, 0);
@@ -50,6 +52,8 @@ export default function App() {
         setSubdomainRoute('staff');
       } else if (hash === '#escape' || hash === '#escaperooms') {
         setSubdomainRoute('escape');
+      } else if (hash === '#ventas' || hash === '#tpv') {
+        setSubdomainRoute('ventas');
       } else {
         setCurrentView('home');
       }
@@ -103,6 +107,11 @@ export default function App() {
         </footer>
       </div>
     );
+  }
+
+  // Subdominio ventas.nexusgamingcenter.es
+  if (subdomainRoute === 'ventas') {
+    return <LoyverseDashboard />;
   }
 
   return (
@@ -544,6 +553,13 @@ export default function App() {
             <span className="flex items-center gap-1">
               <Shield className="h-3.5 w-3.5" /> Empresa registrada
             </span>
+            <span>·</span>
+            <a 
+              href="https://ventas.nexusgamingcenter.es" 
+              className="flex items-center gap-1 hover:text-cyan-400 transition-colors"
+            >
+              <TrendingUp className="h-3 w-3" /> Panel Finanzas & TPV
+            </a>
             <span>·</span>
             <a 
               href="https://equipo.nexusgamingcenter.es" 
