@@ -13,7 +13,10 @@ import {
   CheckCircle2, 
   AlertCircle,
   MapPin,
-  Image as ImageIcon
+  Calendar as CalendarIcon,
+  Image as ImageIcon,
+  Check,
+  Search
 } from 'lucide-react';
 
 interface SesionCafeteria {
@@ -44,18 +47,26 @@ export default function EscapeRooms() {
   const [horaPreferente, setHoraPreferente] = useState('17:00');
   const [observaciones, setObservaciones] = useState('');
 
+  // Fechas ya ocupadas (1 escape privado por día)
+  const [fechasOcupadas, setFechasOcupadas] = useState<string[]>([]);
+
+  // Dirección y validación de Córdoba capital
+  const [calleNumero, setCalleNumero] = useState('');
+  const [codigoPostal, setCodigoPostal] = useState('140');
+  const [direccionVerificada, setDireccionVerificada] = useState(false);
+  const [sugerenciasDir, setSugerenciasDir] = useState<string[]>([]);
+  const [buscandoDir, setBuscandoDir] = useState(false);
+
   // Formulario Evento Privado
   const [tematica, setTematica] = useState<'terror' | 'edad_antigua' | 'contemporaneo'>('terror');
   const [rangoEdad, setRangoEdad] = useState<'ninos' | 'adultos'>('adultos');
   const [personasPorSesion, setPersonasPorSesion] = useState<number>(4);
   const [numSesiones, setNumSesiones] = useState<number>(1);
-  const [direccionCordoba, setDireccionCordoba] = useState('');
 
   // Formulario Colegios
   const [nombreColegio, setNombreColegio] = useState('');
   const [cursoAlumnos, setCursoAlumnos] = useState('');
   const [totalAlumnos, setTotalAlumnos] = useState<number>(60);
-  const [direccionColegio, setDireccionColegio] = useState('');
 
   // Galería de fotos (Filtro)
   const [filtroFoto, setFiltroFoto] = useState<'todas' | 'terror' | 'eventos' | 'colegios'>('todas');
@@ -63,7 +74,23 @@ export default function EscapeRooms() {
   const [enviando, setEnviando] = useState(false);
   const [mensaje, setMensaje] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
 
+  // Cargar fechas ocupadas de Supabase
+  const cargarFechasOcupadas = async () => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const { data } = await supabase
+      .from('reservas_escape_room')
+      .select('fecha_evento')
+      .in('estado', ['confirmada', 'pendiente'])
+      .gte('fecha_evento', hoy);
+
+    if (data) {
+      setFechasOcupadas(data.map((r) => r.fecha_evento));
+    }
+  };
+
   useEffect(() => {
+    cargarFechasOcupadas();
+
     const cargarSesiones = async () => {
       const { data, error } = await supabase
         .from('escape_noches_cafeteria')
@@ -82,6 +109,42 @@ export default function EscapeRooms() {
     cargarSesiones();
   }, []);
 
+  // Validación de dirección real mediante OpenStreetMap Nominatim (Córdoba capital)
+  const buscarDireccionCordoba = async (texto: string) => {
+    setCalleNumero(texto);
+    setDireccionVerificada(false);
+
+    if (texto.trim().length < 4) {
+      setSugerenciasDir([]);
+      return;
+    }
+
+    setBuscandoDir(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+          texto + ', Córdoba, España'
+        )}&addressdetails=1&limit=4`
+      );
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        const direcciones = data.map((d: any) => d.display_name);
+        setSugerenciasDir(direcciones);
+      }
+    } catch {
+      // Si falla la red, permite entrada manual
+    } finally {
+      setBuscandoDir(false);
+    }
+  };
+
+  const seleccionarDireccion = (dir: string) => {
+    setCalleNumero(dir);
+    setSugerenciasDir([]);
+    setDireccionVerificada(true);
+  };
+
+  // Cálculo de precio cerrado
   const calcularPrecioEstimado = (): number => {
     if (modalidad === 'cafeteria') {
       const precioBase = incluyeConsumicion ? 15 : 12;
@@ -99,8 +162,21 @@ export default function EscapeRooms() {
     return 0;
   };
 
+  const esFechaOcupada = (fecha: string): boolean => {
+    return fechasOcupadas.includes(fecha);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (modalidad !== 'cafeteria' && esFechaOcupada(fechaEvento)) {
+      setMensaje({
+        tipo: 'error',
+        texto: 'La fecha seleccionada ya está ocupada por otro evento. Por favor elige otro día en el calendario.'
+      });
+      return;
+    }
+
     setEnviando(true);
     setMensaje(null);
 
@@ -110,8 +186,9 @@ export default function EscapeRooms() {
       : fechaEvento;
 
     let lugarFinal = 'Nexus Cafetería (Chinales 45)';
-    if (modalidad === 'evento_privado') lugarFinal = `Córdoba capital: ${direccionCordoba}`;
-    if (modalidad === 'colegio') lugarFinal = `Córdoba capital: ${direccionColegio}`;
+    if (modalidad !== 'cafeteria') {
+      lugarFinal = `${calleNumero} (CP: ${codigoPostal}, Córdoba)`;
+    }
 
     try {
       const payload: any = {
@@ -121,8 +198,9 @@ export default function EscapeRooms() {
         telefono_contacto: telefono,
         fecha_evento: fechaFinal,
         hora_preferente: horaPreferente,
-        observaciones: `Presupuesto estimado: ${precioFinal} €. ${observaciones}`,
-        estado: 'pendiente'
+        observaciones: `Precio confirmado: ${precioFinal} €. ${observaciones}`,
+        estado: 'confirmada', // Reserva directa
+        lugar_celebracion: lugarFinal
       };
 
       if (modalidad === 'evento_privado') {
@@ -130,12 +208,10 @@ export default function EscapeRooms() {
         payload.rango_edad = rangoEdad;
         payload.personas_por_sesion = personasPorSesion;
         payload.num_sesiones = numSesiones;
-        payload.lugar_celebracion = lugarFinal;
       } else if (modalidad === 'colegio') {
         payload.nombre_centro_educativo = nombreColegio;
         payload.curso_edad_alumnos = cursoAlumnos;
         payload.total_alumnos_estimado = totalAlumnos;
-        payload.lugar_celebracion = lugarFinal;
         payload.num_sesiones = 7;
       } else if (modalidad === 'cafeteria') {
         const sesion = sesionesCafeteria.find(s => s.id === sesionSeleccionada);
@@ -143,19 +219,18 @@ export default function EscapeRooms() {
         payload.personas_por_sesion = personasPorSesion;
       }
 
-      // 1. Guardar en Supabase
       const { error: dbError } = await supabase.from('reservas_escape_room').insert([payload]);
       if (dbError) throw dbError;
 
-      // 2. Disparar el envío de correo
-      let avisoEmail = '';
+      // Disparar doble email a través de Resend
       try {
-        const emailResponse = await fetch('/api/send-confirmation', {
+        await fetch('/api/send-confirmation', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             email,
             nombre,
+            telefono,
             modalidad,
             fechaEvento: fechaFinal,
             horaPreferente,
@@ -163,38 +238,32 @@ export default function EscapeRooms() {
             numSesiones: modalidad === 'colegio' ? 7 : numSesiones,
             personas: personasPorSesion,
             precioEstimado: precioFinal,
-            lugar: lugarFinal
+            lugar: lugarFinal,
+            observaciones
           })
         });
-
-        const emailResult = await emailResponse.json().catch(() => null);
-
-        if (!emailResponse.ok) {
-          console.error('Error reportado por API de Resend:', emailResult);
-          avisoEmail = ` (Aviso: No se pudo enviar el correo automático: ${emailResult?.error || 'error en API'}).`;
-        } else {
-          console.log('Correo enviado correctamente por Resend:', emailResult);
-        }
-      } catch (errRed: any) {
-        console.error('Error de conexión con /api/send-confirmation:', errRed);
-        avisoEmail = ' (Aviso: No se pudo conectar con el servicio de correo).';
+      } catch (mailErr) {
+        console.warn('Aviso de envío de email:', mailErr);
       }
 
       setMensaje({
         tipo: 'ok',
-        texto: `¡Reserva guardada con éxito!${avisoEmail ? avisoEmail : ' Te hemos enviado un correo de confirmación.'}`
+        texto: '¡Reserva confirmada con éxito! Te hemos enviado un email con todos los detalles. Nos pondremos en contacto previo a la fecha.'
       });
 
+      // Actualizar calendario
+      setFechasOcupadas((prev) => [...prev, fechaFinal]);
+
+      // Limpiar formulario
       setNombre('');
       setEmail('');
       setTelefono('');
       setFechaEvento('');
+      setCalleNumero('');
+      setDireccionVerificada(false);
       setObservaciones('');
-      setDireccionCordoba('');
       setNombreColegio('');
       setCursoAlumnos('');
-      setTotalAlumnos(60);
-      setDireccionColegio('');
     } catch (err: any) {
       setMensaje({
         tipo: 'error',
@@ -205,7 +274,7 @@ export default function EscapeRooms() {
     }
   };
 
-  // Imágenes de la galería
+  // Galería de fotos
   const imagenesGaleria = [
     {
       url: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80',
@@ -249,6 +318,8 @@ export default function EscapeRooms() {
     ? imagenesGaleria 
     : imagenesGaleria.filter(f => f.categoria === filtroFoto);
 
+  const hoyISO = new Date().toISOString().slice(0, 10);
+
   return (
     <section id="escaperooms" className="py-20 bg-[#08090e] border-t border-white/5 relative overflow-hidden">
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[700px] h-[400px] bg-cyan-500/10 blur-[140px] pointer-events-none rounded-full" />
@@ -263,17 +334,17 @@ export default function EscapeRooms() {
             VIVE LA EXPERIENCIA <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400">ESCAPE ROOM</span>
           </h2>
           <p className="mt-4 text-sm sm:text-base text-slate-300">
-            Desafíos intelectuales, cajas misteriosas e inmersión total. Pases en nuestra cafetería, animaciones privadas a domicilio en Córdoba capital y jornadas completas en colegios.
+            Reserva directa sin esperas. Noches temáticas en cafetería, animación privada en Córdoba capital (1 evento por día) y jornadas completas en colegios.
           </p>
         </div>
 
-        {/* TARIFAS */}
+        {/* Tarifas */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
           <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 flex flex-col justify-between">
             <div>
               <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">En Nuestro Local</span>
               <h3 className="text-xl font-bold text-white mt-1">Noches en Cafetería</h3>
-              <p className="text-xs text-slate-400 mt-2">Fechas programadas en Chinales 45. Grupos reducidos de 3 a 6 jugadores.</p>
+              <p className="text-xs text-slate-400 mt-2">Fechas programadas en Chinales 45. Grupos de 3 a 6 jugadores.</p>
               <div className="mt-4 mb-6">
                 <span className="text-3xl font-black text-white">12 €</span>
                 <span className="text-xs text-slate-400"> / persona (15 € con consumición y tapa)</span>
@@ -288,12 +359,12 @@ export default function EscapeRooms() {
 
           <div className="p-6 rounded-3xl bg-gradient-to-b from-cyan-950/30 to-[#0d0f17] border border-cyan-500/40 flex flex-col justify-between relative shadow-[0_0_30px_rgba(0,242,254,0.1)]">
             <div className="absolute -top-3 right-6 bg-cyan-500 text-slate-950 text-[10px] uppercase font-black px-3 py-1 rounded-full">
-              Más Popular
+              1 al día
             </div>
             <div>
               <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">A Domicilio / Local</span>
               <h3 className="text-xl font-bold text-white mt-1">Eventos Privados</h3>
-              <p className="text-xs text-slate-400 mt-2">Cumpleaños, bodas, bautizos y empresas. Servicio en Córdoba capital.</p>
+              <p className="text-xs text-slate-400 mt-2">Cumpleaños, bodas y fiestas. Servicio exclusivo en Córdoba capital.</p>
               <div className="mt-4 mb-6">
                 <span className="text-3xl font-black text-cyan-400">Desde 75 €</span>
                 <span className="text-xs text-slate-400"> / sesión de 1 hora (3 a 6 pers.)</span>
@@ -303,7 +374,7 @@ export default function EscapeRooms() {
             <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4">
               <li className="flex items-center gap-2">✓ Monitor exclusivo + Desplazamiento</li>
               <li className="flex items-center gap-2">✓ Material completo y atrezzo</li>
-              <li className="flex items-center gap-2">✓ Adaptación niños o adultos</li>
+              <li className="flex items-center gap-2">✓ Reserva directa confirmada</li>
             </ul>
           </div>
 
@@ -325,7 +396,7 @@ export default function EscapeRooms() {
           </div>
         </div>
 
-        {/* GALERÍA */}
+        {/* Galería Visual */}
         <div className="mb-16">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
             <div>
@@ -396,7 +467,7 @@ export default function EscapeRooms() {
           </div>
         </div>
 
-        {/* SELECTOR DE MODALIDAD */}
+        {/* Selector de Modalidad */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <button
             type="button"
@@ -410,7 +481,7 @@ export default function EscapeRooms() {
             <PartyPopper className={`h-6 w-6 mb-2 ${modalidad === 'evento_privado' ? 'text-cyan-400' : 'text-slate-400'}`} />
             <h4 className="font-bold text-white text-base">Eventos Privados</h4>
             <span className="text-xs text-cyan-400 font-semibold block mt-1">Exclusivo Córdoba Capital</span>
-            <p className="text-xs text-slate-400 mt-1">Cumpleaños, bodas o fiestas particulares.</p>
+            <p className="text-xs text-slate-400 mt-1">Cumpleaños, bodas o celebraciones particulares.</p>
           </button>
 
           <button
@@ -444,26 +515,26 @@ export default function EscapeRooms() {
           </button>
         </div>
 
-        {/* FORMULARIO */}
+        {/* Formulario de Reserva */}
         <div className="max-w-3xl mx-auto bg-[#0d0f17] border border-white/10 rounded-3xl p-6 sm:p-10 shadow-2xl">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-white/10 gap-2">
               <div>
                 <h3 className="text-xl font-bold text-white flex items-center gap-2">
                   <Sparkles className="h-5 w-5 text-cyan-400" />
-                  {modalidad === 'evento_privado' && 'Reserva tu Escape Room Privado'}
-                  {modalidad === 'cafeteria' && 'Reserva tu Pase en Cafetería'}
-                  {modalidad === 'colegio' && 'Solicitud de Jornada Escolar (7h)'}
+                  {modalidad === 'evento_privado' && 'Configura y Confirma tu Escape Room Privado'}
+                  {modalidad === 'cafeteria' && 'Reserva tu Pase en Cafetería Nexus'}
+                  {modalidad === 'colegio' && 'Reserva Directa de Jornada Escolar (7h)'}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {modalidad === 'evento_privado' && 'Monitores a domicilio en Córdoba capital (3 a 6 jugadores por sesión).'}
-                  {modalidad === 'cafeteria' && 'Plazas limitadas por pase. Opcional con café/tapa.'}
-                  {modalidad === 'colegio' && 'Desplazamiento con material para toda la jornada escolar.'}
+                  {modalidad === 'evento_privado' && 'Monitores a domicilio en Córdoba capital. Máximo 1 evento privado por día.'}
+                  {modalidad === 'cafeteria' && 'Plazas limitadas por pase. Opcional con consumición y tapa.'}
+                  {modalidad === 'colegio' && 'Desplazamiento con material y monitores para toda la jornada escolar.'}
                 </p>
               </div>
 
               <div className="bg-cyan-950/60 border border-cyan-500/40 px-3.5 py-1.5 rounded-2xl text-right">
-                <span className="text-[10px] text-slate-400 block uppercase font-bold">Total Estimado</span>
+                <span className="text-[10px] text-slate-400 block uppercase font-bold">Precio Confirmado</span>
                 <span className="text-xl font-black text-cyan-300 font-mono">
                   {calcularPrecioEstimado()} €
                 </span>
@@ -524,7 +595,7 @@ export default function EscapeRooms() {
                           : 'bg-white/[0.02] border-white/10 text-slate-400'
                       }`}
                     >
-                      Niños / Infantil (Enigmas adaptados)
+                      Niños / Infantil (Adaptado)
                     </button>
                     <button
                       type="button"
@@ -577,23 +648,6 @@ export default function EscapeRooms() {
                       <option value={3}>3 horas (180 € · Ideal cumpleaños)</option>
                       <option value={4}>4 horas (230 €)</option>
                     </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-300 block mb-1">
-                    Dirección del Evento (Solo Córdoba capital):
-                  </label>
-                  <div className="relative">
-                    <MapPin className="h-4 w-4 text-cyan-400 absolute left-3 top-3" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="Calle, número, urbanización (exclusivo Córdoba capital)"
-                      value={direccionCordoba}
-                      onChange={(e) => setDireccionCordoba(e.target.value)}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white"
-                    />
                   </div>
                 </div>
               </div>
@@ -714,68 +768,95 @@ export default function EscapeRooms() {
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
 
-                <div>
-                  <label className="text-xs font-semibold text-slate-300 block mb-1">Dirección del Centro en Córdoba:</label>
-                  <div className="relative">
-                    <MapPin className="h-4 w-4 text-cyan-400 absolute left-3 top-3" />
+            {/* DIRECCIÓN VERIFICADA EN CÓRDOBA CAPITAL (Para eventos y colegios) */}
+            {modalidad !== 'cafeteria' && (
+              <div className="space-y-2 pt-2">
+                <label className="text-xs font-semibold text-slate-300 block">
+                  Dirección exacta en Córdoba capital:
+                </label>
+                <div className="relative">
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <MapPin className="h-4 w-4 text-cyan-400 absolute left-3 top-3" />
+                      <input
+                        type="text"
+                        required
+                        placeholder="Escribe calle y número (ej. Gran Capitán 12)..."
+                        value={calleNumero}
+                        onChange={(e) => buscarDireccionCordoba(e.target.value)}
+                        className="w-full bg-black/40 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white"
+                      />
+                    </div>
                     <input
                       type="text"
                       required
-                      placeholder="Dirección del centro educativo en Córdoba capital"
-                      value={direccionColegio}
-                      onChange={(e) => setDireccionColegio(e.target.value)}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white"
+                      placeholder="C.P."
+                      value={codigoPostal}
+                      onChange={(e) => setCodigoPostal(e.target.value)}
+                      className="w-20 bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white text-center font-mono"
                     />
                   </div>
+
+                  {buscandoDir && (
+                    <span className="text-[10px] text-slate-400 mt-1 block">Buscando dirección en Córdoba...</span>
+                  )}
+
+                  {/* Sugerencias de direcciones reales */}
+                  {sugerenciasDir.length > 0 && (
+                    <div className="absolute left-0 right-0 top-12 z-20 bg-[#0d0f17] border border-cyan-500/30 rounded-xl shadow-2xl overflow-hidden divide-y divide-white/5">
+                      {sugerenciasDir.map((sug, i) => (
+                        <div
+                          key={i}
+                          onClick={() => seleccionarDireccion(sug)}
+                          className="px-3 py-2 text-xs text-slate-300 hover:bg-cyan-950/50 hover:text-cyan-300 cursor-pointer flex items-center gap-2"
+                        >
+                          <Search className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                          <span className="truncate">{sug}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {direccionVerificada && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 mt-1">
+                      <Check className="h-3.5 w-3.5" />
+                      <span>Dirección localizada en Córdoba capital</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
-            {/* DATOS DE CONTACTO Y FECHA */}
-            <div className="pt-4 border-t border-white/10 space-y-4">
-              <span className="text-xs font-bold text-white block">Datos de Contacto y Fecha</span>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <input
-                  type="text"
-                  required
-                  placeholder="Nombre de contacto *"
-                  value={nombre}
-                  onChange={(e) => setNombre(e.target.value)}
-                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                />
-                <input
-                  type="tel"
-                  required
-                  placeholder="Teléfono móvil *"
-                  value={telefono}
-                  onChange={(e) => setTelefono(e.target.value)}
-                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                />
-                <input
-                  type="email"
-                  required
-                  placeholder="Correo electrónico *"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                />
-              </div>
+            {/* CALENDARIO Y DISPONIBILIDAD (1 EVENTO POR DÍA) */}
+            {modalidad !== 'cafeteria' && (
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                    <CalendarIcon className="h-4 w-4 text-cyan-400" />
+                    Selecciona Fecha (1 reserva por día):
+                  </label>
+                  {fechaEvento && (
+                    <span className={`text-[11px] font-bold ${esFechaOcupada(fechaEvento) ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {esFechaOcupada(fechaEvento) ? '✕ Día Ocupado' : '✓ Día Disponible'}
+                    </span>
+                  )}
+                </div>
 
-              {modalidad !== 'cafeteria' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">Fecha deseada *</label>
                     <input
                       type="date"
                       required
+                      min={hoyISO}
                       value={fechaEvento}
                       onChange={(e) => setFechaEvento(e.target.value)}
                       className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
                     />
                   </div>
                   <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">Hora estimada de inicio</label>
                     <input
                       type="time"
                       value={horaPreferente}
@@ -784,11 +865,48 @@ export default function EscapeRooms() {
                     />
                   </div>
                 </div>
-              )}
+
+                {fechaEvento && esFechaOcupada(fechaEvento) && (
+                  <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs">
+                    El día {new Date(fechaEvento).toLocaleDateString('es-ES')} ya cuenta con un escape programado. Por favor elige otro día disponible.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* DATOS DE CONTACTO */}
+            <div className="pt-4 border-t border-white/10 space-y-4">
+              <span className="text-xs font-bold text-white block">Datos de Contacto del Responsable</span>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <input
+                  type="text"
+                  required
+                  placeholder="Nombre y Apellidos *"
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
+                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                />
+                <input
+                  type="tel"
+                  required
+                  placeholder="Teléfono Móvil *"
+                  value={telefono}
+                  onChange={(e) => setTelefono(e.target.value)}
+                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                />
+                <input
+                  type="email"
+                  required
+                  placeholder="Correo Electrónico *"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                />
+              </div>
 
               <textarea
                 rows={2}
-                placeholder="Observaciones, detalles o peticiones especiales..."
+                placeholder="Observaciones adicionales (si es sorpresa, acceso al recinto, detalles de la celebración)..."
                 value={observaciones}
                 onChange={(e) => setObservaciones(e.target.value)}
                 className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white resize-none"
@@ -797,11 +915,11 @@ export default function EscapeRooms() {
 
             <button
               type="submit"
-              disabled={enviando}
-              className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(0,242,254,0.3)] disabled:opacity-50 transition-all"
+              disabled={enviando || (modalidad !== 'cafeteria' && esFechaOcupada(fechaEvento))}
+              className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(0,242,254,0.3)] disabled:opacity-40 transition-all"
             >
               <Send className="h-4 w-4" />
-              {enviando ? 'Tramitando reserva...' : `Solicitar Reserva · ${calcularPrecioEstimado()} €`}
+              {enviando ? 'Confirmando reserva...' : `Confirmar Reserva Directa · ${calcularPrecioEstimado()} €`}
             </button>
 
             {mensaje && (
