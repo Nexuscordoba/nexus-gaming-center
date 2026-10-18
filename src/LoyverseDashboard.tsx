@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { supabase } from './supabase';
 import { 
   TrendingUp, 
   DollarSign, 
@@ -6,7 +7,11 @@ import {
   AlertTriangle, 
   ArrowLeft, 
   RefreshCw, 
-  Receipt 
+  Receipt,
+  Lock,
+  Delete,
+  ShieldCheck,
+  LogOut
 } from 'lucide-react';
 
 interface ItemLoyverse {
@@ -37,12 +42,78 @@ interface ReceiptLoyverse {
 }
 
 export default function LoyverseDashboard() {
-  const [loading, setLoading] = useState(true);
+  // Autenticación de Administrador
+  const [autenticado, setAutenticado] = useState(false);
+  const [adminNombre, setAdminNombre] = useState('');
+  const [pin, setPin] = useState('');
+  const [verificandoPin, setVerificandoPin] = useState(false);
+  const [errorAuth, setErrorAuth] = useState<string | null>(null);
+
+  // Datos financieros y de TPV
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<ItemLoyverse[]>([]);
   const [inventory, setInventory] = useState<InventoryLoyverse[]>([]);
   const [receipts, setReceipts] = useState<ReceiptLoyverse[]>([]);
   const [tab, setTab] = useState<'resumen' | 'rentabilidad' | 'inventario' | 'ventas'>('resumen');
+
+  const volverAWebPrincipal = () => {
+    if (window.location.hash) {
+      window.location.hash = '';
+    } else {
+      window.location.href = 'https://nexusgamingcenter.es';
+    }
+  };
+
+  const handleNumero = (num: string) => {
+    if (pin.length < 6) {
+      setPin((prev) => prev + num);
+      setErrorAuth(null);
+    }
+  };
+
+  const handleBorrar = () => {
+    setPin((prev) => prev.slice(0, -1));
+    setErrorAuth(null);
+  };
+
+  // Validar credenciales de Administrador en Supabase
+  const verificarAccesoAdmin = async () => {
+    if (pin.length < 4) {
+      setErrorAuth('Introduce un PIN de al menos 4 dígitos');
+      return;
+    }
+
+    setVerificandoPin(true);
+    setErrorAuth(null);
+
+    try {
+      const { data, error: dbErr } = await supabase
+        .from('empleados')
+        .select('*')
+        .eq('pin_acceso', pin)
+        .eq('activo', true)
+        .maybeSingle();
+
+      if (dbErr) throw dbErr;
+
+      if (!data) {
+        setErrorAuth('PIN incorrecto o usuario no registrado');
+        setPin('');
+      } else if (data.rol !== 'admin') {
+        setErrorAuth('Acceso denegado: este panel requiere privilegios de Administrador / Gerencia');
+        setPin('');
+      } else {
+        setAutenticado(true);
+        setAdminNombre(`${data.nombre} ${data.apellidos}`);
+        cargarDatos();
+      }
+    } catch (err: any) {
+      setErrorAuth('Error de conexión: ' + (err.message || 'Inténtalo de nuevo'));
+    } finally {
+      setVerificandoPin(false);
+    }
+  };
 
   const cargarDatos = async () => {
     setLoading(true);
@@ -65,28 +136,129 @@ export default function LoyverseDashboard() {
     }
   };
 
-  useEffect(() => {
-    cargarDatos();
-  }, []);
-
-  const volverAWebPrincipal = () => {
-    if (window.location.hash) {
-      window.location.hash = '';
-    } else {
-      window.location.href = 'https://nexusgamingcenter.es';
-    }
+  const cerrarSesion = () => {
+    setAutenticado(false);
+    setPin('');
+    setAdminNombre('');
   };
 
   // Cálculos financieros
   const totalFacturado = receipts.reduce((acc, r) => acc + (r.total_money || 0), 0);
   const ticketMedio = receipts.length > 0 ? totalFacturado / receipts.length : 0;
 
-  // Mapa de stock por variante
   const stockMap = new Map<string, number>();
   inventory.forEach((inv) => {
     stockMap.set(inv.variant_id, inv.in_stock || 0);
   });
 
+  // SI NO ESTÁ AUTENTICADO: Pantalla de Bloqueo / PIN
+  if (!autenticado) {
+    return (
+      <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
+        <header className="border-b border-white/10 bg-[#08090d]/80 px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-500/30 bg-cyan-950/40 text-cyan-400">
+              <TrendingUp className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="font-bold text-white text-base tracking-wide flex items-center gap-2">
+                NEXUS <span className="text-cyan-400">TPV & FINANZAS</span>
+              </h1>
+              <p className="text-[11px] text-slate-400">Acceso Restringido a Gerencia · Chinales 45</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={volverAWebPrincipal}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Volver a la web principal</span>
+          </button>
+        </header>
+
+        <main className="flex-1 flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 text-center">
+            <div className="flex justify-center">
+              <div className="h-14 w-14 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shadow-[0_0_20px_rgba(0,242,254,0.15)]">
+                <Lock className="h-7 w-7" />
+              </div>
+            </div>
+
+            <div>
+              <h2 className="text-lg font-bold text-white">Panel Directivo Protegido</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Introduce tu PIN de Administrador para consultar ventas, márgenes e inventario
+              </p>
+            </div>
+
+            {/* Puntos indicadores del PIN */}
+            <div className="flex justify-center gap-3 py-2">
+              {[0, 1, 2, 3].map((idx) => (
+                <div
+                  key={idx}
+                  className={`h-4 w-4 rounded-full border transition-all ${
+                    pin.length > idx
+                      ? 'bg-cyan-400 border-cyan-300 shadow-[0_0_10px_rgba(0,242,254,0.5)]'
+                      : 'border-white/20 bg-white/5'
+                  }`}
+                />
+              ))}
+            </div>
+
+            {/* Teclado táctil */}
+            <div className="grid grid-cols-3 gap-3">
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => handleNumero(num)}
+                  className="h-14 rounded-2xl bg-white/[0.04] border border-white/5 text-xl font-bold text-white hover:bg-white/[0.1] active:scale-95 transition-all cursor-pointer"
+                >
+                  {num}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={handleBorrar}
+                className="h-14 rounded-2xl bg-white/[0.02] border border-white/5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.08] active:scale-95 transition-all cursor-pointer"
+              >
+                <Delete className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNumero('0')}
+                className="h-14 rounded-2xl bg-white/[0.04] border border-white/5 text-xl font-bold text-white hover:bg-white/[0.1] active:scale-95 transition-all cursor-pointer"
+              >
+                0
+              </button>
+              <button
+                type="button"
+                disabled={pin.length < 4 || verificandoPin}
+                onClick={verificarAccesoAdmin}
+                className="h-14 rounded-2xl bg-cyan-500 font-bold text-slate-950 hover:bg-cyan-400 active:scale-95 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center shadow-[0_0_15px_rgba(0,242,254,0.3)]"
+              >
+                {verificandoPin ? '...' : 'Entrar'}
+              </button>
+            </div>
+
+            {errorAuth && (
+              <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs">
+                {errorAuth}
+              </div>
+            )}
+          </div>
+        </main>
+
+        <footer className="border-t border-white/5 py-4 text-center text-xs text-slate-500">
+          NEXUS CÓRDOBA SL · Acceso Confidencial
+        </footer>
+      </div>
+    );
+  }
+
+  // SI ESTÁ AUTENTICADO COMO ADMIN: Panel Completo
   return (
     <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
       {/* Cabecera */}
@@ -99,7 +271,10 @@ export default function LoyverseDashboard() {
             <h1 className="font-bold text-white text-base tracking-wide flex items-center gap-2">
               NEXUS <span className="text-cyan-400">TPV & FINANZAS</span>
             </h1>
-            <p className="text-[11px] text-slate-400">Panel de Control Loyverse · Chinales 45</p>
+            <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+              Sesión iniciada: <span className="text-white font-medium">{adminNombre}</span>
+            </p>
           </div>
         </div>
 
@@ -112,6 +287,16 @@ export default function LoyverseDashboard() {
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-cyan-400' : ''}`} />
             <span>Actualizar</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={cerrarSesion}
+            title="Bloquear y salir del panel"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-500/20 bg-rose-950/20 hover:bg-rose-900/30 text-xs text-rose-300 transition-all cursor-pointer"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Bloquear</span>
           </button>
 
           <button
