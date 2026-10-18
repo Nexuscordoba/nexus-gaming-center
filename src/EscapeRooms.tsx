@@ -9,14 +9,17 @@ import {
   Skull, 
   Hourglass, 
   Compass, 
-  Send, 
   CheckCircle2, 
   AlertCircle,
   MapPin,
   Calendar as CalendarIcon,
   Image as ImageIcon,
   Check,
-  Search
+  Search,
+  ArrowDown,
+  ChevronLeft,
+  ChevronRight,
+  CreditCard
 } from 'lucide-react';
 
 interface SesionCafeteria {
@@ -33,7 +36,7 @@ interface SesionCafeteria {
 }
 
 export default function EscapeRooms() {
-  const [modalidad, setModalidad] = useState<'cafeteria' | 'evento_privado' | 'colegio'>('evento_privado');
+  const [modalidad, setModalidad] = useState<'cafeteria' | 'evento_privado' | 'colegio'>('cafeteria');
 
   const [sesionesCafeteria, setSesionesCafeteria] = useState<SesionCafeteria[]>([]);
   const [sesionSeleccionada, setSesionSeleccionada] = useState<string>('');
@@ -47,10 +50,11 @@ export default function EscapeRooms() {
   const [horaPreferente, setHoraPreferente] = useState('17:00');
   const [observaciones, setObservaciones] = useState('');
 
-  // Fechas ya ocupadas (1 escape privado por día)
+  // Fechas ya ocupadas
   const [fechasOcupadas, setFechasOcupadas] = useState<string[]>([]);
+  const [mesActual, setMesActual] = useState(new Date());
 
-  // Dirección y validación de Córdoba capital
+  // Dirección y buscador de Córdoba capital
   const [calleNumero, setCalleNumero] = useState('');
   const [codigoPostal, setCodigoPostal] = useState('140');
   const [direccionVerificada, setDireccionVerificada] = useState(false);
@@ -68,19 +72,19 @@ export default function EscapeRooms() {
   const [cursoAlumnos, setCursoAlumnos] = useState('');
   const [totalAlumnos, setTotalAlumnos] = useState<number>(60);
 
-  // Galería de fotos (Filtro)
+  // Galería de fotos
   const [filtroFoto, setFiltroFoto] = useState<'todas' | 'terror' | 'eventos' | 'colegios'>('todas');
 
   const [enviando, setEnviando] = useState(false);
   const [mensaje, setMensaje] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
 
-  // Cargar fechas ocupadas de Supabase
+  // Cargar fechas ocupadas
   const cargarFechasOcupadas = async () => {
     const hoy = new Date().toISOString().slice(0, 10);
     const { data } = await supabase
       .from('reservas_escape_room')
       .select('fecha_evento')
-      .in('estado', ['confirmada', 'pendiente'])
+      .in('estado', ['confirmada', 'pendiente', 'pagada'])
       .gte('fecha_evento', hoy);
 
     if (data) {
@@ -90,6 +94,15 @@ export default function EscapeRooms() {
 
   useEffect(() => {
     cargarFechasOcupadas();
+
+    // Comprobar retorno de Stripe
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('pago') === 'exito') {
+      setMensaje({
+        tipo: 'ok',
+        texto: '¡Pago completado con éxito! Tu reserva de Escape Room está 100% formalizada y registrada.'
+      });
+    }
 
     const cargarSesiones = async () => {
       const { data, error } = await supabase
@@ -109,34 +122,50 @@ export default function EscapeRooms() {
     cargarSesiones();
   }, []);
 
-  // Validación de dirección real mediante OpenStreetMap Nominatim (Córdoba capital)
-  const buscarDireccionCordoba = async (texto: string) => {
-    setCalleNumero(texto);
-    setDireccionVerificada(false);
+  const seleccionarModalidadConScroll = (mod: 'cafeteria' | 'evento_privado' | 'colegio') => {
+    setModalidad(mod);
+    const formulario = document.getElementById('formulario-escape');
+    if (formulario) {
+      formulario.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
 
-    if (texto.trim().length < 4) {
+  // Buscador de calles de Córdoba fiable (Photon Geocoding API acotada a Córdoba)
+  useEffect(() => {
+    if (calleNumero.trim().length < 3 || direccionVerificada) {
       setSugerenciasDir([]);
       return;
     }
 
-    setBuscandoDir(true);
-    try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-          texto + ', Córdoba, España'
-        )}&addressdetails=1&limit=4`
-      );
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        const direcciones = data.map((d: any) => d.display_name);
-        setSugerenciasDir(direcciones);
+    const timer = setTimeout(async () => {
+      setBuscandoDir(true);
+      try {
+        // Coordenadas aproximadas de Córdoba capital (37.88, -4.77)
+        const res = await fetch(
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(calleNumero)}&lat=37.8882&lon=-4.7794&limit=5`
+        );
+        const data = await res.json();
+        if (data && data.features) {
+          const resultados = data.features
+            .filter((f: any) => {
+              const city = (f.properties.city || f.properties.county || '').toLowerCase();
+              return city.includes('córdoba') || city.includes('cordoba') || f.properties.postcode?.startsWith('14');
+            })
+            .map((f: any) => {
+              const p = f.properties;
+              return `${p.street || p.name || ''} ${p.housenumber || ''}, ${p.postcode || '14000'} Córdoba`.trim();
+            });
+          setSugerenciasDir(resultados.length > 0 ? resultados : [`${calleNumero}, Córdoba`]);
+        }
+      } catch (err) {
+        console.warn('Error al buscar calles:', err);
+      } finally {
+        setBuscandoDir(false);
       }
-    } catch {
-      // Si falla la red, permite entrada manual
-    } finally {
-      setBuscandoDir(false);
-    }
-  };
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [calleNumero, direccionVerificada]);
 
   const seleccionarDireccion = (dir: string) => {
     setCalleNumero(dir);
@@ -144,7 +173,6 @@ export default function EscapeRooms() {
     setDireccionVerificada(true);
   };
 
-  // Cálculo de precio cerrado
   const calcularPrecioEstimado = (): number => {
     if (modalidad === 'cafeteria') {
       const precioBase = incluyeConsumicion ? 15 : 12;
@@ -164,6 +192,29 @@ export default function EscapeRooms() {
 
   const esFechaOcupada = (fecha: string): boolean => {
     return fechasOcupadas.includes(fecha);
+  };
+
+  // Generador de días del mes para el calendario visual
+  const diasEnMes = (mes: Date) => {
+    const year = mes.getFullYear();
+    const month = mes.getMonth();
+    const primerDia = new Date(year, month, 1).getDay(); // 0 domingo, 1 lunes...
+    const ajustePrimerDia = primerDia === 0 ? 6 : primerDia - 1; // Ajuste a lunes=0
+    const totalDias = new Date(year, month + 1, 0).getDate();
+
+    const dias = [];
+    for (let i = 0; i < ajustePrimerDia; i++) {
+      dias.push(null);
+    }
+    for (let d = 1; d <= totalDias; d++) {
+      dias.push(new Date(year, month, d));
+    }
+    return dias;
+  };
+
+  const cambiarMes = (offset: number) => {
+    const nuevo = new Date(mesActual.getFullYear(), mesActual.getMonth() + offset, 1);
+    setMesActual(nuevo);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -199,7 +250,7 @@ export default function EscapeRooms() {
         fecha_evento: fechaFinal,
         hora_preferente: horaPreferente,
         observaciones: `Precio confirmado: ${precioFinal} €. ${observaciones}`,
-        estado: 'confirmada', // Reserva directa
+        estado: 'pendiente_pago',
         lugar_celebracion: lugarFinal
       };
 
@@ -219,10 +270,16 @@ export default function EscapeRooms() {
         payload.personas_por_sesion = personasPorSesion;
       }
 
-      const { error: dbError } = await supabase.from('reservas_escape_room').insert([payload]);
+      // 1. Guardar reserva en Supabase
+      const { data: reservaData, error: dbError } = await supabase
+        .from('reservas_escape_room')
+        .insert([payload])
+        .select()
+        .single();
+
       if (dbError) throw dbError;
 
-      // Disparar doble email a través de Resend
+      // 2. Disparar email de notificación inmediata a Nexus
       try {
         await fetch('/api/send-confirmation', {
           method: 'POST',
@@ -243,27 +300,37 @@ export default function EscapeRooms() {
           })
         });
       } catch (mailErr) {
-        console.warn('Aviso de envío de email:', mailErr);
+        console.warn('Aviso email:', mailErr);
       }
 
-      setMensaje({
-        tipo: 'ok',
-        texto: '¡Reserva confirmada con éxito! Te hemos enviado un email con todos los detalles. Nos pondremos en contacto previo a la fecha.'
+      // 3. Crear sesión de pago en Stripe con metadata diferenciada para Escape Room
+      const stripeRes = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reservaId: reservaData.id,
+          nombre,
+          email,
+          modalidad,
+          fechaEvento: fechaFinal,
+          horaPreferente,
+          precioTotal: precioFinal
+        })
       });
 
-      // Actualizar calendario
-      setFechasOcupadas((prev) => [...prev, fechaFinal]);
+      const stripeData = await stripeRes.json();
 
-      // Limpiar formulario
-      setNombre('');
-      setEmail('');
-      setTelefono('');
-      setFechaEvento('');
-      setCalleNumero('');
-      setDireccionVerificada(false);
-      setObservaciones('');
-      setNombreColegio('');
-      setCursoAlumnos('');
+      if (stripeData.url) {
+        // Redirigir a la pasarela segura de Stripe
+        window.location.href = stripeData.url;
+      } else {
+        setMensaje({
+          tipo: 'ok',
+          texto: '¡Reserva guardada con éxito! Nos pondremos en contacto contigo para coordinar el cobro y detalles.'
+        });
+      }
+
+      setFechasOcupadas((prev) => [...prev, fechaFinal]);
     } catch (err: any) {
       setMensaje({
         tipo: 'error',
@@ -274,7 +341,6 @@ export default function EscapeRooms() {
     }
   };
 
-  // Galería de fotos
   const imagenesGaleria = [
     {
       url: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80',
@@ -319,6 +385,8 @@ export default function EscapeRooms() {
     : imagenesGaleria.filter(f => f.categoria === filtroFoto);
 
   const hoyISO = new Date().toISOString().slice(0, 10);
+  const diasCalendario = diasEnMes(mesActual);
+  const nombresMeses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
   return (
     <section id="escaperooms" className="py-20 bg-[#08090e] border-t border-white/5 relative overflow-hidden">
@@ -334,15 +402,25 @@ export default function EscapeRooms() {
             VIVE LA EXPERIENCIA <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400">ESCAPE ROOM</span>
           </h2>
           <p className="mt-4 text-sm sm:text-base text-slate-300">
-            Reserva directa sin esperas. Noches temáticas en cafetería, animación privada en Córdoba capital (1 evento por día) y jornadas completas en colegios.
+            Reserva directa con pago seguro. Consulta el calendario en tiempo real y asegura tu fecha en Córdoba capital.
           </p>
         </div>
 
-        {/* Tarifas */}
+        {/* 1. CUADROS DE TARIFAS CON SCROLL Y SELECCIÓN */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
-          <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 flex flex-col justify-between">
+          <div 
+            onClick={() => seleccionarModalidadConScroll('cafeteria')}
+            className={`p-6 rounded-3xl border flex flex-col justify-between transition-all cursor-pointer group hover:scale-[1.02] ${
+              modalidad === 'cafeteria'
+                ? 'bg-cyan-950/40 border-cyan-400 shadow-[0_0_25px_rgba(0,242,254,0.2)]'
+                : 'bg-[#0d0f17] border-white/10 hover:border-white/30'
+            }`}
+          >
             <div>
-              <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">En Nuestro Local</span>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">En Nuestro Local</span>
+                <Coffee className="h-5 w-5 text-cyan-400" />
+              </div>
               <h3 className="text-xl font-bold text-white mt-1">Noches en Cafetería</h3>
               <p className="text-xs text-slate-400 mt-2">Fechas programadas en Chinales 45. Grupos de 3 a 6 jugadores.</p>
               <div className="mt-4 mb-6">
@@ -350,19 +428,35 @@ export default function EscapeRooms() {
                 <span className="text-xs text-slate-400"> / persona (15 € con consumición y tapa)</span>
               </div>
             </div>
-            <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4">
-              <li className="flex items-center gap-2">✓ 60 minutos de pura tensión</li>
-              <li className="flex items-center gap-2">✓ Game Master en directo</li>
-              <li className="flex items-center gap-2">✓ Ambiente tematizado en cafetería</li>
-            </ul>
+            <div>
+              <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4 mb-4">
+                <li className="flex items-center gap-2">✓ 60 minutos de pura tensión</li>
+                <li className="flex items-center gap-2">✓ Game Master en directo</li>
+                <li className="flex items-center gap-2">✓ Ambiente tematizado en cafetería</li>
+              </ul>
+              <div className="flex items-center justify-between text-xs font-bold text-cyan-400 group-hover:translate-y-0.5 transition-transform">
+                <span>Configurar en Cafetería</span>
+                <ArrowDown className="h-4 w-4" />
+              </div>
+            </div>
           </div>
 
-          <div className="p-6 rounded-3xl bg-gradient-to-b from-cyan-950/30 to-[#0d0f17] border border-cyan-500/40 flex flex-col justify-between relative shadow-[0_0_30px_rgba(0,242,254,0.1)]">
-            <div className="absolute -top-3 right-6 bg-cyan-500 text-slate-950 text-[10px] uppercase font-black px-3 py-1 rounded-full">
+          <div 
+            onClick={() => seleccionarModalidadConScroll('evento_privado')}
+            className={`p-6 rounded-3xl border flex flex-col justify-between transition-all cursor-pointer group hover:scale-[1.02] relative ${
+              modalidad === 'evento_privado'
+                ? 'bg-cyan-950/40 border-cyan-400 shadow-[0_0_30px_rgba(0,242,254,0.25)]'
+                : 'bg-gradient-to-b from-cyan-950/20 to-[#0d0f17] border-cyan-500/30 hover:border-cyan-400'
+            }`}
+          >
+            <div className="absolute -top-3 right-6 bg-cyan-500 text-slate-950 text-[10px] uppercase font-black px-3 py-1 rounded-full shadow-md">
               1 al día
             </div>
             <div>
-              <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">A Domicilio / Local</span>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">A Domicilio / Local</span>
+                <PartyPopper className="h-5 w-5 text-cyan-400" />
+              </div>
               <h3 className="text-xl font-bold text-white mt-1">Eventos Privados</h3>
               <p className="text-xs text-slate-400 mt-2">Cumpleaños, bodas y fiestas. Servicio exclusivo en Córdoba capital.</p>
               <div className="mt-4 mb-6">
@@ -371,16 +465,32 @@ export default function EscapeRooms() {
                 <span className="block text-[11px] text-emerald-400 font-semibold mt-1">2 horas: 130 € · 3 horas: 180 €</span>
               </div>
             </div>
-            <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4">
-              <li className="flex items-center gap-2">✓ Monitor exclusivo + Desplazamiento</li>
-              <li className="flex items-center gap-2">✓ Material completo y atrezzo</li>
-              <li className="flex items-center gap-2">✓ Reserva directa confirmada</li>
-            </ul>
+            <div>
+              <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4 mb-4">
+                <li className="flex items-center gap-2">✓ Monitor exclusivo + Desplazamiento</li>
+                <li className="flex items-center gap-2">✓ Material completo y atrezzo</li>
+                <li className="flex items-center gap-2">✓ Pago directo con tarjeta</li>
+              </ul>
+              <div className="flex items-center justify-between text-xs font-bold text-cyan-400 group-hover:translate-y-0.5 transition-transform">
+                <span>Configurar Evento Privado</span>
+                <ArrowDown className="h-4 w-4" />
+              </div>
+            </div>
           </div>
 
-          <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 flex flex-col justify-between">
+          <div 
+            onClick={() => seleccionarModalidadConScroll('colegio')}
+            className={`p-6 rounded-3xl border flex flex-col justify-between transition-all cursor-pointer group hover:scale-[1.02] ${
+              modalidad === 'colegio'
+                ? 'bg-cyan-950/40 border-cyan-400 shadow-[0_0_25px_rgba(0,242,254,0.2)]'
+                : 'bg-[#0d0f17] border-white/10 hover:border-white/30'
+            }`}
+          >
             <div>
-              <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">Centros Escolares</span>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider">Centros Escolares</span>
+                <School className="h-5 w-5 text-cyan-400" />
+              </div>
               <h3 className="text-xl font-bold text-white mt-1">Escape en tu Colegio</h3>
               <p className="text-xs text-slate-400 mt-2">Propuesta didáctica para semanas culturales, fin de curso o extraescolares.</p>
               <div className="mt-4 mb-6">
@@ -388,11 +498,17 @@ export default function EscapeRooms() {
                 <span className="text-xs text-slate-400"> / Jornada completa (7 horas)</span>
               </div>
             </div>
-            <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4">
-              <li className="flex items-center gap-2">✓ 7 horas de monitoraje in situ</li>
-              <li className="flex items-center gap-2">✓ Rotación de múltiples clases y cursos</li>
-              <li className="flex items-center gap-2">✓ Enigmas curriculares y de lógica</li>
-            </ul>
+            <div>
+              <ul className="text-xs text-slate-300 space-y-2 border-t border-white/5 pt-4 mb-4">
+                <li className="flex items-center gap-2">✓ 7 horas de monitoraje in situ</li>
+                <li className="flex items-center gap-2">✓ Rotación de múltiples clases y cursos</li>
+                <li className="flex items-center gap-2">✓ Enigmas curriculares y de lógica</li>
+              </ul>
+              <div className="flex items-center justify-between text-xs font-bold text-cyan-400 group-hover:translate-y-0.5 transition-transform">
+                <span>Configurar Escape Escolar</span>
+                <ArrowDown className="h-4 w-4" />
+              </div>
+            </div>
           </div>
         </div>
 
@@ -467,23 +583,8 @@ export default function EscapeRooms() {
           </div>
         </div>
 
-        {/* Selector de Modalidad */}
+        {/* 2. SELECTOR DE MODALIDAD DEL FORMULARIO */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-          <button
-            type="button"
-            onClick={() => setModalidad('evento_privado')}
-            className={`p-5 rounded-2xl border text-left transition-all cursor-pointer ${
-              modalidad === 'evento_privado'
-                ? 'bg-cyan-950/50 border-cyan-400 shadow-[0_0_20px_rgba(0,242,254,0.2)]'
-                : 'bg-white/[0.02] border-white/10 hover:border-white/20 hover:bg-white/[0.04]'
-            }`}
-          >
-            <PartyPopper className={`h-6 w-6 mb-2 ${modalidad === 'evento_privado' ? 'text-cyan-400' : 'text-slate-400'}`} />
-            <h4 className="font-bold text-white text-base">Eventos Privados</h4>
-            <span className="text-xs text-cyan-400 font-semibold block mt-1">Exclusivo Córdoba Capital</span>
-            <p className="text-xs text-slate-400 mt-1">Cumpleaños, bodas o celebraciones particulares.</p>
-          </button>
-
           <button
             type="button"
             onClick={() => setModalidad('cafeteria')}
@@ -497,6 +598,21 @@ export default function EscapeRooms() {
             <h4 className="font-bold text-white text-base">Noches en Cafetería</h4>
             <span className="text-xs text-cyan-400 font-semibold block mt-1">Chinales 45</span>
             <p className="text-xs text-slate-400 mt-1">12 € / pers (15 € con consumición y tapa).</p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setModalidad('evento_privado')}
+            className={`p-5 rounded-2xl border text-left transition-all cursor-pointer ${
+              modalidad === 'evento_privado'
+                ? 'bg-cyan-950/50 border-cyan-400 shadow-[0_0_20px_rgba(0,242,254,0.2)]'
+                : 'bg-white/[0.02] border-white/10 hover:border-white/20 hover:bg-white/[0.04]'
+            }`}
+          >
+            <PartyPopper className={`h-6 w-6 mb-2 ${modalidad === 'evento_privado' ? 'text-cyan-400' : 'text-slate-400'}`} />
+            <h4 className="font-bold text-white text-base">Eventos Privados</h4>
+            <span className="text-xs text-cyan-400 font-semibold block mt-1">Exclusivo Córdoba Capital</span>
+            <p className="text-xs text-slate-400 mt-1">Cumpleaños, bodas o celebraciones particulares.</p>
           </button>
 
           <button
@@ -516,32 +632,104 @@ export default function EscapeRooms() {
         </div>
 
         {/* Formulario de Reserva */}
-        <div className="max-w-3xl mx-auto bg-[#0d0f17] border border-white/10 rounded-3xl p-6 sm:p-10 shadow-2xl">
+        <div id="formulario-escape" className="max-w-3xl mx-auto bg-[#0d0f17] border border-white/10 rounded-3xl p-6 sm:p-10 shadow-2xl">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-white/10 gap-2">
               <div>
                 <h3 className="text-xl font-bold text-white flex items-center gap-2">
                   <Sparkles className="h-5 w-5 text-cyan-400" />
-                  {modalidad === 'evento_privado' && 'Configura y Confirma tu Escape Room Privado'}
                   {modalidad === 'cafeteria' && 'Reserva tu Pase en Cafetería Nexus'}
-                  {modalidad === 'colegio' && 'Reserva Directa de Jornada Escolar (7h)'}
+                  {modalidad === 'evento_privado' && 'Configura tu Escape Room Privado'}
+                  {modalidad === 'colegio' && 'Reserva de Jornada Escolar (7h)'}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {modalidad === 'evento_privado' && 'Monitores a domicilio en Córdoba capital. Máximo 1 evento privado por día.'}
                   {modalidad === 'cafeteria' && 'Plazas limitadas por pase. Opcional con consumición y tapa.'}
+                  {modalidad === 'evento_privado' && 'Monitores a domicilio en Córdoba capital. Máximo 1 evento privado por día.'}
                   {modalidad === 'colegio' && 'Desplazamiento con material y monitores para toda la jornada escolar.'}
                 </p>
               </div>
 
               <div className="bg-cyan-950/60 border border-cyan-500/40 px-3.5 py-1.5 rounded-2xl text-right">
-                <span className="text-[10px] text-slate-400 block uppercase font-bold">Precio Confirmado</span>
+                <span className="text-[10px] text-slate-400 block uppercase font-bold">Total a Pagar</span>
                 <span className="text-xl font-black text-cyan-300 font-mono">
                   {calcularPrecioEstimado()} €
                 </span>
               </div>
             </div>
 
-            {/* EVENTOS PRIVADOS */}
+            {/* SELECCIÓN CAFETERÍA */}
+            {modalidad === 'cafeteria' && (
+              <div className="space-y-4">
+                <label className="text-xs font-semibold text-slate-300 block">Fechas programadas en Cafetería:</label>
+                {sesionesCafeteria.length === 0 ? (
+                  <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-500/30 text-amber-300 text-xs text-center">
+                    No hay fechas abiertas actualmente. ¡Déjanos tus datos abajo y te avisamos del próximo pase!
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {sesionesCafeteria.map((s) => (
+                      <label
+                        key={s.id}
+                        className={`flex items-center justify-between p-3.5 rounded-xl border cursor-pointer ${
+                          sesionSeleccionada === s.id ? 'bg-cyan-950/50 border-cyan-400' : 'bg-white/[0.02] border-white/10'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="radio"
+                            name="sesion"
+                            checked={sesionSeleccionada === s.id}
+                            onChange={() => setSesionSeleccionada(s.id)}
+                            className="accent-cyan-400"
+                          />
+                          <span className="font-bold text-white text-xs">{s.titulo} ({new Date(s.fecha).toLocaleDateString('es-ES')})</span>
+                        </div>
+                        <span className="font-mono text-cyan-400 font-bold text-xs">{s.precio_por_persona} € / pers</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                      Asistentes (Mín. 3 - Máx. 6):
+                    </label>
+                    <div className="flex gap-2">
+                      {[3, 4, 5, 6].map((num) => (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => setPersonasPorSesion(num)}
+                          className={`flex-1 py-2 rounded-xl border text-xs font-bold cursor-pointer ${
+                            personasPorSesion === num
+                              ? 'bg-cyan-500 text-slate-950 border-cyan-400'
+                              : 'bg-white/[0.02] border-white/10 text-slate-300'
+                          }`}
+                        >
+                          {num}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-5">
+                    <input
+                      type="checkbox"
+                      id="consumicion"
+                      checked={incluyeConsumicion}
+                      onChange={(e) => setIncluyeConsumicion(e.target.checked)}
+                      className="accent-cyan-400 h-4 w-4 rounded"
+                    />
+                    <label htmlFor="consumicion" className="text-xs text-slate-300 cursor-pointer">
+                      Añadir consumición + tapa especial (+3 € / pers)
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SELECCIÓN EVENTOS PRIVADOS */}
             {modalidad === 'evento_privado' && (
               <div className="space-y-4">
                 <div>
@@ -653,79 +841,7 @@ export default function EscapeRooms() {
               </div>
             )}
 
-            {/* CAFETERÍA */}
-            {modalidad === 'cafeteria' && (
-              <div className="space-y-4">
-                <label className="text-xs font-semibold text-slate-300 block">Fechas programadas en Cafetería:</label>
-                {sesionesCafeteria.length === 0 ? (
-                  <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-500/30 text-amber-300 text-xs text-center">
-                    No hay fechas abiertas actualmente. ¡Déjanos tus datos abajo y te avisamos del próximo pase!
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {sesionesCafeteria.map((s) => (
-                      <label
-                        key={s.id}
-                        className={`flex items-center justify-between p-3.5 rounded-xl border cursor-pointer ${
-                          sesionSeleccionada === s.id ? 'bg-cyan-950/50 border-cyan-400' : 'bg-white/[0.02] border-white/10'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="radio"
-                            name="sesion"
-                            checked={sesionSeleccionada === s.id}
-                            onChange={() => setSesionSeleccionada(s.id)}
-                            className="accent-cyan-400"
-                          />
-                          <span className="font-bold text-white text-xs">{s.titulo} ({new Date(s.fecha).toLocaleDateString('es-ES')})</span>
-                        </div>
-                        <span className="font-mono text-cyan-400 font-bold text-xs">{s.precio_por_persona} € / pers</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                  <div>
-                    <label className="text-xs font-semibold text-slate-300 block mb-1">
-                      Asistentes (Mín. 3 - Máx. 6):
-                    </label>
-                    <div className="flex gap-2">
-                      {[3, 4, 5, 6].map((num) => (
-                        <button
-                          key={num}
-                          type="button"
-                          onClick={() => setPersonasPorSesion(num)}
-                          className={`flex-1 py-2 rounded-xl border text-xs font-bold cursor-pointer ${
-                            personasPorSesion === num
-                              ? 'bg-cyan-500 text-slate-950 border-cyan-400'
-                              : 'bg-white/[0.02] border-white/10 text-slate-300'
-                          }`}
-                        >
-                          {num}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 pt-5">
-                    <input
-                      type="checkbox"
-                      id="consumicion"
-                      checked={incluyeConsumicion}
-                      onChange={(e) => setIncluyeConsumicion(e.target.checked)}
-                      className="accent-cyan-400 h-4 w-4 rounded"
-                    />
-                    <label htmlFor="consumicion" className="text-xs text-slate-300 cursor-pointer">
-                      Añadir consumición + tapa especial (+3 € / pers)
-                    </label>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* COLEGIOS */}
+            {/* SELECCIÓN COLEGIOS */}
             {modalidad === 'colegio' && (
               <div className="space-y-4">
                 <div className="p-3.5 rounded-2xl bg-cyan-950/30 border border-cyan-500/30 text-xs text-cyan-300 flex items-center justify-between">
@@ -771,7 +887,7 @@ export default function EscapeRooms() {
               </div>
             )}
 
-            {/* DIRECCIÓN VERIFICADA EN CÓRDOBA CAPITAL (Para eventos y colegios) */}
+            {/* DIRECCIÓN VERIFICADA CON BUSCADOR DE CÓRDOBA CAPITAL */}
             {modalidad !== 'cafeteria' && (
               <div className="space-y-2 pt-2">
                 <label className="text-xs font-semibold text-slate-300 block">
@@ -784,9 +900,12 @@ export default function EscapeRooms() {
                       <input
                         type="text"
                         required
-                        placeholder="Escribe calle y número (ej. Gran Capitán 12)..."
+                        placeholder="Escribe la calle y número (ej. Calle Escritora Carmen Laforet 4)..."
                         value={calleNumero}
-                        onChange={(e) => buscarDireccionCordoba(e.target.value)}
+                        onChange={(e) => {
+                          setCalleNumero(e.target.value);
+                          setDireccionVerificada(false);
+                        }}
                         className="w-full bg-black/40 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white"
                       />
                     </div>
@@ -801,17 +920,18 @@ export default function EscapeRooms() {
                   </div>
 
                   {buscandoDir && (
-                    <span className="text-[10px] text-slate-400 mt-1 block">Buscando dirección en Córdoba...</span>
+                    <span className="text-[10px] text-cyan-400 mt-1 block animate-pulse">
+                      Buscando calle en Córdoba...
+                    </span>
                   )}
 
-                  {/* Sugerencias de direcciones reales */}
                   {sugerenciasDir.length > 0 && (
-                    <div className="absolute left-0 right-0 top-12 z-20 bg-[#0d0f17] border border-cyan-500/30 rounded-xl shadow-2xl overflow-hidden divide-y divide-white/5">
+                    <div className="absolute left-0 right-0 top-12 z-30 bg-[#0c0e17] border border-cyan-500/40 rounded-xl shadow-2xl overflow-hidden divide-y divide-white/5">
                       {sugerenciasDir.map((sug, i) => (
                         <div
                           key={i}
                           onClick={() => seleccionarDireccion(sug)}
-                          className="px-3 py-2 text-xs text-slate-300 hover:bg-cyan-950/50 hover:text-cyan-300 cursor-pointer flex items-center gap-2"
+                          className="px-3 py-2.5 text-xs text-slate-200 hover:bg-cyan-950/70 hover:text-cyan-300 cursor-pointer flex items-center gap-2"
                         >
                           <Search className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
                           <span className="truncate">{sug}</span>
@@ -823,54 +943,114 @@ export default function EscapeRooms() {
                   {direccionVerificada && (
                     <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 mt-1">
                       <Check className="h-3.5 w-3.5" />
-                      <span>Dirección localizada en Córdoba capital</span>
+                      <span>Ubicación validada para el equipo en Córdoba</span>
                     </div>
                   )}
                 </div>
               </div>
             )}
 
-            {/* CALENDARIO Y DISPONIBILIDAD (1 EVENTO POR DÍA) */}
+            {/* CALENDARIO VISUAL DE DISPONIBILIDAD (1 EVENTO POR DÍA) */}
             {modalidad !== 'cafeteria' && (
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                     <CalendarIcon className="h-4 w-4 text-cyan-400" />
-                    Selecciona Fecha (1 reserva por día):
+                    Calendario de Disponibilidad (1 escape privado por día):
                   </label>
-                  {fechaEvento && (
-                    <span className={`text-[11px] font-bold ${esFechaOcupada(fechaEvento) ? 'text-rose-400' : 'text-emerald-400'}`}>
-                      {esFechaOcupada(fechaEvento) ? '✕ Día Ocupado' : '✓ Día Disponible'}
+                  <div className="flex items-center gap-3 text-[10px]">
+                    <span className="flex items-center gap-1 text-emerald-400">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400"></span> Libre
                     </span>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <input
-                      type="date"
-                      required
-                      min={hoyISO}
-                      value={fechaEvento}
-                      onChange={(e) => setFechaEvento(e.target.value)}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                    />
-                  </div>
-                  <div>
-                    <input
-                      type="time"
-                      value={horaPreferente}
-                      onChange={(e) => setHoraPreferente(e.target.value)}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                    />
+                    <span className="flex items-center gap-1 text-rose-400">
+                      <span className="h-2 w-2 rounded-full bg-rose-400"></span> Ocupado
+                    </span>
                   </div>
                 </div>
 
-                {fechaEvento && esFechaOcupada(fechaEvento) && (
-                  <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs">
-                    El día {new Date(fechaEvento).toLocaleDateString('es-ES')} ya cuenta con un escape programado. Por favor elige otro día disponible.
+                {/* Cabecera del Mes */}
+                <div className="p-4 rounded-2xl bg-black/40 border border-white/10">
+                  <div className="flex items-center justify-between mb-3 text-xs font-bold text-white">
+                    <span>{nombresMeses[mesActual.getMonth()]} {mesActual.getFullYear()}</span>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => cambiarMes(-1)}
+                        className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => cambiarMes(1)}
+                        className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
-                )}
+
+                  {/* Días de la semana */}
+                  <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-slate-500 font-bold mb-2">
+                    <span>L</span><span>M</span><span>X</span><span>J</span><span>V</span><span>S</span><span>D</span>
+                  </div>
+
+                  {/* Cuadrícula de días */}
+                  <div className="grid grid-cols-7 gap-1">
+                    {diasCalendario.map((dia, idx) => {
+                      if (!dia) {
+                        return <div key={`empty-${idx}`} className="h-9" />;
+                      }
+
+                      const fechaISO = dia.toISOString().slice(0, 10);
+                      const esPasado = fechaISO < hoyISO;
+                      const ocupado = esFechaOcupada(fechaISO);
+                      const seleccionado = fechaEvento === fechaISO;
+
+                      return (
+                        <button
+                          key={fechaISO}
+                          type="button"
+                          disabled={esPasado || ocupado}
+                          onClick={() => setFechaEvento(fechaISO)}
+                          className={`h-9 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center cursor-pointer ${
+                            seleccionado
+                              ? 'bg-cyan-500 text-slate-950 font-black shadow-[0_0_15px_rgba(0,242,254,0.4)] scale-105'
+                              : ocupado
+                              ? 'bg-rose-950/40 text-rose-500/40 border border-rose-500/20 cursor-not-allowed line-through'
+                              : esPasado
+                              ? 'text-slate-700 cursor-not-allowed'
+                              : 'bg-white/[0.03] text-slate-200 hover:bg-emerald-950/60 hover:text-emerald-300 hover:border-emerald-500/40 border border-white/5'
+                          }`}
+                        >
+                          <span>{dia.getDate()}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Hora preferente y estado del día seleccionado */}
+                  <div className="mt-4 pt-3 border-t border-white/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+                    <div>
+                      {fechaEvento ? (
+                        <span className="text-emerald-400 font-semibold">
+                          ✓ Día seleccionado: {new Date(fechaEvento).toLocaleDateString('es-ES')}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">Haz clic en un día libre para reservar</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400">Hora de inicio:</span>
+                      <input
+                        type="time"
+                        value={horaPreferente}
+                        onChange={(e) => setHoraPreferente(e.target.value)}
+                        className="bg-black/40 border border-white/10 rounded-xl px-2.5 py-1 text-white font-mono text-xs"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -913,13 +1093,16 @@ export default function EscapeRooms() {
               />
             </div>
 
+            {/* BOTÓN CON REDIRECCIÓN A STRIPE */}
             <button
               type="submit"
-              disabled={enviando || (modalidad !== 'cafeteria' && esFechaOcupada(fechaEvento))}
+              disabled={enviando || (modalidad !== 'cafeteria' && (!fechaEvento || esFechaOcupada(fechaEvento)))}
               className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(0,242,254,0.3)] disabled:opacity-40 transition-all"
             >
-              <Send className="h-4 w-4" />
-              {enviando ? 'Confirmando reserva...' : `Confirmar Reserva Directa · ${calcularPrecioEstimado()} €`}
+              <CreditCard className="h-4 w-4" />
+              {enviando 
+                ? 'Conectando con pasarela segura...' 
+                : `Pagar y Confirmar Reserva · ${calcularPrecioEstimado()} €`}
             </button>
 
             {mensaje && (
