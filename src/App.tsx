@@ -11,11 +11,11 @@ import {
   Shield, 
   Lock, 
   X, 
-  Gamepad2,
-  CheckCircle2,
-  Phone,
-  ArrowLeft,
-  KeyRound
+  Gamepad2, 
+  CheckCircle2, 
+  Phone, 
+  ArrowLeft, 
+  KeyRound 
 } from 'lucide-react';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
@@ -87,10 +87,10 @@ export default function App() {
 
           <a
             href="https://nexusgamingcenter.es"
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-colors"
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
           >
-            Ir al portal general
-            <ArrowRight className="h-3.5 w-3.5 text-cyan-400" />
+            <ArrowLeft className="h-4 w-4" />
+            <span>Volver a la web principal</span>
           </a>
         </header>
 
@@ -126,9 +126,10 @@ export default function App() {
             {currentView === 'bar' ? (
               <button
                 onClick={() => navigateTo('home')}
-                className="flex items-center gap-1.5 text-xs font-semibold text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
               >
-                <ArrowLeft className="h-4 w-4" /> Volver al portal general
+                <ArrowLeft className="h-4 w-4" />
+                <span>Volver a la web principal</span>
               </button>
             ) : (
               <>
