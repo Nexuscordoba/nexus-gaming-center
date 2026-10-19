@@ -11,22 +11,25 @@ import {
   Shield, 
   Lock, 
   X, 
-  Gamepad2, 
-  CheckCircle2, 
-  Phone, 
-  ArrowLeft, 
+  Gamepad2,
+  CheckCircle2,
+  Phone,
+  ArrowLeft,
   KeyRound,
-  TrendingUp
+  TrendingUp,
+  ChefHat
 } from 'lucide-react';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
+import KitchenDisplay from './KitchenDisplay';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
-  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas'>('main');
+  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina'>('main');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
+  // Detectar la ruta en la URL o subdominio
   useEffect(() => {
     const handleRouting = () => {
       const hostname = window.location.hostname.toLowerCase();
@@ -41,6 +44,9 @@ export default function App() {
       } else if (hostname.startsWith('ventas.') || hostname.startsWith('tpv.')) {
         setSubdomainRoute('ventas');
         return;
+      } else if (hostname.startsWith('cocina.')) {
+        setSubdomainRoute('cocina');
+        return;
       } else {
         setSubdomainRoute('main');
       }
@@ -54,6 +60,8 @@ export default function App() {
         setSubdomainRoute('escape');
       } else if (hash === '#ventas' || hash === '#tpv') {
         setSubdomainRoute('ventas');
+      } else if (hash === '#cocina' || hash === '#/cocina') {
+        setSubdomainRoute('cocina');
       } else {
         setCurrentView('home');
       }
@@ -70,12 +78,12 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
-  // Subdominio equipo.nexusgamingcenter.es
+  // Subdominio equipo.nexusgamingcenter.es o #equipo
   if (subdomainRoute === 'staff') {
     return <StaffPortal />;
   }
 
-  // Subdominio escape.nexusgamingcenter.es
+  // Subdominio escape.nexusgamingcenter.es o #escape
   if (subdomainRoute === 'escape') {
     return (
       <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans flex flex-col justify-between">
@@ -109,9 +117,14 @@ export default function App() {
     );
   }
 
-  // Subdominio ventas.nexusgamingcenter.es
+  // Subdominio ventas.nexusgamingcenter.es o #ventas
   if (subdomainRoute === 'ventas') {
     return <LoyverseDashboard />;
+  }
+
+  // Subdominio cocina.nexusgamingcenter.es o #cocina
+  if (subdomainRoute === 'cocina') {
+    return <KitchenDisplay />;
   }
 
   return (
@@ -545,14 +558,22 @@ export default function App() {
         </div>
       )}
 
-      {/* Pie de página */}
+      {/* Pie de página con acceso a Cocina KDS y Finanzas */}
       <footer className="border-t border-white/[0.06] bg-[#050608] text-slate-500 text-xs py-8">
         <div className="max-w-6xl mx-auto px-5 flex flex-col sm:flex-row items-center justify-between gap-4">
           <p>© {new Date().getFullYear()} NEXUS CORDOBA SL. NIF: B93887990. Todos los derechos reservados.</p>
-          <div className="flex items-center gap-4 text-slate-400">
+          <div className="flex items-center gap-4 text-slate-400 flex-wrap">
             <span className="flex items-center gap-1">
               <Shield className="h-3.5 w-3.5" /> Empresa registrada
             </span>
+            <span>·</span>
+            <a 
+              href="#cocina" 
+              onClick={() => setSubdomainRoute('cocina')}
+              className="flex items-center gap-1 hover:text-cyan-400 transition-colors cursor-pointer text-cyan-400 font-semibold"
+            >
+              <ChefHat className="h-3 w-3" /> Pantalla Cocina
+            </a>
             <span>·</span>
             <a 
               href="https://ventas.nexusgamingcenter.es" 
