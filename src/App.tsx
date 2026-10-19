@@ -1,22 +1,20 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Coffee, 
   UtensilsCrossed, 
   Clock, 
   MapPin, 
   Calendar, 
-  Tag, 
   ArrowRight, 
   FileText, 
   Shield, 
   Lock, 
   X, 
-  Gamepad2, 
-  CheckCircle2, 
-  Phone, 
-  ArrowLeft, 
-  KeyRound, 
-  TrendingUp, 
+  Gamepad2,
+  Phone,
+  ArrowLeft,
+  KeyRound,
+  TrendingUp,
   ChefHat,
   Flame
 } from 'lucide-react';
@@ -150,7 +148,7 @@ export default function App() {
   }
 
   // Elementos de la Carta de la Cafetería
-  const cartaItems = {
+  const cartaItems: Record<string, Array<{ nombre: string; desc: string; precio: string; destacado?: boolean }>> = {
     desayunos: [
       { nombre: 'Café Especialidad + Mollete Ibérico', desc: 'Café 100% arábica + mollete tostado con AOVE, tomate y jamón ibérico de Los Pedroches.', precio: '3,50 €', destacado: true },
       { nombre: 'Desayuno Nexus Power', desc: 'Café o infusión + tostada de aguacate, huevo poché y semillas de chía + zumo de naranja.', precio: '4,80 €' },
