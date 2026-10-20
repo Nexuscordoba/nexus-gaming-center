@@ -23,10 +23,7 @@ export default function TableOrder() {
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [loadingCarta, setLoadingCarta] = useState(true);
   
-  // Carrito actual (lo que está seleccionando ahora mismo para enviar)
   const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number }>>([]);
-  
-  // Historial acumulado de la mesa (lo que ya se pidió previamente y sigue en la cuenta)
   const [cuentaMesa, setCuentaMesa] = useState<ItemPedido[]>([]);
   
   const [enviando, setEnviando] = useState(false);
@@ -34,7 +31,7 @@ export default function TableOrder() {
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
 
-  // Detectar número de mesa y recuperar historial previo de la mesa
+  // Detectar número de mesa y recuperar historial previo
   useEffect(() => {
     const hash = window.location.hash;
     const match = hash.match(/mesa\/(\d+)/);
@@ -48,7 +45,6 @@ export default function TableOrder() {
     }
     setMesaNum(mNum);
 
-    // Recuperar cuenta guardada en localStorage para esta mesa si recargan o reescanean el QR
     const cuentaGuardada = localStorage.getItem(`nexus_mesa_${mNum}_cuenta`);
     if (cuentaGuardada) {
       try {
@@ -61,12 +57,45 @@ export default function TableOrder() {
     cargarProductosCarta();
   }, []);
 
-  // Guardar cuenta en localStorage cada vez que cambie
+  // Guardar cuenta en localStorage
   useEffect(() => {
     if (mesaNum) {
       localStorage.setItem(`nexus_mesa_${mesaNum}_cuenta`, JSON.stringify(cuentaMesa));
     }
   }, [cuentaMesa, mesaNum]);
+
+  // Suscripción en tiempo real: si el camarero marca la cuenta como atendida/cobrada en barra, limpiar mesa automáticamente
+  useEffect(() => {
+    if (!mesaNum) return;
+
+    const channel = supabase
+      .channel(`mesa-limpieza-${mesaNum}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'comandas_cocina' },
+        (payload: any) => {
+          const comandaModificada = payload.new;
+          // Si era una comanda de cuenta para esta mesa y su estado pasa a 'servido' (atendida/cobrada)
+          if (
+            comandaModificada && 
+            comandaModificada.tipo_destino === 'cuenta' && 
+            comandaModificada.mesa === `MESA ${mesaNum}` && 
+            comandaModificada.estado === 'servido'
+          ) {
+            // Limpiar la cuenta de la mesa y el almacenamiento local
+            setCuentaMesa([]);
+            setCarritoActual([]);
+            localStorage.removeItem(`nexus_mesa_${mesaNum}_cuenta`);
+            setMensaje('¡Cuenta cobrada con éxito! Gracias por vuestra visita.');
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [mesaNum]);
 
   const cargarProductosCarta = async () => {
     setLoadingCarta(true);
@@ -144,7 +173,6 @@ export default function TableOrder() {
 
       await Promise.all(promesas);
 
-      // Acumular lo enviado al historial de la cuenta de la mesa
       const nuevoHistorial = [...cuentaMesa];
       carritoActual.forEach(nuevoItem => {
         const indexExistente = nuevoHistorial.findIndex(item => item.id === nuevoItem.id);
@@ -180,6 +208,7 @@ export default function TableOrder() {
         ticket_number: ticketNum,
         mesa: `MESA ${mesaNum}`,
         tipo_destino: 'cuenta',
+        estado: 'pendiente',
         items: [{ nombre: '¡EL CLIENTE PIDE LA CUENTA!', cantidad: 1, variante: '', comentarios: `Total cuenta: ${totalCuentaAcumulada.toFixed(2)} €` }]
       }]);
 
@@ -206,7 +235,6 @@ export default function TableOrder() {
           </div>
         </div>
 
-        {/* Botón de Pedir Cuenta deshabilitado si no hay productos pedidos */}
         <button
           type="button"
           onClick={pedirCuenta}
@@ -223,7 +251,6 @@ export default function TableOrder() {
       </header>
 
       <main className={`max-w-3xl w-full mx-auto p-4 space-y-6 ${carritoActual.length > 0 ? 'pb-72' : 'pb-24'}`}>
-        {/* Resumen de la cuenta acumulada de la mesa (Lo ya pedido) */}
         {cuentaMesa.length > 0 && (
           <div className="p-4 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-3 shadow-xl">
             <div className="flex items-center justify-between pb-2 border-b border-white/10 text-cyan-400 font-bold text-xs uppercase tracking-wider">
@@ -244,7 +271,6 @@ export default function TableOrder() {
           </div>
         )}
 
-        {/* Pestañas de categorías */}
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
           <button
             onClick={() => setCategoriaActiva('bebidas')}
@@ -272,7 +298,6 @@ export default function TableOrder() {
           </button>
         </div>
 
-        {/* Listado de artículos de la carta */}
         {loadingCarta ? (
           <div className="text-center py-20 text-slate-500 text-sm">Cargando carta...</div>
         ) : (
@@ -305,7 +330,6 @@ export default function TableOrder() {
         )}
       </main>
 
-      {/* Barra flotante para enviar nuevos artículos seleccionados */}
       {carritoActual.length > 0 && (
         <div className="fixed bottom-0 left-0 right-0 bg-[#0c0e17]/95 backdrop-blur-md border-t border-cyan-500/40 p-4 shadow-2xl z-50 animate-slide-up">
           <div className="max-w-3xl mx-auto space-y-3">
