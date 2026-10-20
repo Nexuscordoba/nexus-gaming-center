@@ -16,17 +16,19 @@ import {
   TrendingUp,
   ChefHat,
   Flame,
-  CalendarDays
+  CalendarDays,
+  QrCode
 } from 'lucide-react';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
 import KitchenDisplay from './KitchenDisplay';
 import BarDisplay from './BarDisplay';
+import TableQrGenerator from './TableQrGenerator';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
-  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra'>('main');
+  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator'>('main');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
   // Estados para el Acceso Maestro Oculto en el Footer
@@ -76,6 +78,8 @@ export default function App() {
         setSubdomainRoute('cocina');
       } else if (hash === '#barra' || hash === '#/barra') {
         setSubdomainRoute('barra');
+      } else if (hash === '#qr' || hash === '#/qr') {
+        setSubdomainRoute('qr-generator');
       } else {
         setCurrentView('home');
       }
@@ -156,6 +160,11 @@ export default function App() {
   // Subdominio barra.nexusgamingcenter.es o #barra
   if (subdomainRoute === 'barra') {
     return <BarDisplay />;
+  }
+
+  // Generador de Códigos QR para Mesas
+  if (subdomainRoute === 'qr-generator') {
+    return <TableQrGenerator onBack={() => setSubdomainRoute('main')} />;
   }
 
   // Elementos de la Carta de la Cafetería
@@ -600,6 +609,17 @@ export default function App() {
                   className="flex items-center gap-1 hover:text-rose-400 transition-colors text-rose-400 font-bold text-xs"
                 >
                   <Lock className="h-3.5 w-3.5" /> Staff
+                </a>
+                <span>·</span>
+                <a 
+                  href="#qr" 
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setSubdomainRoute('qr-generator');
+                  }}
+                  className="flex items-center gap-1 hover:text-emerald-400 transition-colors cursor-pointer text-emerald-400 font-bold text-xs"
+                >
+                  <QrCode className="h-3.5 w-3.5" /> Códigos QR
                 </a>
                 <button
                   onClick={() => setAdminDesbloqueado(false)}
