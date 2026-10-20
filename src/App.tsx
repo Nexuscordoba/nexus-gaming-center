@@ -25,10 +25,11 @@ import LoyverseDashboard from './LoyverseDashboard';
 import KitchenDisplay from './KitchenDisplay';
 import BarDisplay from './BarDisplay';
 import TableQrGenerator from './TableQrGenerator';
+import TableOrder from './TableOrder';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
-  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator'>('main');
+  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa'>('main');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
   // Estados para el Acceso Maestro Oculto en el Footer
@@ -60,6 +61,9 @@ export default function App() {
         return;
       } else if (hostname.startsWith('barra.')) {
         setSubdomainRoute('barra');
+        return;
+      } else if (hash.startsWith('#/mesa/') || hash.startsWith('#mesa/')) {
+        setSubdomainRoute('mesa');
         return;
       } else {
         setSubdomainRoute('main');
@@ -165,6 +169,11 @@ export default function App() {
   // Generador de Códigos QR para Mesas
   if (subdomainRoute === 'qr-generator') {
     return <TableQrGenerator onBack={() => setSubdomainRoute('main')} />;
+  }
+
+  // Pantalla de Autopedido Digital por Mesa (QR)
+  if (subdomainRoute === 'mesa') {
+    return <TableOrder />;
   }
 
   // Elementos de la Carta de la Cafetería
