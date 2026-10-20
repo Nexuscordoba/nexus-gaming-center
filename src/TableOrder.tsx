@@ -6,7 +6,7 @@ interface Producto {
   id: number;
   nombre: string;
   precio: number;
-  categoria: 'desayunos' | 'tapeo' | 'bebidas' | 'menus';
+  categoria: 'bebidas' | 'tapeo' | 'menus';
   destino: 'cocina' | 'barra';
 }
 
@@ -18,7 +18,7 @@ export default function TableOrder() {
   const [enviando, setEnviando] = useState(false);
   const [enviandoCuenta, setEnviandoCuenta] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
-  const [categoriaActiva, setCategoriaActiva] = useState<'desayunos' | 'tapeo' | 'bebidas' | 'menus'>('desayunos');
+  const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
 
   useEffect(() => {
     const hash = window.location.hash;
@@ -169,12 +169,12 @@ export default function TableOrder() {
       <main className={`max-w-3xl w-full mx-auto p-4 space-y-6 ${carrito.length > 0 ? 'pb-72' : 'pb-24'}`}>
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
           <button
-            onClick={() => setCategoriaActiva('desayunos')}
+            onClick={() => setCategoriaActiva('bebidas')}
             className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'desayunos' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400'
+              categoriaActiva === 'bebidas' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400'
             }`}
           >
-            🥐 Desayunos
+            ☕ Cafetería
           </button>
           <button
             onClick={() => setCategoriaActiva('tapeo')}
@@ -182,15 +182,7 @@ export default function TableOrder() {
               categoriaActiva === 'tapeo' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400'
             }`}
           >
-            🍔 Tapeo & Burgers
-          </button>
-          <button
-            onClick={() => setCategoriaActiva('bebidas')}
-            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'bebidas' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400'
-            }`}
-          >
-            🥤 Bebidas
+            🍳 Cocina / Tapas
           </button>
           <button
             onClick={() => setCategoriaActiva('menus')}
