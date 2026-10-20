@@ -3,6 +3,7 @@ import { supabase } from './supabase';
 import { Plus, Minus, Send, MapPin, ReceiptText } from 'lucide-react';
 
 interface Producto {
+  id: number;
   nombre: string;
   precio: number;
   categoria: 'desayunos' | 'tapeo' | 'bebidas' | 'menus';
@@ -11,6 +12,8 @@ interface Producto {
 
 export default function TableOrder() {
   const [mesaNum, setMesaNum] = useState<string>('1');
+  const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
+  const [loadingCarta, setLoadingCarta] = useState(true);
   const [carrito, setCarrito] = useState<Array<Producto & { cantidad: number }>>([]);
   const [enviando, setEnviando] = useState(false);
   const [enviandoCuenta, setEnviandoCuenta] = useState(false);
@@ -27,42 +30,42 @@ export default function TableOrder() {
       const m = params.get('mesa');
       if (m) setMesaNum(m);
     }
+
+    cargarProductosCarta();
   }, []);
 
-  const productosCarta: Producto[] = [
-    { nombre: 'Café de Especialidad + Mollete Ibérico', precio: 3.50, categoria: 'desayunos', destino: 'barra' },
-    { nombre: 'Desayuno Nexus Power (Tostada Aguacate + Zumo)', precio: 4.80, categoria: 'desayunos', destino: 'barra' },
-    { nombre: 'Mollete Tradicional con Zurrapa o Pringá', precio: 2.90, categoria: 'desayunos', destino: 'barra' },
-    { nombre: 'Croissant Francés de Mantequilla', precio: 2.40, categoria: 'desayunos', destino: 'barra' },
+  const cargarProductosCarta = async () => {
+    setLoadingCarta(true);
+    const { data, error } = await supabase
+      .from('productos_carta')
+      .select('*')
+      .eq('activo', true)
+      .order('id', { ascending: true });
 
-    { nombre: 'Nachos Supreme con Queso y Guacamole', precio: 7.50, categoria: 'tapeo', destino: 'cocina' },
-    { nombre: 'Burger Smash Doble Bacon', precio: 8.90, categoria: 'tapeo', destino: 'cocina' },
-    { nombre: 'Perrito Caliente Especial Chinales', precio: 5.20, categoria: 'tapeo', destino: 'cocina' },
-    { nombre: 'Fingers de Pollo Crujiente (6 uds)', precio: 6.20, categoria: 'tapeo', destino: 'cocina' },
-
-    { nombre: 'Refresco de Importación (Dr Pepper / Mountain Dew)', precio: 2.50, categoria: 'bebidas', destino: 'barra' },
-    { nombre: 'Monster Energy / Red Bull', precio: 2.80, categoria: 'bebidas', destino: 'barra' },
-    { nombre: 'Tercio Cerveza Alhambra Reserva 1925', precio: 2.60, categoria: 'bebidas', destino: 'barra' },
-    { nombre: 'Kombucha Orgánica & Tés Fríos', precio: 2.80, categoria: 'bebidas', destino: 'barra' },
-
-    { nombre: 'Menú del Día Casero (1º, 2º, Pan y Bebida)', precio: 11.50, categoria: 'menus', destino: 'cocina' },
-  ];
+    if (data) {
+      setProductosCarta(data as Producto[]);
+    }
+    if (error) {
+      console.error('Error cargando carta:', error);
+    }
+    setLoadingCarta(false);
+  };
 
   const agregarAlCarrito = (prod: Producto) => {
     setCarrito(prev => {
-      const existe = prev.find(p => p.nombre === prod.nombre);
+      const existe = prev.find(p => p.id === prod.id);
       if (existe) {
-        return prev.map(p => p.nombre === prod.nombre ? { ...p, cantidad: p.cantidad + 1 } : p);
+        return prev.map(p => p.id === prod.id ? { ...p, cantidad: p.cantidad + 1 } : p);
       }
       return [...prev, { ...prod, cantidad: 1 }];
     });
     setMensaje(null);
   };
 
-  const cambiarCantidad = (nombre: string, delta: number) => {
+  const cambiarCantidad = (id: number, delta: number) => {
     setCarrito(prev => {
       return prev.map(p => {
-        if (p.nombre === nombre) {
+        if (p.id === id) {
           const nuevaCant = p.cantidad + delta;
           return nuevaCant > 0 ? { ...p, cantidad: nuevaCant } : null;
         }
@@ -71,7 +74,7 @@ export default function TableOrder() {
     });
   };
 
-  const totalCarrito = carrito.reduce((acc, item) => acc + (item.precio * item.cantidad), 0);
+  const totalCarrito = carrito.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
 
   const enviarPedido = async () => {
     if (carrito.length === 0) return;
@@ -199,25 +202,29 @@ export default function TableOrder() {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {productosCarta
-            .filter(p => p.categoria === categoriaActiva)
-            .map((prod, idx) => (
-              <div key={idx} className="p-4 rounded-2xl bg-[#0d0f17] border border-white/10 flex items-center justify-between gap-3 shadow-md">
-                <div>
-                  <h4 className="font-bold text-white text-sm">{prod.nombre}</h4>
-                  <span className="font-mono text-cyan-400 font-bold text-xs mt-1 block">{prod.precio.toFixed(2)} €</span>
+        {loadingCarta ? (
+          <div className="text-center py-20 text-slate-500 text-sm">Cargando carta desde base de datos...</div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {productosCarta
+              .filter(p => p.categoria === categoriaActiva)
+              .map((prod) => (
+                <div key={prod.id} className="p-4 rounded-2xl bg-[#0d0f17] border border-white/10 flex items-center justify-between gap-3 shadow-md">
+                  <div>
+                    <h4 className="font-bold text-white text-sm">{prod.nombre}</h4>
+                    <span className="font-mono text-cyan-400 font-bold text-xs mt-1 block">{Number(prod.precio).toFixed(2)} €</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => agregarAlCarrito(prod)}
+                    className="h-10 w-10 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md"
+                  >
+                    <Plus className="h-5 w-5" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => agregarAlCarrito(prod)}
-                  className="h-10 w-10 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md"
-                >
-                  <Plus className="h-5 w-5" />
-                </button>
-              </div>
-            ))}
-        </div>
+              ))}
+          </div>
+        )}
 
         {mensaje && (
           <div className="p-4 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 text-xs text-center font-semibold">
@@ -230,15 +237,15 @@ export default function TableOrder() {
         <div className="fixed bottom-0 left-0 right-0 bg-[#0c0e17]/95 backdrop-blur-md border-t border-white/10 p-4 shadow-2xl z-50">
           <div className="max-w-3xl mx-auto space-y-3">
             <div className="max-h-40 overflow-y-auto space-y-2 pr-1">
-              {carrito.map((item, idx) => (
-                <div key={idx} className="flex items-center justify-between text-xs bg-black/40 p-2.5 rounded-xl border border-white/5">
+              {carrito.map((item) => (
+                <div key={item.id} className="flex items-center justify-between text-xs bg-black/40 p-2.5 rounded-xl border border-white/5">
                   <span className="font-bold text-white truncate max-w-[180px]">{item.nombre}</span>
                   <div className="flex items-center gap-3">
-                    <span className="font-mono text-cyan-400 font-bold">{(item.precio * item.cantidad).toFixed(2)} €</span>
+                    <span className="font-mono text-cyan-400 font-bold">{(Number(item.precio) * item.cantidad).toFixed(2)} €</span>
                     <div className="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-lg">
-                      <button onClick={() => cambiarCantidad(item.nombre, -1)} className="text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
+                      <button onClick={() => cambiarCantidad(item.id, -1)} className="text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
                       <span className="font-mono font-bold text-white w-4 text-center">{item.cantidad}</span>
-                      <button onClick={() => cambiarCantidad(item.nombre, 1)} className="text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
+                      <button onClick={() => cambiarCantidad(item.id, 1)} className="text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
                     </div>
                   </div>
                 </div>
