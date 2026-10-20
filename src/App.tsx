@@ -22,10 +22,11 @@ import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
 import KitchenDisplay from './KitchenDisplay';
+import BarDisplay from './BarDisplay';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
-  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina'>('main');
+  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra'>('main');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
   // Estados para el Acceso Maestro Oculto en el Footer
@@ -55,6 +56,9 @@ export default function App() {
       } else if (hostname.startsWith('cocina.')) {
         setSubdomainRoute('cocina');
         return;
+      } else if (hostname.startsWith('barra.')) {
+        setSubdomainRoute('barra');
+        return;
       } else {
         setSubdomainRoute('main');
       }
@@ -70,6 +74,8 @@ export default function App() {
         setSubdomainRoute('ventas');
       } else if (hash === '#cocina' || hash === '#/cocina') {
         setSubdomainRoute('cocina');
+      } else if (hash === '#barra' || hash === '#/barra') {
+        setSubdomainRoute('barra');
       } else {
         setCurrentView('home');
       }
@@ -145,6 +151,11 @@ export default function App() {
   // Subdominio cocina.nexusgamingcenter.es o #cocina
   if (subdomainRoute === 'cocina') {
     return <KitchenDisplay />;
+  }
+
+  // Subdominio barra.nexusgamingcenter.es o #barra
+  if (subdomainRoute === 'barra') {
+    return <BarDisplay />;
   }
 
   // Elementos de la Carta de la Cafetería
@@ -560,7 +571,7 @@ export default function App() {
 
             {/* Acceso Maestro Oculto protegido por contraseña */}
             {adminDesbloqueado ? (
-              <div className="flex items-center gap-3 bg-white/5 px-3 py-1.5 rounded-xl border border-white/10">
+              <div className="flex items-center gap-3 bg-white/5 px-3 py-1.5 rounded-xl border border-white/10 flex-wrap">
                 <a 
                   href="#cocina" 
                   onClick={() => setSubdomainRoute('cocina')}
@@ -570,8 +581,16 @@ export default function App() {
                 </a>
                 <span>·</span>
                 <a 
+                  href="#barra" 
+                  onClick={() => setSubdomainRoute('barra')}
+                  className="flex items-center gap-1 hover:text-cyan-400 transition-colors cursor-pointer text-cyan-400 font-bold text-xs"
+                >
+                  <Coffee className="h-3.5 w-3.5" /> Barra
+                </a>
+                <span>·</span>
+                <a 
                   href="https://ventas.nexusgamingcenter.es" 
-                  className="flex items-center gap-1 hover:text-cyan-400 transition-colors text-cyan-400 font-bold text-xs"
+                  className="flex items-center gap-1 hover:text-sky-400 transition-colors text-sky-400 font-bold text-xs"
                 >
                   <TrendingUp className="h-3.5 w-3.5" /> TPV
                 </a>
