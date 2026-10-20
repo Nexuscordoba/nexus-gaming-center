@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Plus, Minus, Send, MapPin, ReceiptText } from 'lucide-react';
+import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart } from 'lucide-react';
 
 interface Producto {
   id: number;
@@ -10,33 +10,67 @@ interface Producto {
   destino: 'cocina' | 'barra';
 }
 
+interface ItemPedido {
+  id: number;
+  nombre: string;
+  precio: number;
+  cantidad: number;
+  destino: 'cocina' | 'barra';
+}
+
 export default function TableOrder() {
   const [mesaNum, setMesaNum] = useState<string>('1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [loadingCarta, setLoadingCarta] = useState(true);
-  const [carrito, setCarrito] = useState<Array<Producto & { cantidad: number }>>([]);
+  
+  // Carrito actual (lo que está seleccionando ahora mismo para enviar)
+  const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number }>>([]);
+  
+  // Historial acumulado de la mesa (lo que ya se pidió previamente y sigue en la cuenta)
+  const [cuentaMesa, setCuentaMesa] = useState<ItemPedido[]>([]);
+  
   const [enviando, setEnviando] = useState(false);
   const [enviandoCuenta, setEnviandoCuenta] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
 
+  // Detectar número de mesa y recuperar historial previo de la mesa
   useEffect(() => {
     const hash = window.location.hash;
     const match = hash.match(/mesa\/(\d+)/);
+    let mNum = '1';
     if (match && match[1]) {
-      setMesaNum(match[1]);
+      mNum = match[1];
     } else {
       const params = new URLSearchParams(window.location.search);
       const m = params.get('mesa');
-      if (m) setMesaNum(m);
+      if (m) mNum = m;
+    }
+    setMesaNum(mNum);
+
+    // Recuperar cuenta guardada en localStorage para esta mesa si recargan o reescanean el QR
+    const cuentaGuardada = localStorage.getItem(`nexus_mesa_${mNum}_cuenta`);
+    if (cuentaGuardada) {
+      try {
+        setCuentaMesa(JSON.parse(cuentaGuardada));
+      } catch (e) {
+        console.error(e);
+      }
     }
 
     cargarProductosCarta();
   }, []);
 
+  // Guardar cuenta en localStorage cada vez que cambie
+  useEffect(() => {
+    if (mesaNum) {
+      localStorage.setItem(`nexus_mesa_${mesaNum}_cuenta`, JSON.stringify(cuentaMesa));
+    }
+  }, [cuentaMesa, mesaNum]);
+
   const cargarProductosCarta = async () => {
     setLoadingCarta(true);
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('productos_carta')
       .select('*')
       .eq('activo', true)
@@ -45,14 +79,11 @@ export default function TableOrder() {
     if (data) {
       setProductosCarta(data as Producto[]);
     }
-    if (error) {
-      console.error('Error cargando carta:', error);
-    }
     setLoadingCarta(false);
   };
 
   const agregarAlCarrito = (prod: Producto) => {
-    setCarrito(prev => {
+    setCarritoActual(prev => {
       const existe = prev.find(p => p.id === prod.id);
       if (existe) {
         return prev.map(p => p.id === prod.id ? { ...p, cantidad: p.cantidad + 1 } : p);
@@ -62,8 +93,8 @@ export default function TableOrder() {
     setMensaje(null);
   };
 
-  const cambiarCantidad = (id: number, delta: number) => {
-    setCarrito(prev => {
+  const cambiarCantidadCarrito = (id: number, delta: number) => {
+    setCarritoActual(prev => {
       return prev.map(p => {
         if (p.id === id) {
           const nuevaCant = p.cantidad + delta;
@@ -74,16 +105,17 @@ export default function TableOrder() {
     });
   };
 
-  const totalCarrito = carrito.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
+  const totalCarritoActual = carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
+  const totalCuentaAcumulada = cuentaMesa.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
 
   const enviarPedido = async () => {
-    if (carrito.length === 0) return;
+    if (carritoActual.length === 0) return;
     setEnviando(true);
     setMensaje(null);
 
     try {
-      const itemsCocina = carrito.filter(i => i.destino === 'cocina');
-      const itemsBarra = carrito.filter(i => i.destino === 'barra');
+      const itemsCocina = carritoActual.filter(i => i.destino === 'cocina');
+      const itemsBarra = carritoActual.filter(i => i.destino === 'barra');
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
 
       const promesas = [];
@@ -112,8 +144,26 @@ export default function TableOrder() {
 
       await Promise.all(promesas);
 
-      setMensaje('¡Pedido enviado con éxito a cocina y barra!');
-      setCarrito([]);
+      // Acumular lo enviado al historial de la cuenta de la mesa
+      const nuevoHistorial = [...cuentaMesa];
+      carritoActual.forEach(nuevoItem => {
+        const indexExistente = nuevoHistorial.findIndex(item => item.id === nuevoItem.id);
+        if (indexExistente >= 0) {
+          nuevoHistorial[indexExistente].cantidad += nuevoItem.cantidad;
+        } else {
+          nuevoHistorial.push({
+            id: nuevoItem.id,
+            nombre: nuevoItem.nombre,
+            precio: Number(nuevoItem.precio),
+            cantidad: nuevoItem.cantidad,
+            destino: nuevoItem.destino
+          });
+        }
+      });
+
+      setCuentaMesa(nuevoHistorial);
+      setCarritoActual([]);
+      setMensaje('¡Pedido enviado a cocina y barra correctamente!');
     } catch (err: any) {
       setMensaje('Error al enviar el pedido: ' + err.message);
     } finally {
@@ -122,6 +172,7 @@ export default function TableOrder() {
   };
 
   const pedirCuenta = async () => {
+    if (totalCuentaAcumulada === 0) return;
     setEnviandoCuenta(true);
     try {
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
@@ -129,7 +180,7 @@ export default function TableOrder() {
         ticket_number: ticketNum,
         mesa: `MESA ${mesaNum}`,
         tipo_destino: 'cuenta',
-        items: [{ nombre: '¡EL CLIENTE PIDE LA CUENTA!', cantidad: 1, variante: '', comentarios: 'Llevar ticket en papel a mesa' }]
+        items: [{ nombre: '¡EL CLIENTE PIDE LA CUENTA!', cantidad: 1, variante: '', comentarios: `Total cuenta: ${totalCuentaAcumulada.toFixed(2)} €` }]
       }]);
 
       setMensaje('¡Cuenta solicitada! Un camarero se acercará con el ticket.');
@@ -155,18 +206,45 @@ export default function TableOrder() {
           </div>
         </div>
 
+        {/* Botón de Pedir Cuenta deshabilitado si no hay productos pedidos */}
         <button
           type="button"
           onClick={pedirCuenta}
-          disabled={enviandoCuenta}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-orange-600 text-white font-bold text-xs shadow-lg active:scale-95 transition-all cursor-pointer"
+          disabled={enviandoCuenta || totalCuentaAcumulada === 0}
+          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-white font-bold text-xs shadow-lg transition-all ${
+            totalCuentaAcumulada === 0 
+              ? 'bg-slate-700 opacity-50 cursor-not-allowed' 
+              : 'bg-gradient-to-r from-rose-600 to-orange-600 active:scale-95 cursor-pointer'
+          }`}
         >
           <ReceiptText className="h-4 w-4" />
           <span>{enviandoCuenta ? 'Avisando...' : 'Pedir Cuenta'}</span>
         </button>
       </header>
 
-      <main className={`max-w-3xl w-full mx-auto p-4 space-y-6 ${carrito.length > 0 ? 'pb-72' : 'pb-24'}`}>
+      <main className={`max-w-3xl w-full mx-auto p-4 space-y-6 ${carritoActual.length > 0 ? 'pb-72' : 'pb-24'}`}>
+        {/* Resumen de la cuenta acumulada de la mesa (Lo ya pedido) */}
+        {cuentaMesa.length > 0 && (
+          <div className="p-4 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-3 shadow-xl">
+            <div className="flex items-center justify-between pb-2 border-b border-white/10 text-cyan-400 font-bold text-xs uppercase tracking-wider">
+              <span className="flex items-center gap-1.5"><ShoppingCart className="h-4 w-4" /> Cuenta Acumulada de Mesa</span>
+              <span className="font-mono text-sm">{totalCuentaAcumulada.toFixed(2)} €</span>
+            </div>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {cuentaMesa.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between text-xs bg-black/40 px-3 py-2 rounded-xl border border-white/5">
+                  <span className="text-white font-medium">
+                    <span className="text-cyan-400 font-mono font-bold mr-2">{item.cantidad}x</span>
+                    {item.nombre}
+                  </span>
+                  <span className="font-mono text-slate-300">{(item.precio * item.cantidad).toFixed(2)} €</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Pestañas de categorías */}
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
           <button
             onClick={() => setCategoriaActiva('bebidas')}
@@ -194,8 +272,9 @@ export default function TableOrder() {
           </button>
         </div>
 
+        {/* Listado de artículos de la carta */}
         {loadingCarta ? (
-          <div className="text-center py-20 text-slate-500 text-sm">Cargando carta desde base de datos...</div>
+          <div className="text-center py-20 text-slate-500 text-sm">Cargando carta...</div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {productosCarta
@@ -219,25 +298,32 @@ export default function TableOrder() {
         )}
 
         {mensaje && (
-          <div className="p-4 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 text-xs text-center font-semibold">
-            {mensaje}
+          <div className="p-4 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 text-xs text-center font-semibold flex items-center justify-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            <span>{mensaje}</span>
           </div>
         )}
       </main>
 
-      {carrito.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 bg-[#0c0e17]/95 backdrop-blur-md border-t border-white/10 p-4 shadow-2xl z-50">
+      {/* Barra flotante para enviar nuevos artículos seleccionados */}
+      {carritoActual.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-[#0c0e17]/95 backdrop-blur-md border-t border-cyan-500/40 p-4 shadow-2xl z-50 animate-slide-up">
           <div className="max-w-3xl mx-auto space-y-3">
-            <div className="max-h-40 overflow-y-auto space-y-2 pr-1">
-              {carrito.map((item) => (
+            <div className="text-xs font-bold text-cyan-400 uppercase tracking-wider flex items-center justify-between">
+              <span>Nuevos artículos a pedir:</span>
+              <span className="font-mono">{totalCarritoActual.toFixed(2)} €</span>
+            </div>
+
+            <div className="max-h-36 overflow-y-auto space-y-2 pr-1">
+              {carritoActual.map((item) => (
                 <div key={item.id} className="flex items-center justify-between text-xs bg-black/40 p-2.5 rounded-xl border border-white/5">
                   <span className="font-bold text-white truncate max-w-[180px]">{item.nombre}</span>
                   <div className="flex items-center gap-3">
                     <span className="font-mono text-cyan-400 font-bold">{(Number(item.precio) * item.cantidad).toFixed(2)} €</span>
                     <div className="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-lg">
-                      <button onClick={() => cambiarCantidad(item.id, -1)} className="text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
+                      <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
                       <span className="font-mono font-bold text-white w-4 text-center">{item.cantidad}</span>
-                      <button onClick={() => cambiarCantidad(item.id, 1)} className="text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
+                      <button onClick={() => cambiarCantidadCarrito(item.id, 1)} className="text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
                     </div>
                   </div>
                 </div>
@@ -246,8 +332,8 @@ export default function TableOrder() {
 
             <div className="flex items-center justify-between pt-2 border-t border-white/10">
               <div>
-                <span className="text-[10px] text-slate-400 uppercase font-bold block">Total Pedido</span>
-                <span className="text-xl font-black text-cyan-300 font-mono">{totalCarrito.toFixed(2)} €</span>
+                <span className="text-[10px] text-slate-400 uppercase font-bold block">Total a Enviar</span>
+                <span className="text-xl font-black text-cyan-300 font-mono">{totalCarritoActual.toFixed(2)} €</span>
               </div>
               <button
                 type="button"
