@@ -42,7 +42,7 @@ export default function KitchenDisplay() {
     cargarComandas();
 
     const channel = supabase
-      .channel('realtime-cocina')
+      .channel('realtime-cocina-v2')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'comandas_cocina' },
@@ -70,7 +70,7 @@ export default function KitchenDisplay() {
     const nuevosItems = [...comandaActual.items];
     const elPlato = nuevosItems[indexItem];
     
-    // Cambiar estado individual del plato
+    // Alternar estado individual del plato
     elPlato.listo = !elPlato.listo;
 
     const todosListos = nuevosItems.every(it => it.listo);
