@@ -1,19 +1,22 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { ChefHat, CheckCircle2, Clock, Flame, Utensils, Bell, ArrowLeft } from 'lucide-react';
+import { ChefHat, CheckCircle2, Clock, Flame, Utensils, ArrowLeft } from 'lucide-react';
+
+interface ItemComanda {
+  id?: string;
+  nombre: string;
+  cantidad: number;
+  comentarios?: string;
+  es_menu?: boolean;
+  listo?: boolean;
+}
 
 interface Comanda {
   id: string;
   ticket_number: string;
   mesa: string;
   created_at: string;
-  items: Array<{
-    nombre: string;
-    variante: string;
-    cantidad: number;
-    comentarios: string;
-    es_menu: boolean;
-  }>;
+  items: ItemComanda[];
   estado: 'pendiente' | 'listo' | 'servido';
   tipo_destino: string;
 }
@@ -39,7 +42,6 @@ export default function KitchenDisplay() {
   useEffect(() => {
     cargarComandas();
 
-    // Suscripción en tiempo real de Supabase
     const channel = supabase
       .channel('realtime-cocina')
       .on(
@@ -51,7 +53,6 @@ export default function KitchenDisplay() {
       )
       .subscribe();
 
-    // REFRESO AUTOMÁTICO CADA 8 SEGUNDOS (Polling de seguridad)
     const interval = setInterval(() => {
       cargarComandas();
     }, 8000);
@@ -62,10 +63,43 @@ export default function KitchenDisplay() {
     };
   }, []);
 
-  const actualizarEstado = async (id: string, nuevoEstado: 'pendiente' | 'listo' | 'servido') => {
+  const toggleItemListo = async (comandaId: string, indexItem: number) => {
+    const comandaActual = comandas.find(c => c.id === comandaId);
+    if (!comandaActual) return;
+
+    const nuevosItems = [...comandaActual.items];
+    nuevosItems[indexItem].listo = !nuevosItems[indexItem].listo;
+
+    const todosListos = nuevosItems.every(it => it.listo);
+    const nuevoEstadoComanda = todosListos ? 'listo' : 'pendiente';
+
     await supabase
       .from('comandas_cocina')
-      .update({ estado: nuevoEstado })
+      .update({ items: nuevosItems, estado: nuevoEstadoComanda })
+      .eq('id', comandaId);
+
+    // Notificar a barra de forma directa que hay un plato listo para servir
+    if (nuevosItems[indexItem].listo) {
+      await supabase.from('comandas_cocina').insert([{
+        ticket_number: comandaActual.ticket_number,
+        mesa: comandaActual.mesa,
+        tipo_destino: 'barra',
+        estado: 'pendiente',
+        items: [{ 
+          nombre: `🍲 LISTO EN COCINA: ${nuevosItems[indexItem].nombre}`, 
+          cantidad: nuevosItems[indexItem].cantidad, 
+          comentarios: 'Retirar de cocina y servir en mesa' 
+        }]
+      }]);
+    }
+
+    cargarComandas();
+  };
+
+  const archivarComanda = async (id: string) => {
+    await supabase
+      .from('comandas_cocina')
+      .update({ estado: 'servido' })
       .eq('id', id);
 
     cargarComandas();
@@ -88,13 +122,13 @@ export default function KitchenDisplay() {
           </div>
           <div>
             <h1 className="text-xl font-black tracking-wide text-white">NEXUS KDS · PANTALLA DE COCINA</h1>
-            <p className="text-xs text-slate-400">Chinales 45 · Platos calientes y menús</p>
+            <p className="text-xs text-slate-400">Chinales 45 · Selección individual por plato</p>
           </div>
         </div>
 
         <div className="flex items-center gap-4">
           <span className="text-xs font-mono text-amber-400 bg-amber-950/40 px-3.5 py-1.5 rounded-xl border border-amber-500/20 hidden sm:inline">
-            {comandas.filter(c => c.estado === 'pendiente').length} Platos pendientes
+            {comandas.filter(c => c.estado === 'pendiente').length} Comandas pendientes
           </span>
 
           <button
@@ -149,58 +183,57 @@ export default function KitchenDisplay() {
                       </div>
                     </div>
 
-                    {comanda.estado === 'listo' && (
-                      <div className="p-3 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2">
-                        <Bell className="h-4 w-4 shrink-0 text-emerald-400" />
-                        <span>¡PLATO LISTO EN COCINA!</span>
-                      </div>
-                    )}
+                    <p className="text-[11px] text-slate-400 italic">
+                      Haz clic en un plato para marcarlo como listo individualmente:
+                    </p>
 
-                    <div className="space-y-3">
+                    <div className="space-y-2.5">
                       {comanda.items.map((it, idx) => (
-                        <div key={idx} className="p-3 rounded-xl bg-black/40 border border-white/5 space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-white text-sm">
+                        <div
+                          key={idx}
+                          onClick={() => toggleItemListo(comanda.id, idx)}
+                          className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                            it.listo
+                              ? 'bg-emerald-900/40 border-emerald-500/60 text-emerald-200 line-through opacity-75'
+                              : 'bg-black/40 border-white/10 hover:border-amber-500/50 text-white'
+                          }`}
+                        >
+                          <div className="space-y-0.5">
+                            <span className="font-bold text-sm">
                               <span className="text-amber-400 font-mono mr-2">{it.cantidad}x</span>
                               {it.nombre}
                             </span>
-                            {it.es_menu && (
-                              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                Menú
+                            {it.comentarios && (
+                              <p className="text-xs text-rose-300 italic flex items-center gap-1">
+                                <Flame className="h-3 w-3 shrink-0" /> {it.comentarios}
+                              </p>
+                            )}
+                          </div>
+                          <div className="shrink-0">
+                            {it.listo ? (
+                              <span className="text-xs bg-emerald-500 text-slate-950 font-bold px-2.5 py-1 rounded-xl flex items-center gap-1">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> Listo
+                              </span>
+                            ) : (
+                              <span className="text-[10px] bg-white/10 text-slate-300 px-2.5 py-1 rounded-xl border border-white/10">
+                                Marcar listo
                               </span>
                             )}
                           </div>
-                          {it.variante && <p className="text-xs text-slate-400">{it.variante}</p>}
-                          {it.comentarios && (
-                            <p className="text-xs text-rose-300 italic bg-rose-950/30 p-1.5 rounded-lg border border-rose-500/20 flex items-center gap-1">
-                              <Flame className="h-3 w-3 shrink-0" /> {it.comentarios}
-                            </p>
-                          )}
                         </div>
                       ))}
                     </div>
                   </div>
 
                   <div className="mt-5 pt-3 border-t border-white/10">
-                    {comanda.estado === 'pendiente' ? (
-                      <button
-                        type="button"
-                        onClick={() => actualizarEstado(comanda.id, 'listo')}
-                        className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
-                      >
-                        <CheckCircle2 className="h-4 w-4" />
-                        Marcar Plato como Listo
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => actualizarEstado(comanda.id, 'servido')}
-                        className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
-                      >
-                        <CheckCircle2 className="h-4 w-4" />
-                        Entregado en Mesa / Archivar
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => archivarComanda(comanda.id)}
+                      className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      Archivar / Todo Entregado en Mesa
+                    </button>
                   </div>
                 </div>
               );
@@ -210,7 +243,7 @@ export default function KitchenDisplay() {
       </main>
 
       <footer className="mt-8 border-t border-white/5 pt-4 text-center text-xs text-slate-500">
-        NEXUS KDS · Módulo de Cocina
+        NEXUS KDS · Módulo de Cocina con Selección Individual
       </footer>
     </div>
   );

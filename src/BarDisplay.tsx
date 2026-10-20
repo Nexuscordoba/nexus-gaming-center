@@ -37,7 +37,6 @@ export default function BarDisplay() {
   useEffect(() => {
     cargarComandas();
 
-    // Suscripción en tiempo real de Supabase
     const channel = supabase
       .channel('realtime-barra')
       .on(
@@ -49,7 +48,6 @@ export default function BarDisplay() {
       )
       .subscribe();
 
-    // REFRESO AUTOMÁTICO CADA 8 SEGUNDOS (Polling de seguridad)
     const interval = setInterval(() => {
       cargarComandas();
     }, 8000);
@@ -86,7 +84,7 @@ export default function BarDisplay() {
           </div>
           <div>
             <h1 className="text-xl font-black tracking-wide text-white">NEXUS KDS · PANTALLA DE BARRA</h1>
-            <p className="text-xs text-slate-400">Bebidas, cafés y avisos de cuentas de clientes</p>
+            <p className="text-xs text-slate-400">Bebidas, avisos de cocina y cuentas de clientes</p>
           </div>
         </div>
 
@@ -128,9 +126,7 @@ export default function BarDisplay() {
                   className={`rounded-3xl border p-5 flex flex-col justify-between transition-all ${
                     esCuenta
                       ? 'bg-rose-950/40 border-rose-500/70 shadow-[0_0_30px_rgba(244,63,94,0.2)] animate-pulse'
-                      : comanda.estado === 'listo'
-                      ? 'bg-emerald-950/40 border-emerald-500/60'
-                      : 'bg-[#0c0e17] border-white/10'
+                      : 'bg-[#0c0e17] border-cyan-500/40 shadow-[0_0_20px_rgba(0,242,254,0.1)]'
                   }`}
                 >
                   <div className="space-y-4">
@@ -178,7 +174,7 @@ export default function BarDisplay() {
                       className="w-full py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
                     >
                       <CheckCircle2 className="h-4 w-4" />
-                      {esCuenta ? 'Cuenta Atendida / Cobrada' : 'Bebida Lista / Servida'}
+                      {esCuenta ? 'Cuenta Atendida / Cobrada' : 'Aviso Atendido / Servido'}
                     </button>
                   </div>
                 </div>
@@ -189,7 +185,7 @@ export default function BarDisplay() {
       </main>
 
       <footer className="mt-8 border-t border-white/5 pt-4 text-center text-xs text-slate-500">
-        NEXUS KDS · Módulo de Barra y Cuentas
+        NEXUS KDS · Módulo de Barra
       </footer>
     </div>
   );
