@@ -6,7 +6,7 @@ interface TableQrGeneratorProps {
 }
 
 export default function TableQrGenerator({ onBack }: TableQrGeneratorProps) {
-  const [numMesas, setNumMesas] = useState<number>(10); // Por defecto generamos para 10 mesas
+  const [numMesas, setNumMesas] = useState<number>(10);
 
   const mesasArray = Array.from({ length: numMesas }, (_, i) => i + 1);
 
@@ -24,7 +24,7 @@ export default function TableQrGenerator({ onBack }: TableQrGeneratorProps) {
           </div>
           <div>
             <h1 className="text-xl font-black tracking-wide text-white">NEXUS · GENERADOR DE QR PARA MESAS</h1>
-            <p className="text-xs text-slate-400">Chinales 45 · Códigos para autopedido y cuenta</p>
+            <p className="text-xs text-slate-400">Chinales 45 · Códigos directos a carta y pedidos</p>
           </div>
         </div>
 
@@ -61,10 +61,11 @@ export default function TableQrGenerator({ onBack }: TableQrGeneratorProps) {
         </div>
       </header>
 
-      {/* Cuadrícula de QRs listos para pantalla e impresión */}
+      {/* Cuadrícula de QRs */}
       <main className="flex-1 max-w-6xl mx-auto w-full">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 print:grid-cols-2 print:gap-4">
           {mesasArray.map((mesa) => {
+            // RUTA DIRECTA AL SISTEMA DE PEDIDOS DE ESA MESA
             const urlMesa = `https://nexusgamingcenter.es/#/mesa/${mesa}`;
             const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(urlMesa)}`;
 
@@ -92,7 +93,7 @@ export default function TableQrGenerator({ onBack }: TableQrGeneratorProps) {
 
                 <div className="mt-4 space-y-1">
                   <p className="text-[11px] text-slate-400 print:text-slate-700 font-medium">
-                    Escanea para ver la carta, pedir y solicitar cuenta
+                    Escanea para ver la carta, pedir platos y pedir la cuenta
                   </p>
                   <span className="text-[9px] font-mono text-slate-500 print:text-slate-500 block truncate max-w-[200px] mx-auto">
                     {urlMesa}
