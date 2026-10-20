@@ -15,7 +15,8 @@ import {
   KeyRound,
   TrendingUp,
   ChefHat,
-  Flame
+  Flame,
+  CalendarDays
 } from 'lucide-react';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
@@ -420,7 +421,7 @@ export default function App() {
               <div className="rounded-2xl border border-cyan-500/40 bg-gradient-to-b from-cyan-950/30 to-[#0c0d14]/90 backdrop-blur p-6 flex flex-col justify-between hover:border-cyan-400 transition-all group relative overflow-hidden shadow-[0_0_30px_rgba(0,242,254,0.1)]">
                 <div>
                   <div className="h-12 w-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
-                    <Calendar className="h-6 w-6" />
+                    <CalendarDays className="h-6 w-6" />
                   </div>
                   <span className="text-[10px] font-bold tracking-wider uppercase text-cyan-400 bg-cyan-950/80 border border-cyan-500/30 px-2 py-0.5 rounded mb-2 inline-block">
                     Próximos Torneos
