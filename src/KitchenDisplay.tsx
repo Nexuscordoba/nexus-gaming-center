@@ -23,7 +23,6 @@ export default function KitchenDisplay() {
   const [loading, setLoading] = useState(true);
 
   const cargarComandas = async () => {
-    setLoading(true);
     const { data } = await supabase
       .from('comandas_cocina')
       .select('*')
@@ -40,6 +39,7 @@ export default function KitchenDisplay() {
   useEffect(() => {
     cargarComandas();
 
+    // Suscripción en tiempo real de Supabase
     const channel = supabase
       .channel('realtime-cocina')
       .on(
@@ -51,8 +51,14 @@ export default function KitchenDisplay() {
       )
       .subscribe();
 
+    // REFRESO AUTOMÁTICO CADA 8 SEGUNDOS (Polling de seguridad)
+    const interval = setInterval(() => {
+      cargarComandas();
+    }, 8000);
+
     return () => {
       supabase.removeChannel(channel);
+      clearInterval(interval);
     };
   }, []);
 

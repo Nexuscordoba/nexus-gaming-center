@@ -138,7 +138,7 @@ export default function TableOrder() {
   };
 
   return (
-    <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between pb-24 selection:bg-cyan-500 selection:text-black">
+    <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
       <header className="border-b border-white/10 bg-[#08090d]/90 backdrop-blur px-5 py-4 sticky top-0 z-40 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-black">
@@ -163,7 +163,7 @@ export default function TableOrder() {
         </button>
       </header>
 
-      <main className="max-w-3xl w-full mx-auto p-4 space-y-6">
+      <main className={`max-w-3xl w-full mx-auto p-4 space-y-6 ${carrito.length > 0 ? 'pb-72' : 'pb-24'}`}>
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
           <button
             onClick={() => setCategoriaActiva('desayunos')}
