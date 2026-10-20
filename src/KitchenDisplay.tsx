@@ -3,7 +3,6 @@ import { supabase } from './supabase';
 import { ChefHat, CheckCircle2, Clock, Flame, Utensils, ArrowLeft } from 'lucide-react';
 
 interface ItemComanda {
-  id?: string;
   nombre: string;
   cantidad: number;
   comentarios?: string;
@@ -55,7 +54,7 @@ export default function KitchenDisplay() {
 
     const interval = setInterval(() => {
       cargarComandas();
-    }, 8000);
+    }, 5000);
 
     return () => {
       supabase.removeChannel(channel);
@@ -63,32 +62,37 @@ export default function KitchenDisplay() {
     };
   }, []);
 
-  const toggleItemListo = async (comandaId: string, indexItem: number) => {
+  // Marcar un plato individual como listo y generar el aviso en barra
+  const marcarPlatoListo = async (comandaId: string, indexItem: number) => {
     const comandaActual = comandas.find(c => c.id === comandaId);
     if (!comandaActual) return;
 
     const nuevosItems = [...comandaActual.items];
-    nuevosItems[indexItem].listo = !nuevosItems[indexItem].listo;
+    const elPlato = nuevosItems[indexItem];
+    
+    // Cambiar estado individual del plato
+    elPlato.listo = !elPlato.listo;
 
     const todosListos = nuevosItems.every(it => it.listo);
     const nuevoEstadoComanda = todosListos ? 'listo' : 'pendiente';
 
+    // 1. Actualizar comanda en cocina
     await supabase
       .from('comandas_cocina')
       .update({ items: nuevosItems, estado: nuevoEstadoComanda })
       .eq('id', comandaId);
 
-    // Notificar a barra de forma directa que hay un plato listo para servir
-    if (nuevosItems[indexItem].listo) {
+    // 2. Si se ha marcado como listo, crear el aviso explícito en la pantalla de Barra
+    if (elPlato.listo) {
       await supabase.from('comandas_cocina').insert([{
         ticket_number: comandaActual.ticket_number,
         mesa: comandaActual.mesa,
         tipo_destino: 'barra',
         estado: 'pendiente',
         items: [{ 
-          nombre: `🍲 LISTO EN COCINA: ${nuevosItems[indexItem].nombre}`, 
-          cantidad: nuevosItems[indexItem].cantidad, 
-          comentarios: 'Retirar de cocina y servir en mesa' 
+          nombre: `🍲 LISTO PARA RECOGER: ${elPlato.nombre}`, 
+          cantidad: elPlato.cantidad, 
+          comentarios: 'Plato caliente terminado en cocina' 
         }]
       }]);
     }
@@ -183,19 +187,19 @@ export default function KitchenDisplay() {
                       </div>
                     </div>
 
-                    <p className="text-[11px] text-slate-400 italic">
-                      Haz clic en un plato para marcarlo como listo individualmente:
+                    <p className="text-[11px] text-cyan-400 font-medium">
+                      💡 Haz clic directamente en cada plato para marcarlo como listo y avisar a barra:
                     </p>
 
                     <div className="space-y-2.5">
                       {comanda.items.map((it, idx) => (
                         <div
                           key={idx}
-                          onClick={() => toggleItemListo(comanda.id, idx)}
-                          className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                          onClick={() => marcarPlatoListo(comanda.id, idx)}
+                          className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
                             it.listo
-                              ? 'bg-emerald-900/40 border-emerald-500/60 text-emerald-200 line-through opacity-75'
-                              : 'bg-black/40 border-white/10 hover:border-amber-500/50 text-white'
+                              ? 'bg-emerald-950/60 border-emerald-500/80 text-emerald-300 line-through'
+                              : 'bg-black/50 border-white/15 hover:border-cyan-400 text-white shadow-md'
                           }`}
                         >
                           <div className="space-y-0.5">
@@ -211,12 +215,12 @@ export default function KitchenDisplay() {
                           </div>
                           <div className="shrink-0">
                             {it.listo ? (
-                              <span className="text-xs bg-emerald-500 text-slate-950 font-bold px-2.5 py-1 rounded-xl flex items-center gap-1">
-                                <CheckCircle2 className="h-3.5 w-3.5" /> Listo
+                              <span className="text-xs bg-emerald-500 text-slate-950 font-black px-3 py-1.5 rounded-xl flex items-center gap-1 shadow">
+                                <CheckCircle2 className="h-4 w-4" /> Listo
                               </span>
                             ) : (
-                              <span className="text-[10px] bg-white/10 text-slate-300 px-2.5 py-1 rounded-xl border border-white/10">
-                                Marcar listo
+                              <span className="text-xs bg-white/10 hover:bg-cyan-500 hover:text-slate-950 text-slate-200 px-3 py-1.5 rounded-xl border border-white/20 font-bold transition-colors">
+                                Marcar Listo
                               </span>
                             )}
                           </div>
@@ -225,7 +229,7 @@ export default function KitchenDisplay() {
                     </div>
                   </div>
 
-                  <div className="mt-5 pt-3 border-t border-white/10">
+                  <div className="mt-6 pt-3 border-t border-white/10">
                     <button
                       type="button"
                       onClick={() => archivarComanda(comanda.id)}
@@ -243,7 +247,7 @@ export default function KitchenDisplay() {
       </main>
 
       <footer className="mt-8 border-t border-white/5 pt-4 text-center text-xs text-slate-500">
-        NEXUS KDS · Módulo de Cocina con Selección Individual
+        NEXUS KDS · Módulo de Cocina con Avisos a Barra
       </footer>
     </div>
   );
