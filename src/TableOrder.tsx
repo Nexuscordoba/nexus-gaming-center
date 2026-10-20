@@ -75,14 +75,12 @@ export default function TableOrder() {
         { event: 'UPDATE', schema: 'public', table: 'comandas_cocina' },
         (payload: any) => {
           const comandaModificada = payload.new;
-          // Si era una comanda de cuenta para esta mesa y su estado pasa a 'servido' (atendida/cobrada)
           if (
             comandaModificada && 
             comandaModificada.tipo_destino === 'cuenta' && 
             comandaModificada.mesa === `MESA ${mesaNum}` && 
             comandaModificada.estado === 'servido'
           ) {
-            // Limpiar la cuenta de la mesa y el almacenamiento local
             setCuentaMesa([]);
             setCarritoActual([]);
             localStorage.removeItem(`nexus_mesa_${mesaNum}_cuenta`);
