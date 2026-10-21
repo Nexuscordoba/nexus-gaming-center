@@ -34,16 +34,13 @@ export default function App() {
   const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa' | 'waiter'>('main');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
-  // Estados para el Acceso Maestro Oculto en el Footer
   const [adminDesbloqueado, setAdminDesbloqueado] = useState(false);
   const [modalAdminOpen, setModalAdminOpen] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
 
-  // Pestaña activa en la carta de la cafetería
   const [categoriaCarta, setCategoriaCarta] = useState<'desayunos' | 'tapeo' | 'meriendas' | 'bebidas'>('desayunos');
 
-  // Detectar la ruta en la URL o subdominio
   useEffect(() => {
     const handleRouting = () => {
       const hostname = window.location.hostname.toLowerCase();
@@ -116,12 +113,10 @@ export default function App() {
     }
   };
 
-  // Subdominio equipo.nexusgamingcenter.es o #equipo
   if (subdomainRoute === 'staff') {
     return <StaffPortal />;
   }
 
-  // Subdominio escape.nexusgamingcenter.es o #escape
   if (subdomainRoute === 'escape') {
     return (
       <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans flex flex-col justify-between">
@@ -155,37 +150,30 @@ export default function App() {
     );
   }
 
-  // Subdominio ventas.nexusgamingcenter.es o #ventas
   if (subdomainRoute === 'ventas') {
     return <LoyverseDashboard />;
   }
 
-  // Subdominio cocina.nexusgamingcenter.es o #cocina
   if (subdomainRoute === 'cocina') {
     return <KitchenDisplay />;
   }
 
-  // Subdominio barra.nexusgamingcenter.es o #barra
   if (subdomainRoute === 'barra') {
     return <BarDisplay />;
   }
 
-  // Generador de Códigos QR para Mesas
   if (subdomainRoute === 'qr-generator') {
     return <TableQrGenerator onBack={() => setSubdomainRoute('main')} />;
   }
 
-  // Pantalla de Autopedido Digital por Mesa (QR)
   if (subdomainRoute === 'mesa') {
     return <TableOrder />;
   }
 
-  // Pantalla Interna de Camareros
   if (subdomainRoute === 'waiter') {
     return <TableWaiter onBack={() => setSubdomainRoute('main')} />;
   }
 
-  // Elementos de la Carta de la Cafetería
   const cartaItems: Record<string, Array<{ nombre: string; desc: string; precio: string; destacado?: boolean }>> = {
     desayunos: [
       { nombre: 'Café Especialidad + Mollete Ibérico', desc: 'Café 100% arábica + mollete tostado con AOVE, tomate y jamón ibérico de Los Pedroches.', precio: '3,50 €', destacado: true },
@@ -215,7 +203,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans selection:bg-cyan-500 selection:text-black flex flex-col justify-between">
-      {/* Barra de navegación superior */}
       <header className="border-b border-white/[0.06] bg-[#06070a]/90 backdrop-blur sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
           <div 
@@ -265,9 +252,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* CONTENIDO SEGÚN LA VISTA SELECCIONADA */}
       {currentView === 'bar' ? (
-        /* VISTA EXCLUSIVA DE LA CAFETERÍA (/bar) CON CARTA INTERACTIVA */
         <main className="flex-grow">
           <section className="relative overflow-hidden py-16 sm:py-24 border-b border-white/[0.06]">
             <div className="absolute inset-0 z-0">
@@ -304,7 +289,6 @@ export default function App() {
             </div>
           </section>
 
-          {/* CARTA INTERACTIVA POR CATEGORÍAS */}
           <section className="max-w-6xl mx-auto px-5 py-16">
             <div className="text-center max-w-3xl mx-auto mb-10">
               <div className="inline-flex items-center gap-2 text-cyan-400 text-xs font-bold uppercase tracking-wider mb-2">
@@ -389,7 +373,6 @@ export default function App() {
           </section>
         </main>
       ) : (
-        /* VISTA PRINCIPAL / PORTAL GENERAL */
         <main className="flex-grow">
           <section className="relative overflow-hidden py-24 sm:py-32 border-b border-white/[0.06]">
             <div className="absolute inset-0 z-0">
@@ -434,7 +417,6 @@ export default function App() {
             </div>
           </section>
 
-          {/* Tres Pilares Centrales */}
           <section className="max-w-6xl mx-auto px-5 py-16 space-y-12">
             <div className="grid gap-6 md:grid-cols-3">
               <div 
@@ -502,7 +484,6 @@ export default function App() {
         </main>
       )}
 
-      {/* SECCIÓN DE CONTACTO & UBICACIÓN */}
       <section id="ubicacion" className="max-w-6xl mx-auto px-5 pb-12 w-full">
         <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/80 p-8 shadow-xl">
           <div className="grid gap-8 md:grid-cols-2">
@@ -546,7 +527,6 @@ export default function App() {
         </div>
       </section>
 
-      {/* Modal Informativo de Carta */}
       {menuModalOpen && (
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4"
@@ -585,7 +565,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Pie de página con Acceso Maestro Oculto */}
       <footer className="border-t border-white/[0.06] bg-[#050608] text-slate-500 text-xs py-8 relative">
         <div className="max-w-6xl mx-auto px-5 flex flex-col sm:flex-row items-center justify-between gap-4">
           <p>© {new Date().getFullYear()} NEXUS CORDOBA SL. NIF: B93887990. Todos los derechos reservados.</p>
@@ -596,7 +575,6 @@ export default function App() {
             </span>
             <span>·</span>
 
-            {/* Acceso Maestro Oculto protegido por contraseña */}
             {adminDesbloqueado ? (
               <div className="flex items-center gap-3 bg-white/5 px-3 py-1.5 rounded-xl border border-white/10 flex-wrap">
                 <a 
@@ -670,7 +648,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Modal de Contraseña Maestra */}
         {modalAdminOpen && (
           <div 
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4"

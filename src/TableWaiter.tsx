@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard, Eye } from 'lucide-react';
+import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard } from 'lucide-react';
 
 interface Producto {
   id: number;
@@ -50,7 +50,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   }, []);
 
   useEffect(() => {
-    // Cargar la cuenta de la mesa seleccionada desde las comandas activas en Supabase
     const encontrada = mesasAbiertas.find(m => m.mesa === `MESA ${mesaSeleccionada}`);
     if (encontrada && encontrada.items) {
       setCuentaMesaActual(encontrada.items);
@@ -74,7 +73,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const cargarMesasAbiertas = async () => {
-    // Buscar comandas activas que no sean de tipo cuenta ni estén servidas/cobradas
     const { data } = await supabase
       .from('comandas_cocina')
       .select('*')
@@ -83,7 +81,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       .order('created_at', { ascending: true });
 
     if (data) {
-      // Agrupar por mesa
       const mapMesas: Record<string, MesaAbierta> = {};
       data.forEach((row: any) => {
         const mKey = row.mesa;
@@ -109,7 +106,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         }
       });
 
-      // Calcular totales
       const listado: MesaAbierta[] = Object.values(mapMesas).map(m => {
         const total = m.items.reduce((acc, i) => acc + (i.precio * i.cantidad), 0);
         return { ...m, total_ticket: total };
@@ -142,8 +138,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     });
   };
 
-  const totalCarritoActual = carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
-  const totalCuentaMesa = cuentaMesaActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0) + totalCarritoActual;
+  const totalCuentaMesa = cuentaMesaActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0) + carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
 
   const enviarPedidoCamarero = async () => {
     if (carritoActual.length === 0) return;
@@ -190,20 +185,17 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  // Cobrar mesa e identificar método de pago para el arqueo de caja
   const cobrarMesa = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
     const mesaObj = mesasAbiertas.find(m => m.mesa === mesaNombre);
     if (!mesaObj) return;
 
     try {
-      // 1. Marcar todas las comandas de esta mesa como servidas/archivadas en Supabase
       await supabase
         .from('comandas_cocina')
         .update({ estado: 'servido', metodo_pago: metodo })
         .eq('mesa', mesaNombre)
         .neq('estado', 'servido');
 
-      // 2. Registrar el importe en la caja diaria para el arqueo
       const fechaHoy = new Date().toISOString().split('T')[0];
       const { data: cajaData } = await supabase
         .from('caja_diaria')
@@ -217,7 +209,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         await supabase
           .from('caja_diaria')
           .update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta })
-          .eq('fecha', fechaHoy);
+          .eq('id', cajaData.id);
       } else {
         await supabase.from('caja_diaria').insert([{
           fecha: fechaHoy,
@@ -227,7 +219,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         }]);
       }
 
-      // 3. Limpiar almacenamiento local del cliente si existía
       const mNumNum = mesaNombre.replace('MESA ', '');
       localStorage.removeItem(`nexus_mesa_${mNumNum}_cuenta`);
 
@@ -244,7 +235,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
-      {/* Cabecera */}
+      
       <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30 print:hidden">
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between">
           <div className="flex items-center gap-3">
@@ -298,7 +289,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       </header>
 
-      {/* VISTA 1: TOMAR NOTA Y GESTIONAR MESA */}
       {vistaSeccion === 'tomar_nota' ? (
         <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24 print:block">
           
@@ -381,11 +371,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             )}
           </div>
 
-          {/* Columna Derecha: Resumen de Mesa */}
           <div className="space-y-4 print:w-full">
             <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl print:border-none print:bg-white print:text-black">
               
-              {/* ZONA DE IMPRESIÓN FISCAL (Factura Simplificada Oficial) */}
               <div className="hidden print:block space-y-3 text-black text-xs font-mono">
                 <div className="text-center space-y-1 pb-3 border-b border-black">
                   <h2 className="font-black text-sm">NEXUS CORDOBA SL</h2>
@@ -398,7 +386,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   <span>{new Date().toLocaleString()}</span>
                 </div>
                 <div className="space-y-1 py-2 border-b border-black">
-                  <div className="flex justify-bold font-bold">
+                  <div className="flex font-bold">
                     <span className="w-8">CANT</span>
                     <span className="flex-1">DESCRIPCIÓN</span>
                     <span className="w-16 text-right">TOTAL</span>
@@ -421,7 +409,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </div>
               </div>
 
-              {/* VISTA NORMAL EN PANTALLA */}
               <div className="print:hidden">
                 <div className="flex items-center justify-between pb-3 border-b border-white/10">
                   <div>
@@ -495,7 +482,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
         </main>
       ) : (
-        /* VISTA 2: LISTADO DE MESAS ABIERTAS PARA CONSULTAR Y COBRAR */
         <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             <span>📋 Mesas Activas con Cuenta Pendiente</span>
