@@ -1,195 +1,288 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { 
-  TrendingUp, 
-  DollarSign, 
-  CreditCard, 
-  Wallet, 
-  Calendar, 
-  ArrowLeft, 
-  RefreshCw, 
-  ShoppingBag, 
-  AlertCircle, 
-  CheckCircle2, 
-  Receipt, 
-  Package, 
-  BarChart3, 
-  Clock, 
-  Search 
-} from 'lucide-react';
+import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard } from 'lucide-react';
 
-interface CajaDiaria {
+interface Producto {
   id: number;
-  fecha: string;
-  remanente_apertura: number;
-  total_efectivo: number;
-  total_tarjeta: number;
-  estado: string;
+  nombre: string;
+  precio: number;
+  categoria: 'bebidas' | 'tapeo' | 'menus';
+  destino: 'cocina' | 'barra';
 }
 
-export default function LoyverseDashboard() {
-  const [loading, setLoading] = useState(true);
-  const [sincronizando, setSincronizando] = useState(false);
-  const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
-  const [remanenteInput, setRemanenteInput] = useState<string>('50.00');
-  const [mensaje, setMensaje] = useState<string | null>(null);
+interface ItemPedido {
+  nombre: string;
+  precio: number;
+  cantidad: number;
+  destino: string;
+}
+
+interface MesaAbierta {
+  id: string;
+  mesa: string;
+  ticket_number: string;
+  items: ItemPedido[];
+  total_ticket: number;
+  created_at: string;
+}
+
+interface TableWaiterProps {
+  onBack: () => void;
+}
+
+export default function TableWaiter({ onBack }: TableWaiterProps) {
+  const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
+  const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
+  const [loadingCarta, setLoadingCarta] = useState(true);
   
-  const [articulosLoyverse, setArticulosLoyverse] = useState<any[]>([]);
-  const [ventasRecientes, setVentasRecientes] = useState<any[]>([]);
-  const [errorApi, setErrorApi] = useState<string | null>(null);
-  const [filtroBusqueda, setFiltroBusqueda] = useState('');
-  const [pestanaActiva, setPestanaActiva] = useState<'resumen' | 'articulos' | 'recibos'>('resumen');
+  const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number }>>([]);
+  const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
+  const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
+  
+  const [enviando, setEnviando] = useState(false);
+  const [mensaje, setMensaje] = useState<string | null>(null);
+  const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
+  const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas'>('tomar_nota');
 
   useEffect(() => {
-    cargarDatosCaja();
-    cargarDatosLoyverse();
+    cargarProductosCarta();
+    cargarMesasAbiertas();
   }, []);
 
-  const cargarDatosCaja = async () => {
-    const fechaHoy = new Date().toISOString().split('T')[0];
+  useEffect(() => {
+    const encontrada = mesasAbiertas.find(m => m.mesa === `MESA ${mesaSeleccionada}`);
+    if (encontrada && encontrada.items) {
+      setCuentaMesaActual(encontrada.items);
+    } else {
+      setCuentaMesaActual([]);
+    }
+    setCarritoActual([]);
+    setMensaje(null);
+  }, [mesaSeleccionada, mesasAbiertas]);
 
+  const cargarProductosCarta = async () => {
+    setLoadingCarta(true);
     const { data } = await supabase
-      .from('caja_diaria')
+      .from('productos_carta')
       .select('*')
-      .eq('fecha', fechaHoy)
-      .single();
+      .eq('activo', true)
+      .order('id', { ascending: true });
+
+    if (data) setProductosCarta(data as Producto[]);
+    setLoadingCarta(false);
+  };
+
+  const cargarMesasAbiertas = async () => {
+    const { data } = await supabase
+      .from('comandas_cocina')
+      .select('*')
+      .neq('tipo_destino', 'cuenta')
+      .neq('estado', 'servido')
+      .order('created_at', { ascending: true });
 
     if (data) {
-      setCajaHoy(data as CajaDiaria);
-      setRemanenteInput(data.remanente_apertura?.toString() || '50.00');
-    } else {
-      const { data: newData } = await supabase
-        .from('caja_diaria')
-        .insert([{ fecha: fechaHoy, remanente_apertura: 50.00, total_efectivo: 0, total_tarjeta: 0, estado: 'abierta' }])
-        .select()
-        .single();
-      
-      if (newData) {
-        setCajaHoy(newData as CajaDiaria);
-        setRemanenteInput('50.00');
-      }
-    }
-  };
-
-  const cargarDatosLoyverse = async () => {
-    setLoading(true);
-    setErrorApi(null);
-    try {
-      const res = await fetch('/api/loyverse');
-      if (!res.ok) {
-        throw new Error('No se pudo conectar con la API de Loyverse.');
-      }
-      const json = await res.json();
-      if (json.items) {
-        setArticulosLoyverse(json.items);
-      }
-      if (json.receipts) {
-        setVentasRecientes(json.receipts);
-      }
-    } catch (err: any) {
-      setErrorApi('Modo simulación / Sincronización offline activada: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const sincronizarArticulosConSupabase = async () => {
-    setSincronizando(true);
-    setMensaje(null);
-    try {
-      if (articulosLoyverse.length > 0) {
-        for (const item of articulosLoyverse) {
-          const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
-          const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
-          
-          await supabase.from('productos_carta').upsert([{
-            nombre: item.item_name || item.name,
-            precio: item.price || 3.00,
-            categoria: catNombre.includes('cocina') ? 'tapeo' : 'bebidas',
-            destino: destinoAsignado,
-            activo: true
-          }], { onConflict: 'nombre' });
+      const mapMesas: Record<string, MesaAbierta> = {};
+      data.forEach((row: any) => {
+        const mKey = row.mesa;
+        if (!mapMesas[mKey]) {
+          mapMesas[mKey] = {
+            id: row.id,
+            mesa: mKey,
+            ticket_number: row.ticket_number,
+            items: [],
+            total_ticket: 0,
+            created_at: row.created_at
+          };
         }
-        setMensaje('¡Artículos de Loyverse sincronizados con éxito en la carta digital de mesas!');
-      } else {
-        setMensaje('No se encontraron artículos remotos para sincronizar.');
+        if (row.items && Array.isArray(row.items)) {
+          row.items.forEach((it: any) => {
+            mapMesas[mKey].items.push({
+              nombre: it.nombre,
+              precio: it.precio || 0,
+              cantidad: it.cantidad || 1,
+              destino: row.tipo_destino
+            });
+          });
+        }
+      });
+
+      const listado: MesaAbierta[] = Object.values(mapMesas).map(m => {
+        const total = m.items.reduce((acc, i) => acc + (i.precio * i.cantidad), 0);
+        return { ...m, total_ticket: total };
+      });
+
+      setMesasAbiertas(listado);
+    }
+  };
+
+  const agregarAlCarrito = (prod: Producto) => {
+    setCarritoActual(prev => {
+      const existe = prev.find(p => p.id === prod.id);
+      if (existe) {
+        return prev.map(p => p.id === prod.id ? { ...p, cantidad: p.cantidad + 1 } : p);
       }
+      return [...prev, { ...prod, cantidad: 1 }];
+    });
+    setMensaje(null);
+  };
+
+  const cambiarCantidadCarrito = (id: number, delta: number) => {
+    setCarritoActual(prev => {
+      return prev.map(p => {
+        if (p.id === id) {
+          const nuevaCant = p.cantidad + delta;
+          return nuevaCant > 0 ? { ...p, cantidad: nuevaCant } : null;
+        }
+        return p;
+      }).filter(Boolean) as any;
+    });
+  };
+
+  const totalCarritoActual = carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
+  const totalCuentaMesa = cuentaMesaActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0) + totalCarritoActual;
+
+  const enviarPedidoCamarero = async () => {
+    if (carritoActual.length === 0) return;
+    setEnviando(true);
+    setMensaje(null);
+
+    try {
+      const itemsCocina = carritoActual.filter(i => i.destino === 'cocina');
+      const itemsBarra = carritoActual.filter(i => i.destino === 'barra');
+      const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
+
+      const promesas = [];
+
+      if (itemsCocina.length > 0) {
+        promesas.push(
+          supabase.from('comandas_cocina').insert([{
+            ticket_number: ticketNum,
+            mesa: `MESA ${mesaSeleccionada}`,
+            tipo_destino: 'cocina',
+            items: itemsCocina.map(i => ({ nombre: i.nombre, precio: i.precio, cantidad: i.cantidad, comentarios: 'Anotado por camarero', es_menu: i.categoria === 'menus' }))
+          }])
+        );
+      }
+
+      if (itemsBarra.length > 0) {
+        promesas.push(
+          supabase.from('comandas_cocina').insert([{
+            ticket_number: ticketNum,
+            mesa: `MESA ${mesaSeleccionada}`,
+            tipo_destino: 'barra',
+            items: itemsBarra.map(i => ({ nombre: i.nombre, precio: i.precio, cantidad: i.cantidad, comentarios: 'Anotado por camarero' }))
+          }])
+        );
+      }
+
+      await Promise.all(promesas);
+      setCarritoActual([]);
+      setMensaje(`¡Pedido enviado a KDS para la Mesa ${mesaSeleccionada}!`);
+      cargarMesasAbiertas();
     } catch (err: any) {
-      setMensaje('Error en sincronización: ' + err.message);
+      setMensaje('Error al enviar pedido: ' + err.message);
     } finally {
-      setSincronizando(false);
+      setEnviando(false);
     }
   };
 
-  const actualizarRemanente = async () => {
-    if (!cajaHoy) return;
-    const val = parseFloat(remanenteInput) || 0;
-    
-    await supabase
-      .from('caja_diaria')
-      .update({ remanente_apertura: val })
-      .eq('id', cajaHoy.id);
+  const cobrarMesa = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
+    const mesaObj = mesasAbiertas.find(m => m.mesa === mesaNombre);
+    if (!mesaObj) return;
 
-    setMensaje('¡Fondo de caja / remanente actualizado correctamente!');
-    cargarDatosCaja();
-  };
+    try {
+      await supabase
+        .from('comandas_cocina')
+        .update({ estado: 'servido', metodo_pago: metodo })
+        .eq('mesa', mesaNombre)
+        .neq('estado', 'servido');
 
-  const volverAWebPrincipal = () => {
-    if (window.location.hash) {
-      window.location.hash = '';
-    } else {
-      window.location.href = 'https://nexusgamingcenter.es';
+      const fechaHoy = new Date().toISOString().split('T')[0];
+      const { data: cajaData } = await supabase
+        .from('caja_diaria')
+        .select('*')
+        .eq('fecha', fechaHoy)
+        .single();
+
+      if (cajaData) {
+        const nuevoEfectivo = Number(cajaData.total_efectivo) + (metodo === 'efectivo' ? mesaObj.total_ticket : 0);
+        const nuevaTarjeta = Number(cajaData.total_tarjeta) + (metodo === 'tarjeta' ? mesaObj.total_ticket : 0);
+        await supabase
+          .from('caja_diaria')
+          .update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta })
+          .eq('id', cajaData.id);
+      } else {
+        await supabase.from('caja_diaria').insert([{
+          fecha: fechaHoy,
+          total_efectivo: metodo === 'efectivo' ? mesaObj.total_ticket : 0,
+          total_tarjeta: metodo === 'tarjeta' ? mesaObj.total_ticket : 0,
+          estado: 'abierta'
+        }]);
+      }
+
+      const mNumNum = mesaNombre.replace('MESA ', '');
+      localStorage.removeItem(`nexus_mesa_${mNumNum}_cuenta`);
+
+      alert(`¡Mesa ${mesaNombre} cobrada correctamente con ${metodo.toUpperCase()} (${mesaObj.total_ticket.toFixed(2)} €)!`);
+      cargarMesasAbiertas();
+    } catch (err: any) {
+      alert('Error al cobrar la mesa: ' + err.message);
     }
   };
 
-  const efectivoVentas = cajaHoy ? Number(cajaHoy.total_efectivo) : 0;
-  const tarjetaVentas = cajaHoy ? Number(cajaHoy.total_tarjeta) : 0;
-  const remanente = cajaHoy ? Number(cajaHoy.remanente_apertura) : 0;
-  const totalVentasDia = efectivoVentas + tarjetaVentas;
-  const totalCajaEfectivo = remanente + efectivoVentas;
-
-  const articulosFiltrados = articulosLoyverse.filter(art => 
-    (art.item_name || art.name || '').toLowerCase().includes(filtroBusqueda.toLowerCase())
-  );
+  const imprimirTicket = () => {
+    window.print();
+  };
 
   return (
-    <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black font-sans">
+    <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
       
-      <header className="border-b border-white/10 pb-4 mb-8 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30">
-        <div className="flex items-center gap-3">
-          <div className="h-12 w-12 rounded-2xl bg-sky-500/10 border border-sky-500/30 text-sky-400 flex items-center justify-center">
-            <TrendingUp className="h-7 w-7" />
+      <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30 print:hidden">
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-12 w-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center">
+              <Utensils className="h-7 w-7" />
+            </div>
+            <div>
+              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · PORTAL DE CAMAREROS</h1>
+              <p className="text-xs text-slate-400">Chinales 45 · Toma de notas y cobro en sala</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS TPV · DASHBOARD & LOYVERSE</h1>
-            <p className="text-xs text-slate-400">Chinales 45 · Control financiero, inventario y arqueo de caja</p>
-          </div>
+          
+          <button
+            type="button"
+            onClick={onBack}
+            className="sm:hidden flex items-center gap-1 px-3 py-1.5 rounded-xl border border-white/10 bg-white/5 text-xs text-slate-300"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Volver</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap justify-center">
-          <button
-            type="button"
-            onClick={sincronizarArticulosConSupabase}
-            disabled={sincronizando}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition-all cursor-pointer shadow-md disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${sincronizando ? 'animate-spin' : ''}`} />
-            <span>{sincronizando ? 'Sincronizando...' : 'Sincronizar Artículos a QR'}</span>
-          </button>
+          <div className="flex gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
+            <button
+              onClick={() => setVistaSeccion('tomar_nota')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                vistaSeccion === 'tomar_nota' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              📝 Tomar Nota
+            </button>
+            <button
+              onClick={() => setVistaSeccion('mesas_abiertas')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer relative ${
+                vistaSeccion === 'mesas_abiertas' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              📋 Mesas Abiertas ({mesasAbiertas.length})
+            </button>
+          </div>
 
           <button
             type="button"
-            onClick={cargarDatosLoyverse}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 transition-all cursor-pointer"
-          >
-            <RefreshCw className="h-4 w-4" />
-            <span>Actualizar API</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={volverAWebPrincipal}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 transition-all cursor-pointer"
+            onClick={onBack}
+            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" />
             <span>Volver</span>
@@ -197,243 +290,262 @@ export default function LoyverseDashboard() {
         </div>
       </header>
 
-      <div className="max-w-6xl w-full mx-auto mb-6 flex gap-2 border-b border-white/10 pb-4">
-        <button
-          onClick={() => setPestanaActiva('resumen')}
-          className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            pestanaActiva === 'resumen' ? 'bg-sky-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
-          }`}
-        >
-          <BarChart3 className="h-4 w-4" /> Resumen & Caja
-        </button>
-        <button
-          onClick={() => setPestanaActiva('articulos')}
-          className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            pestanaActiva === 'articulos' ? 'bg-sky-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
-          }`}
-        >
-          <Package className="h-4 w-4" /> Catálogo Loyverse ({articulosLoyverse.length})
-        </button>
-        <button
-          onClick={() => setPestanaActiva('recibos')}
-          className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            pestanaActiva === 'recibos' ? 'bg-sky-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
-          }`}
-        >
-          <Receipt className="h-4 w-4" /> Ventas y Recibos ({ventasRecientes.length})
-        </button>
-      </div>
-
-      <main className="flex-1 max-w-6xl w-full mx-auto space-y-8 pb-16">
-        
-        {errorApi && (
-          <div className="p-4 rounded-2xl bg-amber-950/30 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
-            <AlertCircle className="h-4 w-4 shrink-0 text-amber-400" />
-            <span>{errorApi}</span>
-          </div>
-        )}
-
-        {mensaje && (
-          <div className="p-4 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            <span>{mensaje}</span>
-          </div>
-        )}
-
-        {pestanaActiva === 'resumen' && (
-          <div className="space-y-8 animate-fade-in">
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-              
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
-                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
-                  <span>Ventas Totales Hoy</span>
-                  <TrendingUp className="h-4 w-4 text-cyan-400" />
-                </div>
-                <div className="text-2xl font-black text-white font-mono">{totalVentasDia.toFixed(2)} €</div>
-                <p className="text-[11px] text-slate-500">Facturación global de sala y barra</p>
+      {vistaSeccion === 'tomar_nota' ? (
+        <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24 print:block">
+          
+          <div className="md:col-span-2 space-y-4 print:hidden">
+            <div className="flex items-center justify-between bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
+              <div className="flex items-center gap-2">
+                <MapPin className="h-5 w-5 text-amber-400" />
+                <span className="text-xs font-bold uppercase text-slate-300">Mesa Activa:</span>
+                <select
+                  value={mesaSeleccionada}
+                  onChange={(e) => setMesaSeleccionada(e.target.value)}
+                  className="bg-black/80 border border-amber-500/50 rounded-xl px-3 py-1.5 text-sm font-black text-amber-400 outline-none cursor-pointer"
+                >
+                  {Array.from({ length: 20 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>Mesa {m}</option>
+                  ))}
+                </select>
               </div>
 
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
-                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
-                  <span>Cobros en Efectivo</span>
-                  <DollarSign className="h-4 w-4 text-emerald-400" />
-                </div>
-                <div className="text-2xl font-black text-emerald-400 font-mono">{efectivoVentas.toFixed(2)} €</div>
-                <p className="text-[11px] text-slate-500">Entrada directa en cajón</p>
-              </div>
-
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
-                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
-                  <span>Cobros con Tarjeta</span>
-                  <CreditCard className="h-4 w-4 text-sky-400" />
-                </div>
-                <div className="text-2xl font-black text-sky-400 font-mono">{tarjetaVentas.toFixed(2)} €</div>
-                <p className="text-[11px] text-slate-500">Datáfono físico / TPV</p>
-              </div>
-
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
-                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
-                  <span>Efectivo en Cajón (Teórico)</span>
-                  <Wallet className="h-4 w-4 text-amber-400" />
-                </div>
-                <div className="text-2xl font-black text-amber-400 font-mono">{totalCajaEfectivo.toFixed(2)} €</div>
-                <p className="text-[11px] text-slate-500">Remanente + Efectivo de ventas</p>
-              </div>
-
+              <button
+                type="button"
+                onClick={imprimirTicket}
+                disabled={cuentaMesaActual.length === 0 && carritoActual.length === 0}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
+              >
+                <Printer className="h-4 w-4" />
+                <span>Imprimir Factura Simplificada</span>
+              </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              
-              <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
-                <div className="flex items-center gap-2.5 text-amber-400 pb-3 border-b border-white/10">
-                  <Wallet className="h-5 w-5" />
-                  <h3 className="font-bold text-white text-base">Fondo de Caja / Remanente de Apertura</h3>
-                </div>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Establece el importe inicial en monedas y billetes con el que se abre la caja al comenzar la jornada (cambio inicial del día anterior).
-                </p>
-
-                <div className="flex items-center gap-3 pt-2">
-                  <div className="relative flex-1">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={remanenteInput}
-                      onChange={(e) => setRemanenteInput(e.target.value)}
-                      className="w-full bg-black/50 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-mono font-bold text-white outline-none focus:border-amber-400"
-                    />
-                    <span className="absolute right-3 top-2.5 text-slate-500 font-mono">€</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={actualizarRemanente}
-                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-md"
-                  >
-                    Guardar Fondo
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
-                <div className="flex items-center gap-2.5 text-cyan-400 pb-3 border-b border-white/10">
-                  <Calendar className="h-5 w-5" />
-                  <h3 className="font-bold text-white text-base">Resumen de Arqueo para Cierre de Turno</h3>
-                </div>
-                <div className="space-y-3 text-xs text-slate-300 pt-1">
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Fecha del arqueo:</span>
-                    <span className="font-mono font-bold text-white">{cajaHoy?.fecha || new Date().toISOString().split('T')[0]}</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Fondo inicial (Remanente):</span>
-                    <span className="font-mono font-bold text-amber-400">{remanente.toFixed(2)} €</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Total efectivo cobrado:</span>
-                    <span className="font-mono font-bold text-emerald-400">{efectivoVentas.toFixed(2)} €</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Total tarjeta cobrado:</span>
-                    <span className="font-mono font-bold text-sky-400">{tarjetaVentas.toFixed(2)} €</span>
-                  </div>
-                  <div className="flex justify-between py-2 text-sm font-black text-white">
-                    <span>Efectivo total en cajón:</span>
-                    <span className="font-mono text-cyan-400">{totalCajaEfectivo.toFixed(2)} €</span>
-                  </div>
-                </div>
-              </div>
-
+            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
+              <button
+                onClick={() => setCategoriaActiva('bebidas')}
+                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
+                  categoriaActiva === 'bebidas' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
+                }`}
+              >
+                ☕ Cafetería
+              </button>
+              <button
+                onClick={() => setCategoriaActiva('tapeo')}
+                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
+                  categoriaActiva === 'tapeo' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
+                }`}
+              >
+                🍳 Cocina / Tapas
+              </button>
+              <button
+                onClick={() => setCategoriaActiva('menus')}
+                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
+                  categoriaActiva === 'menus' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
+                }`}
+              >
+                🍽️ Menú del Día
+              </button>
             </div>
 
-          </div>
-        )}
-
-        {pestanaActiva === 'articulos' && (
-          <div className="space-y-4 animate-fade-in">
-            <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pb-3 border-b border-white/10">
-                <div className="flex items-center gap-2.5 text-sky-400">
-                  <Package className="h-5 w-5" />
-                  <h3 className="font-bold text-white text-base">Inventario Completo Loyverse</h3>
-                </div>
-
-                <div className="relative w-full sm:w-72">
-                  <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
-                  <input
-                    type="text"
-                    placeholder="Buscar artículo..."
-                    value={filtroBusqueda}
-                    onChange={(e) => setFiltroBusqueda(e.target.value)}
-                    className="w-full bg-black/50 border border-white/15 rounded-xl pl-9 pr-4 py-2 text-xs text-white outline-none focus:border-sky-400"
-                  />
-                </div>
-              </div>
-
-              {loading ? (
-                <div className="text-center py-20 text-slate-500 text-sm">Cargando catálogo...</div>
-              ) : articulosFiltrados.length === 0 ? (
-                <div className="text-center py-16 text-slate-500 text-xs">
-                  No se encontraron artículos con ese filtro de búsqueda.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-[500px] overflow-y-auto pr-1">
-                  {articulosFiltrados.map((art, idx) => (
-                    <div key={idx} className="p-4 rounded-2xl bg-black/40 border border-white/5 space-y-1 shadow">
-                      <div className="flex items-start justify-between gap-2">
-                        <h5 className="font-bold text-white text-sm">{art.item_name || art.name}</h5>
-                        <span className="font-mono text-amber-400 font-bold text-sm shrink-0">
-                          {Number(art.price || 0).toFixed(2)} €
-                        </span>
+            {loadingCarta ? (
+              <div className="text-center py-20 text-slate-500 text-sm">Cargando artículos...</div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {productosCarta
+                  .filter(p => p.categoria === categoriaActiva)
+                  .map((prod) => (
+                    <div key={prod.id} className="p-3.5 rounded-2xl bg-[#0d0f17] border border-white/10 flex items-center justify-between gap-3 shadow-md">
+                      <div>
+                        <h4 className="font-bold text-white text-sm">{prod.nombre}</h4>
+                        <span className="font-mono text-amber-400 font-bold text-xs mt-0.5 block">{Number(prod.precio).toFixed(2)} €</span>
                       </div>
-                      <p className="text-[11px] text-slate-400">Categoría: <span className="text-sky-300">{art.category_name || 'General'}</span></p>
+                      <button
+                        type="button"
+                        onClick={() => agregarAlCarrito(prod)}
+                        className="h-9 w-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md font-bold"
+                      >
+                        <Plus className="h-5 w-5" />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-4 print:w-full">
+            <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl print:border-none print:bg-white print:text-black">
+              
+              <div className="hidden print:block space-y-3 text-black text-xs font-mono">
+                <div className="text-center space-y-1 pb-3 border-b border-black">
+                  <h2 className="font-black text-sm">NEXUS CORDOBA SL</h2>
+                  <p>NIF: B93887990</p>
+                  <p>Avda. Principal de Chinales 45</p>
+                  <p>14007 Córdoba, España</p>
+                </div>
+                <div className="flex justify-between py-1 border-b border-dashed border-black">
+                  <span>MESA: {mesaSeleccionada}</span>
+                  <span>{new Date().toLocaleString()}</span>
+                </div>
+                <div className="space-y-1 py-2 border-b border-black">
+                  <div className="flex font-bold">
+                    <span className="w-8">CANT</span>
+                    <span className="flex-1">DESCRIPCIÓN</span>
+                    <span className="w-16 text-right">TOTAL</span>
+                  </div>
+                  {cuentaMesaActual.concat(carritoActual.map(c => ({ nombre: c.nombre, precio: Number(c.precio), cantidad: c.cantidad, destino: c.destino }))).map((it, idx) => (
+                    <div key={idx} className="flex justify-between">
+                      <span className="w-8">{it.cantidad}x</span>
+                      <span className="flex-1 truncate">{it.nombre}</span>
+                      <span className="w-16 text-right">{(it.precio * it.cantidad).toFixed(2)} €</span>
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {pestanaActiva === 'recibos' && (
-          <div className="space-y-4 animate-fade-in">
-            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
-              <div className="flex items-center gap-2.5 text-emerald-400 pb-3 border-b border-white/10">
-                <Receipt className="h-5 w-5" />
-                <h3 className="font-bold text-white text-base">Historial de Recibos y Transacciones</h3>
+                <div className="space-y-1 pt-2 text-right font-bold text-sm">
+                  <p>TOTAL A PAGAR: {totalCuentaMesa.toFixed(2)} €</p>
+                  <p className="text-[10px] font-normal">(IVA incluido)</p>
+                </div>
+                <div className="text-center pt-6 text-[10px] space-y-1">
+                  <p>¡Gracias por su visita!</p>
+                  <p>Ticket de venta simplificado</p>
+                </div>
               </div>
 
-              {loading ? (
-                <div className="text-center py-20 text-slate-500 text-sm">Cargando recibos de venta...</div>
-              ) : ventasRecientes.length === 0 ? (
-                <div className="text-center py-16 text-slate-500 text-xs">
-                  No hay recibos recientes registrados en la API de Loyverse para este periodo.
+              <div className="print:hidden">
+                <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Resumen Mesa</span>
+                    <h3 className="text-lg font-black text-white">MESA {mesaSeleccionada}</h3>
+                  </div>
+                  <span className="font-mono font-bold text-amber-400 text-base">
+                    {totalCuentaMesa.toFixed(2)} €
+                  </span>
                 </div>
-              ) : (
-                <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-                  {ventasRecientes.map((rec, idx) => (
-                    <div key={idx} className="p-4 rounded-2xl bg-black/40 border border-white/5 flex items-center justify-between text-xs">
-                      <div className="space-y-1">
-                        <span className="font-mono font-bold text-sky-400">Recibo #{rec.receipt_number || rec.id}</span>
-                        <p className="text-slate-400 flex items-center gap-1">
-                          <Clock className="h-3 w-3" /> {new Date(rec.created_at || Date.now()).toLocaleString()}
-                        </p>
-                      </div>
-                      <span className="font-mono text-emerald-400 font-black text-sm">
-                        {Number(rec.total_money || rec.total || 0).toFixed(2)} €
+
+                <div className="space-y-2 mt-3">
+                  <span className="text-xs font-bold text-slate-400 block">Artículos ya pedidos / en cuenta:</span>
+                  {cuentaMesaActual.length === 0 ? (
+                    <p className="text-xs text-slate-500 italic py-3 text-center">No hay consumos previos registrados.</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                      {cuentaMesaActual.map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between text-xs bg-black/40 px-3 py-2 rounded-xl border border-white/5">
+                          <span className="text-white font-medium">
+                            <span className="text-amber-400 font-mono font-bold mr-2">{item.cantidad}x</span>
+                            {item.nombre}
+                          </span>
+                          <span className="font-mono text-slate-300">{(item.precio * item.cantidad).toFixed(2)} €</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {carritoActual.length > 0 && (
+                  <div className="pt-4 mt-4 border-t border-white/10 space-y-3">
+                    <span className="text-xs font-bold text-cyan-400 block">Nuevos a enviar a KDS:</span>
+                    <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
+                      {carritoActual.map((item) => (
+                        <div key={item.id} className="flex items-center justify-between text-xs bg-cyan-950/20 p-2.5 rounded-xl border border-cyan-500/20">
+                          <span className="font-bold text-white truncate max-w-[140px]">{item.nombre}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-cyan-400 font-bold">{(Number(item.precio) * item.cantidad).toFixed(2)} €</span>
+                            <div className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg">
+                              <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
+                              <span className="font-mono font-bold text-white w-3 text-center">{item.cantidad}</span>
+                              <button onClick={() => cambiarCantidadCarrito(item.id, 1)} className="text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={enviando}
+                      onClick={enviarPedidoCamarero}
+                      className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-95 transition-all disabled:opacity-50"
+                    >
+                      <Send className="h-4 w-4" />
+                      {enviando ? 'Enviando a KDS...' : 'Enviar a Cocina / Barra'}
+                    </button>
+                  </div>
+                )}
+
+                {mensaje && (
+                  <div className="p-3 mt-3 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 text-xs text-center font-semibold flex items-center justify-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 shrink-0" />
+                    <span>{mensaje}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+        </main>
+      ) : (
+        <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            <span>📋 Mesas Activas con Cuenta Pendiente</span>
+          </h2>
+
+          {mesasAbiertas.length === 0 ? (
+            <div className="text-center py-20 text-slate-500 space-y-2">
+              <p className="text-base font-semibold">No hay mesas abiertas en este momento.</p>
+              <p className="text-xs">Todas las cuentas están cobradas y cerradas.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {mesasAbiertas.map((m) => (
+                <div key={m.id} className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl flex flex-col justify-between">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                      <span className="font-black text-sm px-3 py-1 rounded-xl bg-amber-500 text-slate-950 uppercase shadow">
+                        {m.mesa}
+                      </span>
+                      <span className="font-mono text-lg font-black text-amber-400">
+                        {m.total_ticket.toFixed(2)} €
                       </span>
                     </div>
-                  ))}
+
+                    <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                      {m.items.map((it, iIdx) => (
+                        <div key={iIdx} className="flex justify-between text-xs bg-black/40 px-2.5 py-1.5 rounded-lg">
+                          <span className="text-slate-200">
+                            <span className="text-amber-400 font-mono font-bold mr-1.5">{it.cantidad}x</span>
+                            {it.nombre}
+                          </span>
+                          <span className="font-mono text-slate-400">{(it.precio * it.cantidad).toFixed(2)} €</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-3 border-t border-white/10">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold text-center">Cobrar e identificar método de pago:</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => cobrarMesa(m.mesa, 'efectivo')}
+                        className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow"
+                      >
+                        <DollarSign className="h-4 w-4" /> Efectivo
+                      </button>
+                      <button
+                        onClick={() => cobrarMesa(m.mesa, 'tarjeta')}
+                        className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow"
+                      >
+                        <CreditCard className="h-4 w-4" /> Tarjeta
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              )}
+              ))}
             </div>
-          </div>
-        )}
+          )}
+        </main>
+      )}
 
-      </main>
-
-      <footer className="mt-12 border-t border-white/5 pt-4 text-center text-xs text-slate-500">
-        NEXUS CORDOBA SL · Sincronización Loyverse & Control Financiero Avanzado
+      <footer className="mt-8 border-t border-white/5 pt-4 text-center text-xs text-slate-500 print:hidden">
+        NEXUS CORDOBA SL · Módulo de Sala y Caja
       </footer>
     </div>
   );
