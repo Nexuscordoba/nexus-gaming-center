@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, ShoppingCart } from 'lucide-react';
+import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2 } from 'lucide-react';
 
 interface Producto {
   id: number;
@@ -34,7 +34,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
 
-  // Cargar productos de la carta y recuperar cuenta de la mesa seleccionada
   useEffect(() => {
     cargarProductosCarta();
     cargarCuentaMesa(mesaSeleccionada);
@@ -55,7 +54,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const cargarCuentaMesa = async (mNum: string) => {
-    // 1. Cargar de localStorage si existe
     const cuentaGuardada = localStorage.getItem(`nexus_mesa_${mNum}_cuenta`);
     if (cuentaGuardada) {
       try {
@@ -93,10 +91,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     });
   };
 
-  const totalCarritoActual = carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
   const totalCuentaAcumulada = cuentaMesa.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
 
-  // Enviar pedido a cocina/barra desde el punto de vista del camarero
   const enviarPedidoCamarero = async () => {
     if (carritoActual.length === 0) return;
     setEnviando(true);
@@ -133,7 +129,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       await Promise.all(promesas);
 
-      // Acumular al historial de la mesa y guardar en localStorage para que el cliente lo vea si escanea el QR
       const nuevoHistorial = [...cuentaMesa];
       carritoActual.forEach(nuevoItem => {
         const indexExistente = nuevoHistorial.findIndex(item => item.id === nuevoItem.id);
@@ -162,14 +157,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  // Imprimir ticket de cuenta térmica
   const imprimirTicket = () => {
     window.print();
   };
 
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
-      {/* Cabecera del Portal de Camareros */}
       <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30 print:hidden">
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between">
           <div className="flex items-center gap-3">
@@ -192,7 +185,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           </button>
         </div>
 
-        {/* Selector de Mesa */}
         <div className="flex items-center gap-3 flex-wrap justify-center">
           <div className="flex items-center gap-2 bg-white/5 px-3.5 py-2 rounded-xl border border-white/10">
             <MapPin className="h-4 w-4 text-amber-400" />
@@ -233,10 +225,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       </header>
 
-      {/* Cuerpo principal */}
       <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24 print:block">
         
-        {/* Columna Izquierda: Carta para seleccionar */}
         <div className="md:col-span-2 space-y-4 print:hidden">
           <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
             <button
@@ -290,7 +280,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           )}
         </div>
 
-        {/* Columna Derecha: Resumen de Mesa y Carrito Actual */}
         <div className="space-y-4 print:w-full">
           <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl print:border-none print:bg-white print:text-black">
             <div className="flex items-center justify-between pb-3 border-b border-white/10 print:border-black">
@@ -303,7 +292,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </span>
             </div>
 
-            {/* Cuenta acumulada de la mesa */}
             <div className="space-y-2">
               <span className="text-xs font-bold text-slate-400 print:text-slate-700 block">Artículos en cuenta:</span>
               {cuentaMesa.length === 0 ? (
@@ -323,7 +311,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               )}
             </div>
 
-            {/* Nuevos artículos seleccionados para enviar ahora */}
             {carritoActual.length > 0 && (
               <div className="pt-3 border-t border-white/10 print:hidden space-y-3">
                 <span className="text-xs font-bold text-cyan-400 block">Nuevos a enviar a KDS:</span>
