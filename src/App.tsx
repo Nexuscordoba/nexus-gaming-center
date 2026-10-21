@@ -113,6 +113,7 @@ export default function App() {
     }
   };
 
+  // Renderizados condicionales limpios por ruta / subdominio
   if (subdomainRoute === 'staff') {
     return <StaffPortal />;
   }
