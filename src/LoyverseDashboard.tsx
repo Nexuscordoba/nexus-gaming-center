@@ -1,61 +1,138 @@
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from './supabase';
 import { 
   TrendingUp, 
   DollarSign, 
-  Package, 
-  AlertTriangle, 
+  CreditCard, 
+  Wallet, 
+  Calendar, 
   ArrowLeft, 
   RefreshCw, 
-  Receipt,
-  Lock,
-  Delete,
-  ShieldCheck,
-  LogOut
+  ShoppingBag, 
+  AlertCircle, 
+  CheckCircle2, 
+  Receipt, 
+  Package, 
+  BarChart3, 
+  Clock, 
+  Search 
 } from 'lucide-react';
 
-interface ItemLoyverse {
-  id: string;
-  item_name: string;
-  category_id?: string;
-  variants: Array<{
-    variant_id: string;
-    item_id: string;
-    price: number;
-    cost: number;
-  }>;
-}
-
-interface InventoryLoyverse {
-  variant_id: string;
-  in_stock: number;
-}
-
-interface ReceiptLoyverse {
-  receipt_number: string;
-  created_at: string;
-  total_money: number;
-  payments: Array<{
-    type: string;
-    money_amount: number;
-  }>;
+interface CajaDiaria {
+  id: number;
+  fecha: string;
+  remanente_apertura: number;
+  total_efectivo: number;
+  total_tarjeta: number;
+  estado: string;
 }
 
 export default function LoyverseDashboard() {
-  // Autenticación de Administrador
-  const [autenticado, setAutenticado] = useState(false);
-  const [adminNombre, setAdminNombre] = useState('');
-  const [pin, setPin] = useState('');
-  const [verificandoPin, setVerificandoPin] = useState(false);
-  const [errorAuth, setErrorAuth] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
+  const [remanenteInput, setRemanenteInput] = useState<string>('50.00');
+  const [mensaje, setMensaje] = useState<string | null>(null);
+  
+  const [articulosLoyverse, setArticulosLoyverse] = useState<any[]>([]);
+  const [ventasRecientes, setVentasRecientes] = useState<any[]>([]);
+  const [errorApi, setErrorApi] = useState<string | null>(null);
+  const [filtroBusqueda, setFiltroBusqueda] = useState('');
+  const [pestanaActiva, setPestanaActiva] = useState<'resumen' | 'articulos' | 'recibos'>('resumen');
 
-  // Datos financieros y de TPV
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [items, setItems] = useState<ItemLoyverse[]>([]);
-  const [inventory, setInventory] = useState<InventoryLoyverse[]>([]);
-  const [receipts, setReceipts] = useState<ReceiptLoyverse[]>([]);
-  const [tab, setTab] = useState<'resumen' | 'rentabilidad' | 'inventario' | 'ventas'>('resumen');
+  useEffect(() => {
+    cargarDatosCaja();
+    cargarDatosLoyverse();
+  }, []);
+
+  const cargarDatosCaja = async () => {
+    const fechaHoy = new Date().toISOString().split('T')[0];
+
+    const { data } = await supabase
+      .from('caja_diaria')
+      .select('*')
+      .eq('fecha', fechaHoy)
+      .single();
+
+    if (data) {
+      setCajaHoy(data as CajaDiaria);
+      setRemanenteInput(data.remanente_apertura?.toString() || '50.00');
+    } else {
+      const { data: newData } = await supabase
+        .from('caja_diaria')
+        .insert([{ fecha: fechaHoy, remanente_apertura: 50.00, total_efectivo: 0, total_tarjeta: 0, estado: 'abierta' }])
+        .select()
+        .single();
+      
+      if (newData) {
+        setCajaHoy(newData as CajaDiaria);
+        setRemanenteInput('50.00');
+      }
+    }
+  };
+
+  const cargarDatosLoyverse = async () => {
+    setLoading(true);
+    setErrorApi(null);
+    try {
+      const res = await fetch('/api/loyverse');
+      if (!res.ok) {
+        throw new Error('No se pudo conectar con la API de Loyverse.');
+      }
+      const json = await res.json();
+      if (json.items) {
+        setArticulosLoyverse(json.items);
+      }
+      if (json.receipts) {
+        setVentasRecientes(json.receipts);
+      }
+    } catch (err: any) {
+      setErrorApi('Modo simulación / Sincronización offline activada: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sincronizarArticulosConSupabase = async () => {
+    setSincronizando(true);
+    setMensaje(null);
+    try {
+      if (articulosLoyverse.length > 0) {
+        for (const item of articulosLoyverse) {
+          const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
+          const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
+          
+          await supabase.from('productos_carta').upsert([{
+            nombre: item.item_name || item.name,
+            precio: item.price || 3.00,
+            categoria: catNombre.includes('cocina') ? 'tapeo' : 'bebidas',
+            destino: destinoAsignado,
+            activo: true
+          }], { onConflict: 'nombre' });
+        }
+        setMensaje('¡Artículos de Loyverse sincronizados con éxito en la carta digital de mesas!');
+      } else {
+        setMensaje('No se encontraron artículos remotos para sincronizar.');
+      }
+    } catch (err: any) {
+      setMensaje('Error en sincronización: ' + err.message);
+    } finally {
+      setSincronizando(false);
+    }
+  };
+
+  const actualizarRemanente = async () => {
+    if (!cajaHoy) return;
+    const val = parseFloat(remanenteInput) || 0;
+    
+    await supabase
+      .from('caja_diaria')
+      .update({ remanente_apertura: val })
+      .eq('id', cajaHoy.id);
+
+    setMensaje('¡Fondo de caja / remanente actualizado correctamente!');
+    cargarDatosCaja();
+  };
 
   const volverAWebPrincipal = () => {
     if (window.location.hash) {
@@ -65,502 +142,298 @@ export default function LoyverseDashboard() {
     }
   };
 
-  const handleNumero = (num: string) => {
-    if (pin.length < 6) {
-      setPin((prev) => prev + num);
-      setErrorAuth(null);
-    }
-  };
+  const efectivoVentas = cajaHoy ? Number(cajaHoy.total_efectivo) : 0;
+  const tarjetaVentas = cajaHoy ? Number(cajaHoy.total_tarjeta) : 0;
+  const remanente = cajaHoy ? Number(cajaHoy.remanente_apertura) : 0;
+  const totalVentasDia = efectivoVentas + tarjetaVentas;
+  const totalCajaEfectivo = remanente + efectivoVentas;
 
-  const handleBorrar = () => {
-    setPin((prev) => prev.slice(0, -1));
-    setErrorAuth(null);
-  };
+  const articulosFiltrados = articulosLoyverse.filter(art => 
+    (art.item_name || art.name || '').toLowerCase().includes(filtroBusqueda.toLowerCase())
+  );
 
-  // Validar credenciales de Administrador en Supabase
-  const verificarAccesoAdmin = async () => {
-    if (pin.length < 4) {
-      setErrorAuth('Introduce un PIN de al menos 4 dígitos');
-      return;
-    }
-
-    setVerificandoPin(true);
-    setErrorAuth(null);
-
-    try {
-      const { data, error: dbErr } = await supabase
-        .from('empleados')
-        .select('*')
-        .eq('pin_acceso', pin)
-        .eq('activo', true)
-        .maybeSingle();
-
-      if (dbErr) throw dbErr;
-
-      if (!data) {
-        setErrorAuth('PIN incorrecto o usuario no registrado');
-        setPin('');
-      } else if (data.rol !== 'admin') {
-        setErrorAuth('Acceso denegado: este panel requiere privilegios de Administrador / Gerencia');
-        setPin('');
-      } else {
-        setAutenticado(true);
-        setAdminNombre(`${data.nombre} ${data.apellidos}`);
-        cargarDatos();
-      }
-    } catch (err: any) {
-      setErrorAuth('Error de conexión: ' + (err.message || 'Inténtalo de nuevo'));
-    } finally {
-      setVerificandoPin(false);
-    }
-  };
-
-  const cargarDatos = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/loyverse');
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Error al obtener datos');
-      }
-
-      setItems(data.items || []);
-      setInventory(data.inventory || []);
-      setReceipts(data.receipts || []);
-    } catch (err: any) {
-      setError(err.message || 'Error de conexión');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const cerrarSesion = () => {
-    setAutenticado(false);
-    setPin('');
-    setAdminNombre('');
-  };
-
-  // Cálculos financieros
-  const totalFacturado = receipts.reduce((acc, r) => acc + (r.total_money || 0), 0);
-  const ticketMedio = receipts.length > 0 ? totalFacturado / receipts.length : 0;
-
-  const stockMap = new Map<string, number>();
-  inventory.forEach((inv) => {
-    stockMap.set(inv.variant_id, inv.in_stock || 0);
-  });
-
-  // SI NO ESTÁ AUTENTICADO: Pantalla de Bloqueo / PIN
-  if (!autenticado) {
-    return (
-      <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
-        <header className="border-b border-white/10 bg-[#08090d]/80 px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-500/30 bg-cyan-950/40 text-cyan-400">
-              <TrendingUp className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="font-bold text-white text-base tracking-wide flex items-center gap-2">
-                NEXUS <span className="text-cyan-400">TPV & FINANZAS</span>
-              </h1>
-              <p className="text-[11px] text-slate-400">Acceso Restringido a Gerencia · Chinales 45</p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={volverAWebPrincipal}
-            className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span>Volver a la web principal</span>
-          </button>
-        </header>
-
-        <main className="flex-1 flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-[#0c0d14] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 text-center">
-            <div className="flex justify-center">
-              <div className="h-14 w-14 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shadow-[0_0_20px_rgba(0,242,254,0.15)]">
-                <Lock className="h-7 w-7" />
-              </div>
-            </div>
-
-            <div>
-              <h2 className="text-lg font-bold text-white">Panel Directivo Protegido</h2>
-              <p className="text-xs text-slate-400 mt-1">
-                Introduce tu PIN de Administrador para consultar ventas, márgenes e inventario
-              </p>
-            </div>
-
-            {/* Puntos indicadores del PIN */}
-            <div className="flex justify-center gap-3 py-2">
-              {[0, 1, 2, 3].map((idx) => (
-                <div
-                  key={idx}
-                  className={`h-4 w-4 rounded-full border transition-all ${
-                    pin.length > idx
-                      ? 'bg-cyan-400 border-cyan-300 shadow-[0_0_10px_rgba(0,242,254,0.5)]'
-                      : 'border-white/20 bg-white/5'
-                  }`}
-                />
-              ))}
-            </div>
-
-            {/* Teclado táctil */}
-            <div className="grid grid-cols-3 gap-3">
-              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
-                <button
-                  key={num}
-                  type="button"
-                  onClick={() => handleNumero(num)}
-                  className="h-14 rounded-2xl bg-white/[0.04] border border-white/5 text-xl font-bold text-white hover:bg-white/[0.1] active:scale-95 transition-all cursor-pointer"
-                >
-                  {num}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={handleBorrar}
-                className="h-14 rounded-2xl bg-white/[0.02] border border-white/5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.08] active:scale-95 transition-all cursor-pointer"
-              >
-                <Delete className="h-5 w-5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNumero('0')}
-                className="h-14 rounded-2xl bg-white/[0.04] border border-white/5 text-xl font-bold text-white hover:bg-white/[0.1] active:scale-95 transition-all cursor-pointer"
-              >
-                0
-              </button>
-              <button
-                type="button"
-                disabled={pin.length < 4 || verificandoPin}
-                onClick={verificarAccesoAdmin}
-                className="h-14 rounded-2xl bg-cyan-500 font-bold text-slate-950 hover:bg-cyan-400 active:scale-95 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center shadow-[0_0_15px_rgba(0,242,254,0.3)]"
-              >
-                {verificandoPin ? '...' : 'Entrar'}
-              </button>
-            </div>
-
-            {errorAuth && (
-              <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs">
-                {errorAuth}
-              </div>
-            )}
-          </div>
-        </main>
-
-        <footer className="border-t border-white/5 py-4 text-center text-xs text-slate-500">
-          NEXUS CÓRDOBA SL · Acceso Confidencial
-        </footer>
-      </div>
-    );
-  }
-
-  // SI ESTÁ AUTENTICADO COMO ADMIN: Panel Completo
   return (
-    <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
-      {/* Cabecera */}
-      <header className="border-b border-white/10 bg-[#08090d]/80 px-6 py-4 flex items-center justify-between sticky top-0 z-40 backdrop-blur-md">
+    <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black font-sans">
+      
+      <header className="border-b border-white/10 pb-4 mb-8 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-500/30 bg-cyan-950/40 text-cyan-400">
-            <TrendingUp className="h-5 w-5" />
+          <div className="h-12 w-12 rounded-2xl bg-sky-500/10 border border-sky-500/30 text-sky-400 flex items-center justify-center">
+            <TrendingUp className="h-7 w-7" />
           </div>
           <div>
-            <h1 className="font-bold text-white text-base tracking-wide flex items-center gap-2">
-              NEXUS <span className="text-cyan-400">TPV & FINANZAS</span>
-            </h1>
-            <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
-              <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-              Sesión iniciada: <span className="text-white font-medium">{adminNombre}</span>
-            </p>
+            <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS TPV · DASHBOARD & LOYVERSE</h1>
+            <p className="text-xs text-slate-400">Chinales 45 · Control financiero, inventario y arqueo de caja</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap justify-center">
           <button
             type="button"
-            onClick={cargarDatos}
-            disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
+            onClick={sincronizarArticulosConSupabase}
+            disabled={sincronizando}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition-all cursor-pointer shadow-md disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-cyan-400' : ''}`} />
-            <span>Actualizar</span>
+            <RefreshCw className={`h-4 w-4 ${sincronizando ? 'animate-spin' : ''}`} />
+            <span>{sincronizando ? 'Sincronizando...' : 'Sincronizar Artículos a QR'}</span>
           </button>
 
           <button
             type="button"
-            onClick={cerrarSesion}
-            title="Bloquear y salir del panel"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-500/20 bg-rose-950/20 hover:bg-rose-900/30 text-xs text-rose-300 transition-all cursor-pointer"
+            onClick={cargarDatosLoyverse}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 transition-all cursor-pointer"
           >
-            <LogOut className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Bloquear</span>
+            <RefreshCw className="h-4 w-4" />
+            <span>Actualizar API</span>
           </button>
 
           <button
             type="button"
             onClick={volverAWebPrincipal}
-            className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 transition-all cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" />
-            <span>Volver a la web principal</span>
+            <span>Volver</span>
           </button>
         </div>
       </header>
 
-      {/* Contenido Principal */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 space-y-6">
-        {/* Selector de Pestañas */}
-        <div className="flex flex-wrap gap-2 border-b border-white/10 pb-4">
-          <button
-            type="button"
-            onClick={() => setTab('resumen')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              tab === 'resumen'
-                ? 'bg-cyan-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white bg-white/5'
-            }`}
-          >
-            Resumen General
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('rentabilidad')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              tab === 'rentabilidad'
-                ? 'bg-cyan-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white bg-white/5'
-            }`}
-          >
-            Rentabilidad & Márgenes
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('inventario')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              tab === 'inventario'
-                ? 'bg-cyan-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white bg-white/5'
-            }`}
-          >
-            Inventario & Stock
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('ventas')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              tab === 'ventas'
-                ? 'bg-cyan-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white bg-white/5'
-            }`}
-          >
-            Últimos Tickets
-          </button>
-        </div>
+      <div className="max-w-6xl w-full mx-auto mb-6 flex gap-2 border-b border-white/10 pb-4">
+        <button
+          onClick={() => setPestanaActiva('resumen')}
+          className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+            pestanaActiva === 'resumen' ? 'bg-sky-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
+          }`}
+        >
+          <BarChart3 className="h-4 w-4" /> Resumen & Caja
+        </button>
+        <button
+          onClick={() => setPestanaActiva('articulos')}
+          className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+            pestanaActiva === 'articulos' ? 'bg-sky-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
+          }`}
+        >
+          <Package className="h-4 w-4" /> Catálogo Loyverse ({articulosLoyverse.length})
+        </button>
+        <button
+          onClick={() => setPestanaActiva('recibos')}
+          className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+            pestanaActiva === 'recibos' ? 'bg-sky-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
+          }`}
+        >
+          <Receipt className="h-4 w-4" /> Ventas y Recibos ({ventasRecientes.length})
+        </button>
+      </div>
 
-        {error && (
-          <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 shrink-0" />
-            <span>{error}</span>
+      <main className="flex-1 max-w-6xl w-full mx-auto space-y-8 pb-16">
+        
+        {errorApi && (
+          <div className="p-4 rounded-2xl bg-amber-950/30 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0 text-amber-400" />
+            <span>{errorApi}</span>
           </div>
         )}
 
-        {/* PESTAÑA: RESUMEN GENERAL */}
-        {tab === 'resumen' && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="p-6 rounded-3xl bg-[#0c0d14] border border-white/10">
-                <span className="text-xs uppercase font-bold text-slate-400 flex items-center gap-2">
+        {mensaje && (
+          <div className="p-4 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            <span>{mensaje}</span>
+          </div>
+        )}
+
+        {pestanaActiva === 'resumen' && (
+          <div className="space-y-8 animate-fade-in">
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              
+              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
+                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
+                  <span>Ventas Totales Hoy</span>
+                  <TrendingUp className="h-4 w-4 text-cyan-400" />
+                </div>
+                <div className="text-2xl font-black text-white font-mono">{totalVentasDia.toFixed(2)} €</div>
+                <p className="text-[11px] text-slate-500">Facturación global de sala y barra</p>
+              </div>
+
+              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
+                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
+                  <span>Cobros en Efectivo</span>
                   <DollarSign className="h-4 w-4 text-emerald-400" />
-                  Facturación Registrada
-                </span>
-                <span className="text-3xl font-black text-white font-mono mt-2 block">
-                  {totalFacturado.toFixed(2)} €
-                </span>
-                <span className="text-[11px] text-slate-500 mt-1 block">
-                  Total de {receipts.length} tickets en Loyverse
-                </span>
+                </div>
+                <div className="text-2xl font-black text-emerald-400 font-mono">{efectivoVentas.toFixed(2)} €</div>
+                <p className="text-[11px] text-slate-500">Entrada directa en cajón</p>
               </div>
 
-              <div className="p-6 rounded-3xl bg-[#0c0d14] border border-white/10">
-                <span className="text-xs uppercase font-bold text-slate-400 flex items-center gap-2">
-                  <Receipt className="h-4 w-4 text-cyan-400" />
-                  Ticket Medio
-                </span>
-                <span className="text-3xl font-black text-cyan-400 font-mono mt-2 block">
-                  {ticketMedio.toFixed(2)} €
-                </span>
-                <span className="text-[11px] text-slate-500 mt-1 block">
-                  Gasto medio por cliente
-                </span>
+              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
+                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
+                  <span>Cobros con Tarjeta</span>
+                  <CreditCard className="h-4 w-4 text-sky-400" />
+                </div>
+                <div className="text-2xl font-black text-sky-400 font-mono">{tarjetaVentas.toFixed(2)} €</div>
+                <p className="text-[11px] text-slate-500">Datáfono físico / TPV</p>
               </div>
 
-              <div className="p-6 rounded-3xl bg-[#0c0d14] border border-white/10">
-                <span className="text-xs uppercase font-bold text-slate-400 flex items-center gap-2">
-                  <Package className="h-4 w-4 text-amber-400" />
-                  Catálogo Activo
-                </span>
-                <span className="text-3xl font-black text-white font-mono mt-2 block">
-                  {items.length} productos
-                </span>
-                <span className="text-[11px] text-slate-500 mt-1 block">
-                  Sincronizados desde el TPV
-                </span>
+              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-2 shadow-xl">
+                <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase">
+                  <span>Efectivo en Cajón (Teórico)</span>
+                  <Wallet className="h-4 w-4 text-amber-400" />
+                </div>
+                <div className="text-2xl font-black text-amber-400 font-mono">{totalCajaEfectivo.toFixed(2)} €</div>
+                <p className="text-[11px] text-slate-500">Remanente + Efectivo de ventas</p>
               </div>
+
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
+                <div className="flex items-center gap-2.5 text-amber-400 pb-3 border-b border-white/10">
+                  <Wallet className="h-5 w-5" />
+                  <h3 className="font-bold text-white text-base">Fondo de Caja / Remanente de Apertura</h3>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Establece el importe inicial en monedas y billetes con el que se abre la caja al comenzar la jornada (cambio inicial del día anterior).
+                </p>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={remanenteInput}
+                      onChange={(e) => setRemanenteInput(e.target.value)}
+                      className="w-full bg-black/50 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-mono font-bold text-white outline-none focus:border-amber-400"
+                    />
+                    <span className="absolute right-3 top-2.5 text-slate-500 font-mono">€</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={actualizarRemanente}
+                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-md"
+                  >
+                    Guardar Fondo
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
+                <div className="flex items-center gap-2.5 text-cyan-400 pb-3 border-b border-white/10">
+                  <Calendar className="h-5 w-5" />
+                  <h3 className="font-bold text-white text-base">Resumen de Arqueo para Cierre de Turno</h3>
+                </div>
+                <div className="space-y-3 text-xs text-slate-300 pt-1">
+                  <div className="flex justify-between py-1.5 border-b border-white/5">
+                    <span className="text-slate-400">Fecha del arqueo:</span>
+                    <span className="font-mono font-bold text-white">{cajaHoy?.fecha || new Date().toISOString().split('T')[0]}</span>
+                  </div>
+                  <div className="flex justify-between py-1.5 border-b border-white/5">
+                    <span className="text-slate-400">Fondo inicial (Remanente):</span>
+                    <span className="font-mono font-bold text-amber-400">{remanente.toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between py-1.5 border-b border-white/5">
+                    <span className="text-slate-400">Total efectivo cobrado:</span>
+                    <span className="font-mono font-bold text-emerald-400">{efectivoVentas.toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between py-1.5 border-b border-white/5">
+                    <span className="text-slate-400">Total tarjeta cobrado:</span>
+                    <span className="font-mono font-bold text-sky-400">{tarjetaVentas.toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between py-2 text-sm font-black text-white">
+                    <span>Efectivo total en cajón:</span>
+                    <span className="font-mono text-cyan-400">{totalCajaEfectivo.toFixed(2)} €</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
           </div>
         )}
 
-        {/* PESTAÑA: RENTABILIDAD & MÁRGENES */}
-        {tab === 'rentabilidad' && (
-          <div className="bg-[#0c0d14] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-white/10">
-              <div>
-                <h3 className="font-bold text-white text-base">Análisis de Márgenes por Producto</h3>
-                <p className="text-xs text-slate-400">Comparativa entre precio de venta y coste de compra</p>
+        {pestanaActiva === 'articulos' && (
+          <div className="space-y-4 animate-fade-in">
+            <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pb-3 border-b border-white/10">
+                <div className="flex items-center gap-2.5 text-sky-400">
+                  <Package className="h-5 w-5" />
+                  <h3 className="font-bold text-white text-base">Inventario Completo Loyverse</h3>
+                </div>
+
+                <div className="relative w-full sm:w-72">
+                  <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="Buscar artículo..."
+                    value={filtroBusqueda}
+                    onChange={(e) => setFiltroBusqueda(e.target.value)}
+                    className="w-full bg-black/50 border border-white/15 rounded-xl pl-9 pr-4 py-2 text-xs text-white outline-none focus:border-sky-400"
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="border border-white/10 rounded-2xl overflow-hidden bg-black/30 max-h-[480px] overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-white/[0.03] text-slate-400 border-b border-white/10 uppercase tracking-wider font-semibold sticky top-0 backdrop-blur-md">
-                  <tr>
-                    <th className="py-3 px-4">Artículo</th>
-                    <th className="py-3 px-4 text-right">PVP</th>
-                    <th className="py-3 px-4 text-right">Coste</th>
-                    <th className="py-3 px-4 text-right">Margen Bruto</th>
-                    <th className="py-3 px-4 text-right">% Rentabilidad</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5 text-slate-300">
-                  {items.map((item) => {
-                    const variant = item.variants?.[0];
-                    const pvp = variant?.price || 0;
-                    const coste = variant?.cost || 0;
-                    const margen = pvp - coste;
-                    const rentabilidad = pvp > 0 ? (margen / pvp) * 100 : 0;
-
-                    return (
-                      <tr key={item.id} className="hover:bg-white/[0.02]">
-                        <td className="py-3 px-4 font-semibold text-white">{item.item_name}</td>
-                        <td className="py-3 px-4 font-mono text-right">{pvp.toFixed(2)} €</td>
-                        <td className="py-3 px-4 font-mono text-slate-400 text-right">{coste.toFixed(2)} €</td>
-                        <td className="py-3 px-4 font-mono text-right font-bold text-emerald-400">
-                          +{margen.toFixed(2)} €
-                        </td>
-                        <td className="py-3 px-4 font-mono text-right">
-                          <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                            rentabilidad >= 60 
-                              ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30' 
-                              : 'bg-white/5 text-slate-300'
-                          }`}>
-                            {rentabilidad.toFixed(1)}%
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* PESTAÑA: INVENTARIO & STOCK */}
-        {tab === 'inventario' && (
-          <div className="bg-[#0c0d14] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-white/10">
-              <div>
-                <h3 className="font-bold text-white text-base">Control de Stock en Chinales 45</h3>
-                <p className="text-xs text-slate-400">Unidades reales registradas en almacén y barra</p>
-              </div>
-            </div>
-
-            <div className="border border-white/10 rounded-2xl overflow-hidden bg-black/30 max-h-[480px] overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-white/[0.03] text-slate-400 border-b border-white/10 uppercase tracking-wider font-semibold sticky top-0 backdrop-blur-md">
-                  <tr>
-                    <th className="py-3 px-4">Artículo</th>
-                    <th className="py-3 px-4 text-center">Stock Actual</th>
-                    <th className="py-3 px-4 text-right">Estado</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5 text-slate-300">
-                  {items.map((item) => {
-                    const variantId = item.variants?.[0]?.variant_id;
-                    const stock = stockMap.get(variantId) ?? 0;
-                    const esBajo = stock <= 5;
-
-                    return (
-                      <tr key={item.id} className="hover:bg-white/[0.02]">
-                        <td className="py-3 px-4 font-semibold text-white">{item.item_name}</td>
-                        <td className="py-3 px-4 font-mono text-center font-bold text-white">
-                          {stock} uds
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          {esBajo ? (
-                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-500/30">
-                              Stock Bajo
-                            </span>
-                          ) : (
-                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/30">
-                              Disponible
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* PESTAÑA: ÚLTIMOS TICKETS */}
-        {tab === 'ventas' && (
-          <div className="bg-[#0c0d14] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-white/10">
-              <div>
-                <h3 className="font-bold text-white text-base">Histórico de Ventas</h3>
-                <p className="text-xs text-slate-400">Tickets emitidos en el TPV</p>
-              </div>
-            </div>
-
-            <div className="border border-white/10 rounded-2xl overflow-hidden bg-black/30 max-h-[480px] overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-white/[0.03] text-slate-400 border-b border-white/10 uppercase tracking-wider font-semibold sticky top-0 backdrop-blur-md">
-                  <tr>
-                    <th className="py-3 px-4">Ticket</th>
-                    <th className="py-3 px-4">Fecha y Hora</th>
-                    <th className="py-3 px-4 text-right">Importe</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5 text-slate-300">
-                  {receipts.map((r, i) => (
-                    <tr key={i} className="hover:bg-white/[0.02]">
-                      <td className="py-3 px-4 font-mono font-semibold text-cyan-400">
-                        #{r.receipt_number}
-                      </td>
-                      <td className="py-3 px-4 text-slate-300">
-                        {new Date(r.created_at).toLocaleString('es-ES')}
-                      </td>
-                      <td className="py-3 px-4 font-mono font-bold text-white text-right">
-                        {(r.total_money || 0).toFixed(2)} €
-                      </td>
-                    </tr>
+              {loading ? (
+                <div className="text-center py-20 text-slate-500 text-sm">Cargando catálogo...</div>
+              ) : articulosFiltrados.length === 0 ? (
+                <div className="text-center py-16 text-slate-500 text-xs">
+                  No se encontraron artículos con ese filtro de búsqueda.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-[500px] overflow-y-auto pr-1">
+                  {articulosFiltrados.map((art, idx) => (
+                    <div key={idx} className="p-4 rounded-2xl bg-black/40 border border-white/5 space-y-1 shadow">
+                      <div className="flex items-start justify-between gap-2">
+                        <h5 className="font-bold text-white text-sm">{art.item_name || art.name}</h5>
+                        <span className="font-mono text-amber-400 font-bold text-sm shrink-0">
+                          {Number(art.price || 0).toFixed(2)} €
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">Categoría: <span className="text-sky-300">{art.category_name || 'General'}</span></p>
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              )}
             </div>
           </div>
         )}
+
+        {pestanaActiva === 'recibos' && (
+          <div className="space-y-4 animate-fade-in">
+            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
+              <div className="flex items-center gap-2.5 text-emerald-400 pb-3 border-b border-white/10">
+                <Receipt className="h-5 w-5" />
+                <h3 className="font-bold text-white text-base">Historial de Recibos y Transacciones</h3>
+              </div>
+
+              {loading ? (
+                <div className="text-center py-20 text-slate-500 text-sm">Cargando recibos de venta...</div>
+              ) : ventasRecientes.length === 0 ? (
+                <div className="text-center py-16 text-slate-500 text-xs">
+                  No hay recibos recientes registrados en la API de Loyverse para este periodo.
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+                  {ventasRecientes.map((rec, idx) => (
+                    <div key={idx} className="p-4 rounded-2xl bg-black/40 border border-white/5 flex items-center justify-between text-xs">
+                      <div className="space-y-1">
+                        <span className="font-mono font-bold text-sky-400">Recibo #{rec.receipt_number || rec.id}</span>
+                        <p className="text-slate-400 flex items-center gap-1">
+                          <Clock className="h-3 w-3" /> {new Date(rec.created_at || Date.now()).toLocaleString()}
+                        </p>
+                      </div>
+                      <span className="font-mono text-emerald-400 font-black text-sm">
+                        {Number(rec.total_money || rec.total || 0).toFixed(2)} €
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
       </main>
 
-      <footer className="border-t border-white/5 py-4 text-center text-xs text-slate-500">
-        NEXUS CÓRDOBA SL · Conectado con Loyverse POS API
+      <footer className="mt-12 border-t border-white/5 pt-4 text-center text-xs text-slate-500">
+        NEXUS CORDOBA SL · Sincronización Loyverse & Control Financiero Avanzado
       </footer>
     </div>
   );
