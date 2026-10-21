@@ -31,7 +31,6 @@ export default function TableOrder() {
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
 
-  // Detectar número de mesa y recuperar historial previo
   useEffect(() => {
     const hash = window.location.hash;
     const match = hash.match(/mesa\/(\d+)/);
@@ -45,47 +44,17 @@ export default function TableOrder() {
     }
     setMesaNum(mNum);
 
-    const cuentaGuardada = localStorage.getItem(`nexus_mesa_${mNum}_cuenta`);
-    if (cuentaGuardada) {
-      try {
-        setCuentaMesa(JSON.parse(cuentaGuardada));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
     cargarProductosCarta();
-  }, []);
+    cargarCuentaDesdeSupabase(mNum);
 
-  // Guardar cuenta en localStorage
-  useEffect(() => {
-    if (mesaNum) {
-      localStorage.setItem(`nexus_mesa_${mesaNum}_cuenta`, JSON.stringify(cuentaMesa));
-    }
-  }, [cuentaMesa, mesaNum]);
-
-  // Suscripción en tiempo real: si el camarero marca la cuenta como atendida/cobrada en barra, limpiar mesa automáticamente
-  useEffect(() => {
-    if (!mesaNum) return;
-
+    // Escuchar cambios en vivo (Si el camarero añade algo, sale en el móvil del cliente)
     const channel = supabase
-      .channel(`mesa-limpieza-${mesaNum}`)
+      .channel(`mesa-${mNum}`)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'comandas_cocina' },
-        (payload: any) => {
-          const comandaModificada = payload.new;
-          if (
-            comandaModificada && 
-            comandaModificada.tipo_destino === 'cuenta' && 
-            comandaModificada.mesa === `MESA ${mesaNum}` && 
-            comandaModificada.estado === 'servido'
-          ) {
-            setCuentaMesa([]);
-            setCarritoActual([]);
-            localStorage.removeItem(`nexus_mesa_${mesaNum}_cuenta`);
-            setMensaje('¡Cuenta cobrada con éxito! Gracias por vuestra visita.');
-          }
+        { event: '*', schema: 'public', table: 'comandas_cocina', filter: `mesa=eq.MESA ${mNum}` },
+        () => {
+          cargarCuentaDesdeSupabase(mNum);
         }
       )
       .subscribe();
@@ -93,7 +62,7 @@ export default function TableOrder() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [mesaNum]);
+  }, []);
 
   const cargarProductosCarta = async () => {
     setLoadingCarta(true);
@@ -103,10 +72,42 @@ export default function TableOrder() {
       .eq('activo', true)
       .order('id', { ascending: true });
 
-    if (data) {
-      setProductosCarta(data as Producto[]);
-    }
+    if (data) setProductosCarta(data as Producto[]);
     setLoadingCarta(false);
+  };
+
+  const cargarCuentaDesdeSupabase = async (mNum: string) => {
+    const { data } = await supabase
+      .from('comandas_cocina')
+      .select('*')
+      .eq('mesa', `MESA ${mNum}`)
+      .neq('estado', 'servido')
+      .neq('tipo_destino', 'cuenta');
+
+    if (data && data.length > 0) {
+      const itemsAcumulados: ItemPedido[] = [];
+      data.forEach((comanda: any) => {
+        if (comanda.items && Array.isArray(comanda.items)) {
+          comanda.items.forEach((it: any) => {
+            const existente = itemsAcumulados.find(x => x.nombre === it.nombre);
+            if (existente) {
+              existente.cantidad += (it.cantidad || 1);
+            } else {
+              itemsAcumulados.push({
+                id: Math.random(),
+                nombre: it.nombre,
+                precio: Number(it.precio || 0),
+                cantidad: it.cantidad || 1,
+                destino: comanda.tipo_destino
+              });
+            }
+          });
+        }
+      });
+      setCuentaMesa(itemsAcumulados);
+    } else {
+      setCuentaMesa([]);
+    }
   };
 
   const agregarAlCarrito = (prod: Producto) => {
@@ -153,7 +154,7 @@ export default function TableOrder() {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaNum}`,
             tipo_destino: 'cocina',
-            items: itemsCocina.map(i => ({ nombre: i.nombre, cantidad: i.cantidad, variante: '', comentarios: '', es_menu: i.categoria === 'menus' }))
+            items: itemsCocina.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, variante: '', comentarios: '', es_menu: i.categoria === 'menus' }))
           }])
         );
       }
@@ -164,32 +165,16 @@ export default function TableOrder() {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaNum}`,
             tipo_destino: 'barra',
-            items: itemsBarra.map(i => ({ nombre: i.nombre, cantidad: i.cantidad, variante: '', comentarios: '' }))
+            items: itemsBarra.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, variante: '', comentarios: '' }))
           }])
         );
       }
 
       await Promise.all(promesas);
-
-      const nuevoHistorial = [...cuentaMesa];
-      carritoActual.forEach(nuevoItem => {
-        const indexExistente = nuevoHistorial.findIndex(item => item.id === nuevoItem.id);
-        if (indexExistente >= 0) {
-          nuevoHistorial[indexExistente].cantidad += nuevoItem.cantidad;
-        } else {
-          nuevoHistorial.push({
-            id: nuevoItem.id,
-            nombre: nuevoItem.nombre,
-            precio: Number(nuevoItem.precio),
-            cantidad: nuevoItem.cantidad,
-            destino: nuevoItem.destino
-          });
-        }
-      });
-
-      setCuentaMesa(nuevoHistorial);
+      
       setCarritoActual([]);
       setMensaje('¡Pedido enviado a cocina y barra correctamente!');
+      // No hace falta actualizar cuentaMesa manualmente, el useEffect de Realtime lo recargará instantáneamente.
     } catch (err: any) {
       setMensaje('Error al enviar el pedido: ' + err.message);
     } finally {
@@ -249,8 +234,9 @@ export default function TableOrder() {
       </header>
 
       <main className={`max-w-3xl w-full mx-auto p-4 space-y-6 ${carritoActual.length > 0 ? 'pb-72' : 'pb-24'}`}>
+        
         {cuentaMesa.length > 0 && (
-          <div className="p-4 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-3 shadow-xl">
+          <div className="p-4 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-3 shadow-xl animate-fade-in">
             <div className="flex items-center justify-between pb-2 border-b border-white/10 text-cyan-400 font-bold text-xs uppercase tracking-wider">
               <span className="flex items-center gap-1.5"><ShoppingCart className="h-4 w-4" /> Cuenta Acumulada de Mesa</span>
               <span className="font-mono text-sm">{totalCuentaAcumulada.toFixed(2)} €</span>
@@ -338,13 +324,13 @@ export default function TableOrder() {
 
             <div className="max-h-36 overflow-y-auto space-y-2 pr-1">
               {carritoActual.map((item) => (
-                <div key={item.id} className="flex items-center justify-between text-xs bg-black/40 p-2.5 rounded-xl border border-white/5">
-                  <span className="font-bold text-white truncate max-w-[180px]">{item.nombre}</span>
-                  <div className="flex items-center gap-3">
+                <div key={item.id} className="flex items-center justify-between text-xs bg-cyan-950/20 p-2.5 rounded-xl border border-cyan-500/20">
+                  <span className="font-bold text-white truncate max-w-[140px]">{item.nombre}</span>
+                  <div className="flex items-center gap-2">
                     <span className="font-mono text-cyan-400 font-bold">{(Number(item.precio) * item.cantidad).toFixed(2)} €</span>
-                    <div className="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-lg">
+                    <div className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg">
                       <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
-                      <span className="font-mono font-bold text-white w-4 text-center">{item.cantidad}</span>
+                      <span className="font-mono font-bold text-white w-3 text-center">{item.cantidad}</span>
                       <button onClick={() => cambiarCantidadCarrito(item.id, 1)} className="text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
                     </div>
                   </div>

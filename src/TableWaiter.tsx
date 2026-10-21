@@ -47,6 +47,21 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   useEffect(() => {
     cargarProductosCarta();
     cargarMesasAbiertas();
+
+    const channel = supabase
+      .channel('realtime-waiter')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'comandas_cocina' },
+        () => {
+          cargarMesasAbiertas();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   useEffect(() => {
@@ -56,8 +71,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     } else {
       setCuentaMesaActual([]);
     }
-    setCarritoActual([]);
-    setMensaje(null);
   }, [mesaSeleccionada, mesasAbiertas]);
 
   const cargarProductosCarta = async () => {
@@ -96,12 +109,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         }
         if (row.items && Array.isArray(row.items)) {
           row.items.forEach((it: any) => {
-            mapMesas[mKey].items.push({
-              nombre: it.nombre,
-              precio: it.precio || 0,
-              cantidad: it.cantidad || 1,
-              destino: row.tipo_destino
-            });
+            // Agrupar ítems idénticos para no repetir líneas
+            const existente = mapMesas[mKey].items.find(x => x.nombre === it.nombre);
+            if (existente) {
+              existente.cantidad += (it.cantidad || 1);
+            } else {
+              mapMesas[mKey].items.push({
+                nombre: it.nombre,
+                precio: it.precio || 0,
+                cantidad: it.cantidad || 1,
+                destino: row.tipo_destino
+              });
+            }
           });
         }
       });
@@ -138,7 +157,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     });
   };
 
-  const totalCuentaMesa = cuentaMesaActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0) + carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
+  const totalCarritoActual = carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
+  const totalCuentaMesa = cuentaMesaActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0) + totalCarritoActual;
 
   const enviarPedidoCamarero = async () => {
     if (carritoActual.length === 0) return;
@@ -158,7 +178,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaSeleccionada}`,
             tipo_destino: 'cocina',
-            items: itemsCocina.map(i => ({ nombre: i.nombre, precio: i.precio, cantidad: i.cantidad, comentarios: 'Anotado por camarero', es_menu: i.categoria === 'menus' }))
+            items: itemsCocina.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, comentarios: 'Anotado por camarero', es_menu: i.categoria === 'menus' }))
           }])
         );
       }
@@ -169,15 +189,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaSeleccionada}`,
             tipo_destino: 'barra',
-            items: itemsBarra.map(i => ({ nombre: i.nombre, precio: i.precio, cantidad: i.cantidad, comentarios: 'Anotado por camarero' }))
+            items: itemsBarra.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, comentarios: 'Anotado por camarero' }))
           }])
         );
       }
 
       await Promise.all(promesas);
+      
+      setMensaje(`¡Pedido enviado con éxito!`);
       setCarritoActual([]);
-      setMensaje(`¡Pedido enviado a KDS para la Mesa ${mesaSeleccionada}!`);
       cargarMesasAbiertas();
+      
+      // Redirigir a la vista de mesas tras 1.5 segundos para limpiar la pantalla
+      setTimeout(() => {
+        setVistaSeccion('mesas_abiertas');
+        setMensaje(null);
+      }, 1500);
+
     } catch (err: any) {
       setMensaje('Error al enviar pedido: ' + err.message);
     } finally {
@@ -218,9 +246,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           estado: 'abierta'
         }]);
       }
-
-      const mNumNum = mesaNombre.replace('MESA ', '');
-      localStorage.removeItem(`nexus_mesa_${mNumNum}_cuenta`);
 
       alert(`¡Mesa ${mesaNombre} cobrada correctamente con ${metodo.toUpperCase()} (${mesaObj.total_ticket.toFixed(2)} €)!`);
       cargarMesasAbiertas();
