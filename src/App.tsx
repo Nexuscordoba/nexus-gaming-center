@@ -17,7 +17,8 @@ import {
   ChefHat,
   Flame,
   CalendarDays,
-  QrCode
+  QrCode,
+  Utensils
 } from 'lucide-react';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
@@ -26,10 +27,11 @@ import KitchenDisplay from './KitchenDisplay';
 import BarDisplay from './BarDisplay';
 import TableQrGenerator from './TableQrGenerator';
 import TableOrder from './TableOrder';
+import TableWaiter from './TableWaiter';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
-  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa'>('main');
+  const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa' | 'waiter'>('main');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
   // Estados para el Acceso Maestro Oculto en el Footer
@@ -84,6 +86,8 @@ export default function App() {
         setSubdomainRoute('barra');
       } else if (hash === '#qr' || hash === '#/qr') {
         setSubdomainRoute('qr-generator');
+      } else if (hash === '#camarero' || hash === '#/camarero') {
+        setSubdomainRoute('waiter');
       } else {
         setCurrentView('home');
       }
@@ -174,6 +178,11 @@ export default function App() {
   // Pantalla de Autopedido Digital por Mesa (QR)
   if (subdomainRoute === 'mesa') {
     return <TableOrder />;
+  }
+
+  // Pantalla Interna de Camareros
+  if (subdomainRoute === 'waiter') {
+    return <TableWaiter onBack={() => setSubdomainRoute('main')} />;
   }
 
   // Elementos de la Carta de la Cafetería
@@ -629,6 +638,17 @@ export default function App() {
                   className="flex items-center gap-1 hover:text-emerald-400 transition-colors cursor-pointer text-emerald-400 font-bold text-xs"
                 >
                   <QrCode className="h-3.5 w-3.5" /> Códigos QR
+                </a>
+                <span>·</span>
+                <a 
+                  href="#camarero" 
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setSubdomainRoute('waiter');
+                  }}
+                  className="flex items-center gap-1 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-bold text-xs"
+                >
+                  <Utensils className="h-3.5 w-3.5" /> Camareros
                 </a>
                 <button
                   onClick={() => setAdminDesbloqueado(false)}
