@@ -5,7 +5,6 @@ import {
   DollarSign, 
   CreditCard, 
   Wallet, 
-  Calendar, 
   ArrowLeft, 
   RefreshCw, 
   AlertCircle, 
@@ -14,7 +13,8 @@ import {
   Package, 
   BarChart3, 
   Clock, 
-  Search 
+  Search,
+  Users
 } from 'lucide-react';
 
 interface CajaDiaria {
@@ -38,24 +38,25 @@ export default function LoyverseDashboard() {
   const [errorApi, setErrorApi] = useState<string | null>(null);
   const [filtroBusqueda, setFiltroBusqueda] = useState('');
   const [pestanaActiva, setPestanaActiva] = useState<'resumen' | 'articulos' | 'recibos'>('resumen');
+  const [rankingCamareros, setRankingCamareros] = useState<{ nombre: string, total: number }[]>([]);
 
   useEffect(() => {
-    cargarDatosCaja();
+    cargarDatosCajaYRanking();
     cargarDatosLoyverse();
   }, []);
 
-  const cargarDatosCaja = async () => {
+  const cargarDatosCajaYRanking = async () => {
     const fechaHoy = new Date().toISOString().split('T')[0];
 
-    const { data } = await supabase
+    const { data: cData } = await supabase
       .from('caja_diaria')
       .select('*')
       .eq('fecha', fechaHoy)
       .single();
 
-    if (data) {
-      setCajaHoy(data as CajaDiaria);
-      setRemanenteInput(data.remanente_apertura?.toString() || '50.00');
+    if (cData) {
+      setCajaHoy(cData as CajaDiaria);
+      setRemanenteInput(cData.remanente_apertura?.toString() || '50.00');
     } else {
       const { data: newData } = await supabase
         .from('caja_diaria')
@@ -67,6 +68,24 @@ export default function LoyverseDashboard() {
         setCajaHoy(newData as CajaDiaria);
         setRemanenteInput('50.00');
       }
+    }
+
+    const { data: comandasData } = await supabase
+      .from('comandas_cocina')
+      .select('camarero_nombre, total_ticket')
+      .gte('created_at', fechaHoy + 'T00:00:00Z')
+      .eq('estado', 'servido')
+      .not('camarero_nombre', 'is', null);
+
+    if (comandasData) {
+      const rankMap: Record<string, number> = {};
+      comandasData.forEach((c: any) => {
+        const nombre = c.camarero_nombre || 'Autopedido QR';
+        rankMap[nombre] = (rankMap[nombre] || 0) + Number(c.total_ticket || 0);
+      });
+      const rankArray = Object.entries(rankMap).map(([nombre, total]) => ({ nombre, total }));
+      rankArray.sort((a, b) => b.total - a.total);
+      setRankingCamareros(rankArray);
     }
   };
 
@@ -99,7 +118,6 @@ export default function LoyverseDashboard() {
       if (articulosLoyverse.length > 0) {
         const loyverseIds: string[] = [];
 
-        // 1. Añadir/Actualizar los artículos activos que vienen de Loyverse
         for (const item of articulosLoyverse) {
           const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
           const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
@@ -117,7 +135,6 @@ export default function LoyverseDashboard() {
           }], { onConflict: 'nombre' });
         }
 
-        // 2. Borrar de la carta digital (Supabase) los artículos que ya NO están en Loyverse
         const { data: dbItems } = await supabase.from('productos_carta').select('id, loyverse_variant_id');
         if (dbItems) {
           const idsToDelete = dbItems
@@ -129,7 +146,7 @@ export default function LoyverseDashboard() {
           }
         }
 
-        setMensaje('¡Catálogo sincronizado! Artículos nuevos añadidos y los antiguos eliminados de la carta QR.');
+        setMensaje('¡Catálogo sincronizado! Artículos nuevos añadidos y obsoletos eliminados de la carta QR.');
       } else {
         setMensaje('No se encontraron artículos remotos en Loyverse para sincronizar.');
       }
@@ -150,7 +167,7 @@ export default function LoyverseDashboard() {
       .eq('id', cajaHoy.id);
 
     setMensaje('¡Fondo de caja / remanente actualizado correctamente!');
-    cargarDatosCaja();
+    cargarDatosCajaYRanking();
   };
 
   const volverAWebPrincipal = () => {
@@ -310,7 +327,7 @@ export default function LoyverseDashboard() {
                   <h3 className="font-bold text-white text-base">Fondo de Caja / Remanente de Apertura</h3>
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Establece el importe inicial en monedas y billetes con el que se abre la caja al comenzar la jornada (cambio inicial del día anterior).
+                  Establece el importe inicial en monedas y billetes con el que se abre la caja al comenzar la jornada.
                 </p>
 
                 <div className="flex items-center gap-3 pt-2">
@@ -335,32 +352,25 @@ export default function LoyverseDashboard() {
               </div>
 
               <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
-                <div className="flex items-center gap-2.5 text-cyan-400 pb-3 border-b border-white/10">
-                  <Calendar className="h-5 w-5" />
-                  <h3 className="font-bold text-white text-base">Resumen de Arqueo para Cierre de Turno</h3>
+                <div className="flex items-center gap-2.5 text-amber-400 pb-3 border-b border-white/10">
+                  <Users className="h-5 w-5" />
+                  <h3 className="font-bold text-white text-base">Ranking de Ventas por Camarero (Hoy)</h3>
                 </div>
-                <div className="space-y-3 text-xs text-slate-300 pt-1">
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Fecha del arqueo:</span>
-                    <span className="font-mono font-bold text-white">{cajaHoy?.fecha || new Date().toISOString().split('T')[0]}</span>
+                {rankingCamareros.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">Aún no hay ventas cobradas hoy por ningún empleado.</p>
+                ) : (
+                  <div className="space-y-3 max-h-48 overflow-y-auto pr-1">
+                    {rankingCamareros.map((cam, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-3 rounded-xl bg-black/40 border border-white/5">
+                        <div className="flex items-center gap-3">
+                          <span className="font-black text-amber-500 text-lg">#{idx + 1}</span>
+                          <span className="font-bold text-white uppercase">{cam.nombre}</span>
+                        </div>
+                        <span className="font-mono text-cyan-400 font-bold text-lg">{cam.total.toFixed(2)} €</span>
+                      </div>
+                    ))}
                   </div>
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Fondo inicial (Remanente):</span>
-                    <span className="font-mono font-bold text-amber-400">{remanente.toFixed(2)} €</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Total efectivo cobrado:</span>
-                    <span className="font-mono font-bold text-emerald-400">{efectivoVentas.toFixed(2)} €</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-white/5">
-                    <span className="text-slate-400">Total tarjeta cobrado:</span>
-                    <span className="font-mono font-bold text-sky-400">{tarjetaVentas.toFixed(2)} €</span>
-                  </div>
-                  <div className="flex justify-between py-2 text-sm font-black text-white">
-                    <span>Efectivo total en cajón:</span>
-                    <span className="font-mono text-cyan-400">{totalCajaEfectivo.toFixed(2)} €</span>
-                  </div>
-                </div>
+                )}
               </div>
 
             </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard, Lock, LockOpen, Calculator } from 'lucide-react';
+import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard, Lock, LockOpen, Calculator, User } from 'lucide-react';
 
 interface Producto {
   id: number;
@@ -44,6 +44,11 @@ interface TableWaiterProps {
 }
 
 export default function TableWaiter({ onBack }: TableWaiterProps) {
+  // Estado de Login de Camarero
+  const [camareroActivo, setCamareroActivo] = useState<{ id: string, nombre: string } | null>(null);
+  const [pinInput, setPinInput] = useState('');
+  const [loginError, setLoginError] = useState(false);
+
   const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [loadingCarta, setLoadingCarta] = useState(true);
@@ -63,10 +68,24 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
 
+  // Función de Login
+  const loginCamarero = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(false);
+    const { data } = await supabase.from('empleados').select('*').eq('pin', pinInput).single();
+    if (data) {
+      setCamareroActivo({ id: data.id, nombre: data.nombre });
+      cargarProductosCarta();
+      cargarMesasAbiertas();
+      cargarCaja();
+    } else {
+      setLoginError(true);
+    }
+  };
+
+  // Efecto que carga datos solo cuando el camarero ya está logueado
   useEffect(() => {
-    cargarProductosCarta();
-    cargarMesasAbiertas();
-    cargarCaja();
+    if (!camareroActivo) return;
 
     const channel = supabase
       .channel('realtime-waiter')
@@ -83,7 +102,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [camareroActivo]);
 
   useEffect(() => {
     const encontrada = mesasAbiertas.find(m => m.mesa === `MESA ${mesaSeleccionada}`);
@@ -111,7 +130,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setCajaHoy(data as CajaDiaria);
     } else {
       setCajaHoy(null);
-      // Buscar remanente de cierre del último día abierto para sugerirlo
       const { data: lastCaja } = await supabase.from('caja_diaria').select('remanente_cierre').order('fecha', { ascending: false }).limit(1).single();
       if (lastCaja) {
         setRemanenteAperturaInput(lastCaja.remanente_cierre.toString());
@@ -194,7 +212,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const totalCuentaMesa = cuentaMesaActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0) + totalCarritoActual;
 
   const enviarPedidoCamarero = async () => {
-    if (carritoActual.length === 0) return;
+    if (carritoActual.length === 0 || !camareroActivo) return;
     setEnviando(true);
     setMensaje(null);
 
@@ -211,7 +229,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaSeleccionada}`,
             tipo_destino: 'cocina',
-            items: itemsCocina.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, comentarios: 'Anotado por camarero', es_menu: i.categoria === 'menus' }))
+            camarero_nombre: camareroActivo.nombre,
+            items: itemsCocina.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, comentarios: `Anotado por ${camareroActivo.nombre}`, es_menu: i.categoria === 'menus' }))
           }])
         );
       }
@@ -222,7 +241,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaSeleccionada}`,
             tipo_destino: 'barra',
-            items: itemsBarra.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, comentarios: 'Anotado por camarero' }))
+            camarero_nombre: camareroActivo.nombre,
+            items: itemsBarra.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, comentarios: `Anotado por ${camareroActivo.nombre}` }))
           }])
         );
       }
@@ -246,17 +266,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const cobrarMesa = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
-    // BLOQUEO DE SEGURIDAD: No se puede cobrar si la caja no está abierta
     if (!cajaHoy || cajaHoy.estado === 'cerrada') {
       alert('¡ATENCIÓN! La caja no está abierta. Ve a la pestaña "Caja y Cierre" para abrir el turno del día antes de cobrar.');
       return;
     }
 
     const mesaObj = mesasAbiertas.find(m => m.mesa === mesaNombre);
-    if (!mesaObj) return;
+    if (!mesaObj || !camareroActivo) return;
 
     try {
-      // 1. Mandar venta a Loyverse
+      // Sincronizar con API de Loyverse
       const { data: cartaIds } = await supabase.from('productos_carta').select('nombre, loyverse_variant_id');
       const mapLoyverseIds: Record<string, string> = {};
       if (cartaIds) {
@@ -284,10 +303,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         console.warn("Loyverse API no disponible.");
       }
 
-      // 2. Cerrar en Supabase y actualizar Caja Diaria
+      // Cerrar comanda en Supabase
       await supabase
         .from('comandas_cocina')
-        .update({ estado: 'servido', metodo_pago: metodo, loyverse_sync: true })
+        .update({ estado: 'servido', metodo_pago: metodo, loyverse_sync: true, camarero_nombre: camareroActivo.nombre, total_ticket: mesaObj.total_ticket })
         .eq('mesa', mesaNombre)
         .neq('estado', 'servido');
 
@@ -302,9 +321,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const mNumNum = mesaNombre.replace('MESA ', '');
       localStorage.removeItem(`nexus_mesa_${mNumNum}_cuenta`);
 
-      alert(`¡Mesa ${mesaNombre} cobrada correctamente con ${metodo.toUpperCase()} (${mesaObj.total_ticket.toFixed(2)} €)!`);
+      alert(`¡Mesa ${mesaNombre} cobrada por ${camareroActivo.nombre} en ${metodo.toUpperCase()} (${mesaObj.total_ticket.toFixed(2)} €)!`);
       cargarMesasAbiertas();
-      cargarCaja(); // Refrescar caja local
+      cargarCaja();
     } catch (err: any) {
       alert('Error al cobrar la mesa: ' + err.message);
     }
@@ -314,7 +333,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     window.print();
   };
 
-  // FUNCIONES DE CAJA
   const abrirCaja = async () => {
     const fechaHoy = new Date().toISOString().split('T')[0];
     const remanente = parseFloat(remanenteAperturaInput) || 0;
@@ -356,6 +374,42 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     cargarCaja();
   };
 
+  // PANTALLA DE LOGIN
+  if (!camareroActivo) {
+    return (
+      <div className="min-h-screen bg-[#050609] flex items-center justify-center p-4">
+        <div className="w-full max-w-sm p-8 rounded-3xl bg-[#0d0f17] border border-white/10 shadow-2xl space-y-6">
+          <div className="text-center space-y-2">
+            <div className="h-16 w-16 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mb-4">
+              <User className="h-8 w-8" />
+            </div>
+            <h2 className="text-2xl font-black text-white">Hola, Equipo</h2>
+            <p className="text-sm text-slate-400">Introduce tu PIN de empleado para empezar el turno en sala.</p>
+          </div>
+          <form onSubmit={loginCamarero} className="space-y-4 pt-4">
+            <input
+              type="password"
+              pattern="[0-9]*"
+              inputMode="numeric"
+              autoFocus
+              placeholder="••••"
+              value={pinInput}
+              onChange={(e) => { setPinInput(e.target.value); setLoginError(false); }}
+              className="w-full bg-black/60 border border-white/15 rounded-xl px-4 py-4 text-center text-2xl tracking-[1em] font-mono font-bold text-white outline-none focus:border-amber-400"
+            />
+            {loginError && <p className="text-xs text-rose-400 text-center font-bold">PIN incorrecto. Inténtalo de nuevo.</p>}
+            <button type="submit" className="w-full py-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all">
+              Entrar al Portal
+            </button>
+            <button type="button" onClick={onBack} className="w-full text-xs text-slate-500 hover:text-white pt-2 cursor-pointer transition-colors">
+              Cancelar y volver a la web
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
       
@@ -367,7 +421,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             </div>
             <div>
               <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · PORTAL CAMAREROS</h1>
-              <p className="text-xs text-slate-400">Toma de notas, mesas y control de turno</p>
+              <p className="text-xs text-slate-400 flex items-center gap-1">Sesión activa: <strong className="text-amber-400">{camareroActivo.nombre}</strong></p>
             </div>
           </div>
           
@@ -404,10 +458,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
           <button
             type="button"
-            onClick={onBack}
-            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 transition-all cursor-pointer"
+            onClick={() => setCamareroActivo(null)}
+            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white transition-all cursor-pointer text-xs font-bold"
           >
-            <ArrowLeft className="h-4 w-4" /> Volver
+            Salir
           </button>
         </div>
       </header>
@@ -439,7 +493,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
               >
                 <Printer className="h-4 w-4" />
-                <span>Factura Simplificada</span>
+                <span>Imprimir Factura Simplificada</span>
               </button>
             </div>
 
@@ -504,6 +558,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 <div className="text-center pt-6 text-[10px] space-y-1">
                   <p>¡Gracias por su visita!</p>
                   <p>Ticket de venta simplificado</p>
+                  <p>Atendido por: {camareroActivo.nombre}</p>
                 </div>
               </div>
 
@@ -571,6 +626,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       {/* VISTA 2: LISTADO DE MESAS ABIERTAS */}
       {vistaSeccion === 'mesas_abiertas' && (
         <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">📋 Mesas Activas</h2>
           {mesasAbiertas.length === 0 ? (
             <div className="text-center py-20 text-slate-500 space-y-2">
               <p className="text-base font-semibold">No hay mesas abiertas en este momento.</p>

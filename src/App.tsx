@@ -113,7 +113,6 @@ export default function App() {
     }
   };
 
-  // Renderizados condicionales limpios por ruta / subdominio
   if (subdomainRoute === 'staff') {
     return <StaffPortal />;
   }
@@ -374,6 +373,7 @@ export default function App() {
           </section>
         </main>
       ) : (
+        /* VISTA PRINCIPAL / PORTAL GENERAL */
         <main className="flex-grow">
           <section className="relative overflow-hidden py-24 sm:py-32 border-b border-white/[0.06]">
             <div className="absolute inset-0 z-0">
