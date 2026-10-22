@@ -115,10 +115,15 @@ export default function LoyverseDashboard() {
     setSincronizando(true);
     setMensaje(null);
     try {
-      if (articulosLoyverse.length > 0) {
+      const res = await fetch('/api/loyverse');
+      if (!res.ok) throw new Error('Fallo al conectar con Loyverse al sincronizar.');
+      const json = await res.json();
+      const itemsRemotos = json.items || [];
+
+      if (itemsRemotos.length > 0) {
         const loyverseIds: string[] = [];
 
-        for (const item of articulosLoyverse) {
+        for (const item of itemsRemotos) {
           const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
           const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
           const variantId = item.variants && item.variants.length > 0 ? item.variants[0].variant_id : item.id;
@@ -146,7 +151,8 @@ export default function LoyverseDashboard() {
           }
         }
 
-        setMensaje('¡Catálogo sincronizado! Artículos nuevos añadidos y obsoletos eliminados de la carta QR.');
+        setArticulosLoyverse(itemsRemotos);
+        setMensaje(`¡Catálogo sincronizado! ${itemsRemotos.length} artículos volcados a la carta digital.`);
       } else {
         setMensaje('No se encontraron artículos remotos en Loyverse para sincronizar.');
       }
