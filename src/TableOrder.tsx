@@ -1,6 +1,16 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart } from 'lucide-react';
+import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X } from 'lucide-react';
+
+interface OpcionCombo {
+  nombre: string;
+  destino: 'cocina' | 'barra';
+}
+
+interface PasoCombo {
+  titulo: string;
+  opciones: OpcionCombo[];
+}
 
 interface Producto {
   id: number;
@@ -8,6 +18,9 @@ interface Producto {
   precio: number;
   categoria: 'bebidas' | 'tapeo' | 'menus';
   destino: 'cocina' | 'barra';
+  es_combo?: boolean;
+  opciones_combo?: PasoCombo[];
+  loyverse_variant_id?: string;
 }
 
 interface ItemPedido {
@@ -25,6 +38,11 @@ export default function TableOrder() {
   
   const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number }>>([]);
   const [cuentaMesa, setCuentaMesa] = useState<ItemPedido[]>([]);
+  
+  // Estados para Combos / Menús
+  const [comboActivo, setComboActivo] = useState<Producto | null>(null);
+  const [pasoComboActual, setPasoComboActual] = useState(0);
+  const [seleccionesCombo, setSeleccionesCombo] = useState<Record<number, OpcionCombo>>({});
   
   const [enviando, setEnviando] = useState(false);
   const [enviandoCuenta, setEnviandoCuenta] = useState(false);
@@ -47,14 +65,24 @@ export default function TableOrder() {
     cargarProductosCarta();
     cargarCuentaDesdeSupabase(mNum);
 
-    // Escuchar cambios en vivo (Si el camarero añade algo, sale en el móvil del cliente)
+    // Escuchar cambios en vivo (Si el camarero añade algo o si cobra la cuenta)
     const channel = supabase
       .channel(`mesa-${mNum}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'comandas_cocina', filter: `mesa=eq.MESA ${mNum}` },
-        () => {
-          cargarCuentaDesdeSupabase(mNum);
+        (payload: any) => {
+          // Si el camarero marca la cuenta como servida, limpiamos la mesa
+          const comanda = payload.new;
+          if (comanda && comanda.tipo_destino === 'cuenta' && comanda.estado === 'servido') {
+            setCuentaMesa([]);
+            setCarritoActual([]);
+            localStorage.removeItem(`nexus_mesa_${mNum}_cuenta`);
+            setMensaje('¡Cuenta cobrada con éxito! Gracias por vuestra visita.');
+          } else {
+            // Si hay otro cambio, recargamos la cuenta para ver los nuevos platos
+            cargarCuentaDesdeSupabase(mNum);
+          }
         }
       )
       .subscribe();
@@ -110,15 +138,57 @@ export default function TableOrder() {
     }
   };
 
-  const agregarAlCarrito = (prod: Producto) => {
-    setCarritoActual(prev => {
-      const existe = prev.find(p => p.id === prod.id);
-      if (existe) {
-        return prev.map(p => p.id === prod.id ? { ...p, cantidad: p.cantidad + 1 } : p);
-      }
-      return [...prev, { ...prod, cantidad: 1 }];
+  const clickAgregarAlCarrito = (prod: Producto) => {
+    if (prod.es_combo && prod.opciones_combo && prod.opciones_combo.length > 0) {
+      setComboActivo(prod);
+      setPasoComboActual(0);
+      setSeleccionesCombo({});
+    } else {
+      setCarritoActual(prev => {
+        const existe = prev.find(p => p.id === prod.id);
+        if (existe) {
+          return prev.map(p => p.id === prod.id ? { ...p, cantidad: p.cantidad + 1 } : p);
+        }
+        return [...prev, { ...prod, cantidad: 1 }];
+      });
+      setMensaje(null);
+    }
+  };
+
+  const confirmarCombo = (seleccionesFinales: Record<number, OpcionCombo>) => {
+    if (!comboActivo) return;
+    
+    const baseId = Date.now();
+    const itemsNuevos: Array<Producto & { cantidad: number }> = [];
+
+    // Añadir el menú base
+    itemsNuevos.push({ 
+      ...comboActivo, 
+      id: baseId, 
+      cantidad: 1 
     });
-    setMensaje(null);
+
+    // Añadir las opciones seleccionadas a 0€ usando un bucle for tradicional para evitar variables sin uso
+    const opcionesLength = comboActivo.opciones_combo?.length || 0;
+    for (let idx = 0; idx < opcionesLength; idx++) {
+      const seleccion = seleccionesFinales[idx];
+      if (seleccion) {
+        itemsNuevos.push({
+          id: baseId + idx + 1,
+          nombre: ` ├─ ${seleccion.nombre}`,
+          precio: 0,
+          categoria: comboActivo.categoria,
+          destino: seleccion.destino,
+          cantidad: 1
+        });
+      }
+    }
+
+    setCarritoActual(prev => [...prev, ...itemsNuevos]);
+    setComboActivo(null);
+    setSeleccionesCombo({});
+    setPasoComboActual(0);
+    setMensaje(`¡${comboActivo.nombre} añadido al pedido!`);
   };
 
   const cambiarCantidadCarrito = (id: number, delta: number) => {
@@ -154,7 +224,14 @@ export default function TableOrder() {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaNum}`,
             tipo_destino: 'cocina',
-            items: itemsCocina.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, variante: '', comentarios: '', es_menu: i.categoria === 'menus' }))
+            items: itemsCocina.map(i => ({ 
+              nombre: i.nombre, 
+              precio: Number(i.precio), 
+              cantidad: i.cantidad, 
+              variante: '', 
+              comentarios: '', 
+              es_menu: i.categoria === 'menus' 
+            }))
           }])
         );
       }
@@ -165,7 +242,13 @@ export default function TableOrder() {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaNum}`,
             tipo_destino: 'barra',
-            items: itemsBarra.map(i => ({ nombre: i.nombre, precio: Number(i.precio), cantidad: i.cantidad, variante: '', comentarios: '' }))
+            items: itemsBarra.map(i => ({ 
+              nombre: i.nombre, 
+              precio: Number(i.precio), 
+              cantidad: i.cantidad, 
+              variante: '', 
+              comentarios: '' 
+            }))
           }])
         );
       }
@@ -174,7 +257,6 @@ export default function TableOrder() {
       
       setCarritoActual([]);
       setMensaje('¡Pedido enviado a cocina y barra correctamente!');
-      // No hace falta actualizar cuentaMesa manualmente, el useEffect de Realtime lo recargará instantáneamente.
     } catch (err: any) {
       setMensaje('Error al enviar el pedido: ' + err.message);
     } finally {
@@ -192,10 +274,15 @@ export default function TableOrder() {
         mesa: `MESA ${mesaNum}`,
         tipo_destino: 'cuenta',
         estado: 'pendiente',
-        items: [{ nombre: '¡EL CLIENTE PIDE LA CUENTA!', cantidad: 1, variante: '', comentarios: `Total cuenta: ${totalCuentaAcumulada.toFixed(2)} €` }]
+        items: [{ 
+          nombre: '¡EL CLIENTE PIDE LA CUENTA!', 
+          cantidad: 1, 
+          variante: '', 
+          comentarios: `Total cuenta: ${totalCuentaAcumulada.toFixed(2)} €` 
+        }]
       }]);
 
-      setMensaje('¡Cuenta solicitada! Un camarero se acercará con el ticket.');
+      setMensaje('¡Cuenta solicitada! Un camarero se acercará en breve.');
     } catch (err: any) {
       setMensaje('Error al solicitar la cuenta: ' + err.message);
     } finally {
@@ -204,7 +291,60 @@ export default function TableOrder() {
   };
 
   return (
-    <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black">
+    <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
+      
+      {/* MODAL DE COMBOS / MENÚS FLOTANTE */}
+      {comboActivo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <div className="w-full max-w-md bg-[#0d0f17] border border-cyan-500/30 rounded-3xl p-6 shadow-2xl animate-slide-up">
+            <div className="flex justify-between items-center mb-5 border-b border-white/10 pb-4">
+              <div>
+                <span className="text-[10px] uppercase font-bold text-cyan-400">Configurando tu pedido:</span>
+                <h3 className="text-xl font-black text-white">{comboActivo.nombre}</h3>
+              </div>
+              <button 
+                onClick={() => { 
+                  setComboActivo(null); 
+                  setPasoComboActual(0); 
+                  setSeleccionesCombo({}); 
+                }} 
+                className="text-slate-400 hover:text-white bg-white/5 p-1.5 rounded-lg transition-colors"
+              >
+                <X className="h-5 w-5"/>
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+               <h4 className="text-cyan-400 font-bold text-sm bg-cyan-950/30 p-3 rounded-xl border border-cyan-500/20">
+                 Paso {pasoComboActual + 1} de {comboActivo.opciones_combo?.length}: {comboActivo.opciones_combo?.[pasoComboActual].titulo}
+               </h4>
+               
+               <div className="grid grid-cols-1 gap-2.5 max-h-72 overflow-y-auto pr-1">
+                  {comboActivo.opciones_combo?.[pasoComboActual].opciones.map((opcion, idx) => (
+                    <button 
+                      key={idx}
+                      onClick={() => {
+                         const nuevasSel = {...seleccionesCombo, [pasoComboActual]: opcion};
+                         setSeleccionesCombo(nuevasSel);
+                         
+                         if (pasoComboActual < (comboActivo.opciones_combo?.length || 0) - 1) {
+                            setPasoComboActual(prev => prev + 1);
+                         } else {
+                            confirmarCombo(nuevasSel);
+                         }
+                      }}
+                      className="p-4 rounded-xl border border-white/10 bg-black/60 hover:border-cyan-400 hover:bg-cyan-950/40 text-left transition-all flex items-center justify-between group"
+                    >
+                      <span className="font-bold text-slate-200 text-sm group-hover:text-cyan-400">{opcion.nombre}</span>
+                      <Plus className="h-4 w-4 text-slate-600 group-hover:text-cyan-400" />
+                    </button>
+                  ))}
+               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="border-b border-white/10 bg-[#08090d]/90 backdrop-blur px-5 py-4 sticky top-0 z-40 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-black">
@@ -238,17 +378,24 @@ export default function TableOrder() {
         {cuentaMesa.length > 0 && (
           <div className="p-4 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-3 shadow-xl animate-fade-in">
             <div className="flex items-center justify-between pb-2 border-b border-white/10 text-cyan-400 font-bold text-xs uppercase tracking-wider">
-              <span className="flex items-center gap-1.5"><ShoppingCart className="h-4 w-4" /> Cuenta Acumulada de Mesa</span>
+              <span className="flex items-center gap-1.5"><ShoppingCart className="h-4 w-4" /> Tu Cuenta Acumulada</span>
               <span className="font-mono text-sm">{totalCuentaAcumulada.toFixed(2)} €</span>
             </div>
             <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
               {cuentaMesa.map((item, idx) => (
-                <div key={idx} className="flex items-center justify-between text-xs bg-black/40 px-3 py-2 rounded-xl border border-white/5">
+                <div 
+                  key={idx} 
+                  className={`flex items-center justify-between text-xs bg-black/40 px-3 py-2 rounded-xl border border-white/5 ${
+                    item.nombre.includes('├─') ? 'opacity-70 pl-6' : ''
+                  }`}
+                >
                   <span className="text-white font-medium">
                     <span className="text-cyan-400 font-mono font-bold mr-2">{item.cantidad}x</span>
                     {item.nombre}
                   </span>
-                  <span className="font-mono text-slate-300">{(item.precio * item.cantidad).toFixed(2)} €</span>
+                  <span className="font-mono text-slate-300">
+                    {item.nombre.includes('├─') ? '' : `${(item.precio * item.cantidad).toFixed(2)} €`}
+                  </span>
                 </div>
               ))}
             </div>
@@ -259,7 +406,7 @@ export default function TableOrder() {
           <button
             onClick={() => setCategoriaActiva('bebidas')}
             className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'bebidas' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400'
+              categoriaActiva === 'bebidas' ? 'bg-cyan-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
             }`}
           >
             ☕ Cafetería
@@ -267,7 +414,7 @@ export default function TableOrder() {
           <button
             onClick={() => setCategoriaActiva('tapeo')}
             className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'tapeo' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400'
+              categoriaActiva === 'tapeo' ? 'bg-cyan-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
             }`}
           >
             🍳 Cocina / Tapas
@@ -275,10 +422,10 @@ export default function TableOrder() {
           <button
             onClick={() => setCategoriaActiva('menus')}
             className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'menus' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400'
+              categoriaActiva === 'menus' ? 'bg-cyan-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
             }`}
           >
-            🍽️ Menú del Día
+            🍽️ Menús y Combos
           </button>
         </div>
 
@@ -289,15 +436,29 @@ export default function TableOrder() {
             {productosCarta
               .filter(p => p.categoria === categoriaActiva)
               .map((prod) => (
-                <div key={prod.id} className="p-4 rounded-2xl bg-[#0d0f17] border border-white/10 flex items-center justify-between gap-3 shadow-md">
+                <div 
+                  key={prod.id} 
+                  className={`p-4 rounded-2xl bg-[#0d0f17] border flex items-center justify-between gap-3 shadow-md ${
+                    prod.es_combo ? 'border-cyan-500/40 bg-cyan-950/20' : 'border-white/10'
+                  }`}
+                >
                   <div>
-                    <h4 className="font-bold text-white text-sm">{prod.nombre}</h4>
-                    <span className="font-mono text-cyan-400 font-bold text-xs mt-1 block">{Number(prod.precio).toFixed(2)} €</span>
+                    <h4 className="font-bold text-white text-sm flex items-center gap-1.5">
+                      {prod.nombre}
+                      {prod.es_combo && (
+                        <span className="text-[9px] bg-cyan-500 text-slate-950 px-1.5 py-0.5 rounded font-black uppercase">
+                          Opciones
+                        </span>
+                      )}
+                    </h4>
+                    <span className="font-mono text-cyan-400 font-bold text-xs mt-1 block">
+                      {Number(prod.precio).toFixed(2)} €
+                    </span>
                   </div>
                   <button
                     type="button"
-                    onClick={() => agregarAlCarrito(prod)}
-                    className="h-10 w-10 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md"
+                    onClick={() => clickAgregarAlCarrito(prod)}
+                    className="h-10 w-10 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md font-bold"
                   >
                     <Plus className="h-5 w-5" />
                   </button>
@@ -318,20 +479,31 @@ export default function TableOrder() {
         <div className="fixed bottom-0 left-0 right-0 bg-[#0c0e17]/95 backdrop-blur-md border-t border-cyan-500/40 p-4 shadow-2xl z-50 animate-slide-up">
           <div className="max-w-3xl mx-auto space-y-3">
             <div className="text-xs font-bold text-cyan-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Nuevos artículos a pedir:</span>
+              <span>Añadido al pedido:</span>
               <span className="font-mono">{totalCarritoActual.toFixed(2)} €</span>
             </div>
 
             <div className="max-h-36 overflow-y-auto space-y-2 pr-1">
               {carritoActual.map((item) => (
-                <div key={item.id} className="flex items-center justify-between text-xs bg-cyan-950/20 p-2.5 rounded-xl border border-cyan-500/20">
+                <div 
+                  key={item.id} 
+                  className={`flex items-center justify-between text-xs bg-cyan-950/20 p-2.5 rounded-xl border border-cyan-500/20 ${
+                    item.nombre.includes('├─') ? 'pl-6' : ''
+                  }`}
+                >
                   <span className="font-bold text-white truncate max-w-[140px]">{item.nombre}</span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-cyan-400 font-bold">{(Number(item.precio) * item.cantidad).toFixed(2)} €</span>
+                    <span className="font-mono text-cyan-400 font-bold">
+                      {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
+                    </span>
                     <div className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg">
-                      <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
+                      <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white">
+                        <Minus className="h-3 w-3" />
+                      </button>
                       <span className="font-mono font-bold text-white w-3 text-center">{item.cantidad}</span>
-                      <button onClick={() => cambiarCantidadCarrito(item.id, 1)} className="text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
+                      <button onClick={() => cambiarCantidadCarrito(item.id, 1)} className="text-slate-400 hover:text-white">
+                        <Plus className="h-3 w-3" />
+                      </button>
                     </div>
                   </div>
                 </div>
