@@ -1,22 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { 
-  Utensils, 
-  Plus, 
-  Minus, 
-  Send, 
-  Printer, 
-  ArrowLeft, 
-  MapPin, 
-  CheckCircle2, 
-  DollarSign, 
-  CreditCard, 
-  Lock, 
-  LockOpen, 
-  Calculator, 
-  User, 
-  X 
-} from 'lucide-react';
+import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard, Lock, LockOpen, Calculator, User, X } from 'lucide-react';
 
 interface OpcionCombo {
   nombre: string;
@@ -73,12 +57,10 @@ interface TableWaiterProps {
 }
 
 export default function TableWaiter({ onBack }: TableWaiterProps) {
-  // Estado de Login de Camarero
   const [camareroActivo, setCamareroActivo] = useState<{ id: string, nombre: string } | null>(null);
   const [pinInput, setPinInput] = useState('');
   const [loginError, setLoginError] = useState(false);
 
-  // Estados principales de Sala
   const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [loadingCarta, setLoadingCarta] = useState(true);
@@ -87,24 +69,20 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
   
-  // Estados para Combos / Menús
   const [comboActivo, setComboActivo] = useState<Producto | null>(null);
   const [pasoComboActual, setPasoComboActual] = useState(0);
   const [seleccionesCombo, setSeleccionesCombo] = useState<Record<number, OpcionCombo>>({});
 
-  // Estados de Caja
   const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
   const [remanenteAperturaInput, setRemanenteAperturaInput] = useState<string>('50.00');
   const [efectivoRealInput, setEfectivoRealInput] = useState<string>('');
   const [remanenteCierreInput, setRemanenteCierreInput] = useState<string>('50.00');
 
-  // Estados de Interfaz
   const [enviando, setEnviando] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
 
-  // Función de Login
   const loginCamarero = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(false);
@@ -125,7 +103,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  // Efecto en tiempo real (solo si está logueado)
   useEffect(() => {
     if (!camareroActivo) return;
 
@@ -146,7 +123,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     };
   }, [camareroActivo]);
 
-  // Actualizar la vista al cambiar de mesa seleccionada
   useEffect(() => {
     const encontrada = mesasAbiertas.find(m => m.mesa === `MESA ${mesaSeleccionada}`);
     if (encontrada && encontrada.items) {
@@ -248,7 +224,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  // Función para gestionar clicks en la carta (identifica si es combo normal)
   const clickAgregarAlCarrito = (prod: Producto) => {
     if (prod.es_combo && prod.opciones_combo && prod.opciones_combo.length > 0) {
       setComboActivo(prod);
@@ -266,21 +241,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  // Confirmar el pop-up del combo y enviar los items al carrito
   const confirmarCombo = (seleccionesFinales: Record<number, OpcionCombo>) => {
     if (!comboActivo) return;
     
     const baseId = Date.now();
     const itemsNuevos: Array<Producto & { cantidad: number }> = [];
 
-    // Añadir artículo padre (El menú con su precio)
     itemsNuevos.push({ 
       ...comboActivo, 
       id: baseId, 
       cantidad: 1 
     });
 
-    // Añadir opciones hijas a 0€ formateadas
     comboActivo.opciones_combo?.forEach((_, idx) => {
       const seleccion = seleccionesFinales[idx];
       if (seleccion) {
@@ -392,20 +364,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (!mesaObj || !camareroActivo) return;
 
     try {
-      // 1. Sincronizar venta con Loyverse
       const { data: cartaIds } = await supabase.from('productos_carta').select('nombre, loyverse_variant_id');
       const mapLoyverseIds: Record<string, string> = {};
+      
       if (cartaIds) {
         cartaIds.forEach(p => { 
-          mapLoyverseIds[p.nombre] = p.loyverse_variant_id; 
+          // Limpiamos los nombres en el mapa por si acaso
+          mapLoyverseIds[p.nombre.trim()] = p.loyverse_variant_id; 
         });
       }
 
-      const itemsAEnviarLoyverse = mesaObj.items.map(it => ({
-        cantidad: it.cantidad,
-        precio: it.precio,
-        loyverse_variant_id: mapLoyverseIds[it.nombre] || ""
-      }));
+      const itemsAEnviarLoyverse = mesaObj.items.map(it => {
+        // LIMPIEZA CLAVE PARA INVENTARIO: Quitamos la flecha "├─" y los espacios extra para que coincida exactamente con Loyverse
+        const nombreLimpio = it.nombre.replace('├─', '').trim();
+        return {
+          cantidad: it.cantidad,
+          precio: it.precio,
+          loyverse_variant_id: mapLoyverseIds[nombreLimpio] || ""
+        };
+      });
 
       try {
         await fetch('/api/sync-receipt', {
@@ -422,7 +399,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         console.warn("Loyverse API no disponible. Se guardará solo en Supabase.");
       }
 
-      // 2. Cerrar en Supabase
       await supabase
         .from('comandas_cocina')
         .update({ 
@@ -435,7 +411,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .eq('mesa', mesaNombre)
         .neq('estado', 'servido');
 
-      // 3. Actualizar importes de caja diaria
       const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? mesaObj.total_ticket : 0);
       const nuevaTarjeta = Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? mesaObj.total_ticket : 0);
       
@@ -444,7 +419,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta })
         .eq('id', cajaHoy.id);
 
-      // Limpiar memoria local si el cliente escaneó
       const mNumNum = mesaNombre.replace('MESA ', '');
       localStorage.removeItem(`nexus_mesa_${mNumNum}_cuenta`);
 
@@ -501,7 +475,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     cargarCaja();
   };
 
-  // VISTA PREVIA: Pantalla de Login de Camarero
   if (!camareroActivo) {
     return (
       <div className="min-h-screen bg-[#050609] flex items-center justify-center p-4">
@@ -554,7 +527,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
       
-      {/* MODAL DE COMBOS / MENÚS FLOTANTE */}
       {comboActivo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 print:hidden">
           <div className="w-full max-w-md bg-[#0d0f17] border border-amber-500/30 rounded-3xl p-6 shadow-2xl animate-slide-up">
@@ -606,7 +578,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
-      {/* CABECERA PRINCIPAL DEL PORTAL */}
       <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30 print:hidden">
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between">
           <div className="flex items-center gap-3">
@@ -668,11 +639,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       </header>
 
-      {/* VISTA 1: TOMAR NOTA Y GESTIONAR MESA */}
       {vistaSeccion === 'tomar_nota' && (
         <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24 print:block">
           
-          {/* Columna Izquierda: Carta */}
           <div className="md:col-span-2 space-y-4 print:hidden">
             <div className="flex items-center justify-between bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
               <div className="flex items-center gap-2">
@@ -766,11 +735,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             )}
           </div>
 
-          {/* Columna Derecha: Resumen de Mesa */}
           <div className="space-y-4 print:w-full">
             <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl print:border-none print:bg-white print:text-black">
               
-              {/* TICKET TÉRMICO PARA IMPRESIÓN */}
               <div className="hidden print:block space-y-3 text-black text-xs font-mono">
                 <div className="text-center space-y-1 pb-3 border-b border-black">
                   <h2 className="font-black text-sm">NEXUS CORDOBA SL</h2>
@@ -818,7 +785,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </div>
               </div>
 
-              {/* VISTA NORMAL EN PANTALLA */}
               <div className="print:hidden">
                 <div className="flex items-center justify-between pb-3 border-b border-white/10">
                   <div>
@@ -833,7 +799,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 <div className="space-y-2 mt-3">
                   <span className="text-xs font-bold text-slate-400 block">Artículos ya pedidos / en cuenta:</span>
                   {cuentaMesaActual.length === 0 ? (
-                    <p className="text-xs text-slate-500 italic py-3 text-center">La mesa está vacía.</p>
+                    <p className="text-xs text-slate-500 italic py-3 text-center">No hay consumos previos registrados.</p>
                   ) : (
                     <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
                       {cuentaMesaActual.map((item, idx) => (
@@ -917,7 +883,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </main>
       )}
 
-      {/* VISTA 2: LISTADO DE MESAS ABIERTAS */}
       {vistaSeccion === 'mesas_abiertas' && (
         <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
@@ -987,7 +952,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </main>
       )}
 
-      {/* VISTA 3: APERTURA Y CIERRE DE CAJA */}
       {vistaSeccion === 'caja' && (
         <main className="flex-1 max-w-2xl w-full mx-auto space-y-6 pb-24">
           
