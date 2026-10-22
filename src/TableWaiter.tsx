@@ -90,7 +90,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     const { data } = await supabase
       .from('empleados')
       .select('*')
-      .eq('pin', pinInput)
+      .eq('pin_acceso', pinInput)
       .single();
       
     if (data) {
