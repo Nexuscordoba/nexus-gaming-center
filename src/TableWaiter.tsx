@@ -109,7 +109,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         }
         if (row.items && Array.isArray(row.items)) {
           row.items.forEach((it: any) => {
-            // Agrupar ítems idénticos para no repetir líneas
             const existente = mapMesas[mKey].items.find(x => x.nombre === it.nombre);
             if (existente) {
               existente.cantidad += (it.cantidad || 1);
@@ -200,7 +199,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setCarritoActual([]);
       cargarMesasAbiertas();
       
-      // Redirigir a la vista de mesas tras 1.5 segundos para limpiar la pantalla
       setTimeout(() => {
         setVistaSeccion('mesas_abiertas');
         setMensaje(null);
@@ -218,9 +216,45 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (!mesaObj) return;
 
     try {
+      // 1. SINCRONIZAR VENTA CON API DE LOYVERSE
+      const { data: cartaIds } = await supabase.from('productos_carta').select('nombre, loyverse_variant_id');
+      const mapLoyverseIds: Record<string, string> = {};
+      if (cartaIds) {
+        cartaIds.forEach(p => {
+          mapLoyverseIds[p.nombre] = p.loyverse_variant_id;
+        });
+      }
+
+      const itemsAEnviarLoyverse = mesaObj.items.map(it => ({
+        cantidad: it.cantidad,
+        precio: it.precio,
+        loyverse_variant_id: mapLoyverseIds[it.nombre] || ""
+      }));
+
+      try {
+        const res = await fetch('/api/sync-receipt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receipt_number: mesaObj.ticket_number || Math.floor(100000 + Math.random() * 900000).toString(),
+            total_money: mesaObj.total_ticket,
+            payment_type: metodo,
+            items: itemsAEnviarLoyverse
+          })
+        });
+        const jsonLoy = await res.json();
+        if (!res.ok) {
+          console.warn("Aviso Loyverse: ", jsonLoy);
+          // Omitimos frenar el flujo para no bloquear al camarero si falla Loyverse
+        }
+      } catch (fetchErr) {
+        console.warn("API de Loyverse inaccesible en este momento.");
+      }
+
+      // 2. CERRAR MESA EN SUPABASE Y SUMAR A CAJA DIARIA
       await supabase
         .from('comandas_cocina')
-        .update({ estado: 'servido', metodo_pago: metodo })
+        .update({ estado: 'servido', metodo_pago: metodo, loyverse_sync: true })
         .eq('mesa', mesaNombre)
         .neq('estado', 'servido');
 
@@ -238,14 +272,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           .from('caja_diaria')
           .update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta })
           .eq('id', cajaData.id);
-      } else {
-        await supabase.from('caja_diaria').insert([{
-          fecha: fechaHoy,
-          total_efectivo: metodo === 'efectivo' ? mesaObj.total_ticket : 0,
-          total_tarjeta: metodo === 'tarjeta' ? mesaObj.total_ticket : 0,
-          estado: 'abierta'
-        }]);
       }
+
+      const mNumNum = mesaNombre.replace('MESA ', '');
+      localStorage.removeItem(`nexus_mesa_${mNumNum}_cuenta`);
 
       alert(`¡Mesa ${mesaNombre} cobrada correctamente con ${metodo.toUpperCase()} (${mesaObj.total_ticket.toFixed(2)} €)!`);
       cargarMesasAbiertas();

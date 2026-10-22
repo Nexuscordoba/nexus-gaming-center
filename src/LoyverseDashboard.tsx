@@ -101,15 +101,19 @@ export default function LoyverseDashboard() {
           const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
           const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
           
+          // Extraer el ID de la variante para que Supabase sepa luego enviarlo a Loyverse
+          const variantId = item.variants && item.variants.length > 0 ? item.variants[0].variant_id : item.id;
+          
           await supabase.from('productos_carta').upsert([{
             nombre: item.item_name || item.name,
             precio: item.price || 3.00,
             categoria: catNombre.includes('cocina') ? 'tapeo' : 'bebidas',
             destino: destinoAsignado,
-            activo: true
+            activo: true,
+            loyverse_variant_id: variantId
           }], { onConflict: 'nombre' });
         }
-        setMensaje('¡Artículos de Loyverse sincronizados con éxito en la carta digital de mesas!');
+        setMensaje('¡Artículos de Loyverse y sus IDs sincronizados con éxito!');
       } else {
         setMensaje('No se encontraron artículos remotos para sincronizar.');
       }
@@ -290,7 +294,7 @@ export default function LoyverseDashboard() {
                   <h3 className="font-bold text-white text-base">Fondo de Caja / Remanente de Apertura</h3>
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Establece el importe inicial en monedas y billetes con el que se abre la caja al comenzar la jornada (cambio inicial del día anterior).
+                  Establece el importe inicial en monedas y billetes con el que se abre la caja al comenzar la jornada.
                 </p>
 
                 <div className="flex items-center gap-3 pt-2">
@@ -317,7 +321,7 @@ export default function LoyverseDashboard() {
               <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
                 <div className="flex items-center gap-2.5 text-cyan-400 pb-3 border-b border-white/10">
                   <Calendar className="h-5 w-5" />
-                  <h3 className="font-bold text-white text-base">Resumen de Arqueo para Cierre de Turno</h3>
+                  <h3 className="font-bold text-white text-base">Resumen de Arqueo para Cierre</h3>
                 </div>
                 <div className="space-y-3 text-xs text-slate-300 pt-1">
                   <div className="flex justify-between py-1.5 border-b border-white/5">
