@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard } from 'lucide-react';
+import { Utensils, Plus, Minus, Send, Printer, ArrowLeft, MapPin, CheckCircle2, DollarSign, CreditCard, Lock, LockOpen, Calculator } from 'lucide-react';
 
 interface Producto {
   id: number;
@@ -26,6 +26,19 @@ interface MesaAbierta {
   created_at: string;
 }
 
+interface CajaDiaria {
+  id: number;
+  fecha: string;
+  remanente_apertura: number;
+  total_efectivo: number;
+  total_tarjeta: number;
+  efectivo_real: number;
+  descuadre: number;
+  remanente_cierre: number;
+  efectivo_retirado: number;
+  estado: 'abierta' | 'cerrada';
+}
+
 interface TableWaiterProps {
   onBack: () => void;
 }
@@ -39,14 +52,21 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
   
+  // Estados de Caja
+  const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
+  const [remanenteAperturaInput, setRemanenteAperturaInput] = useState<string>('50.00');
+  const [efectivoRealInput, setEfectivoRealInput] = useState<string>('');
+  const [remanenteCierreInput, setRemanenteCierreInput] = useState<string>('50.00');
+
   const [enviando, setEnviando] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
-  const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas'>('tomar_nota');
+  const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
 
   useEffect(() => {
     cargarProductosCarta();
     cargarMesasAbiertas();
+    cargarCaja();
 
     const channel = supabase
       .channel('realtime-waiter')
@@ -55,6 +75,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         { event: '*', schema: 'public', table: 'comandas_cocina' },
         () => {
           cargarMesasAbiertas();
+          cargarCaja(); // Refrescar caja si hay cobros desde otro lado
         }
       )
       .subscribe();
@@ -71,18 +92,31 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     } else {
       setCuentaMesaActual([]);
     }
+    setCarritoActual([]);
+    setMensaje(null);
   }, [mesaSeleccionada, mesasAbiertas]);
 
   const cargarProductosCarta = async () => {
     setLoadingCarta(true);
-    const { data } = await supabase
-      .from('productos_carta')
-      .select('*')
-      .eq('activo', true)
-      .order('id', { ascending: true });
-
+    const { data } = await supabase.from('productos_carta').select('*').eq('activo', true).order('id', { ascending: true });
     if (data) setProductosCarta(data as Producto[]);
     setLoadingCarta(false);
+  };
+
+  const cargarCaja = async () => {
+    const fechaHoy = new Date().toISOString().split('T')[0];
+    const { data } = await supabase.from('caja_diaria').select('*').eq('fecha', fechaHoy).single();
+
+    if (data) {
+      setCajaHoy(data as CajaDiaria);
+    } else {
+      setCajaHoy(null);
+      // Buscar remanente de cierre del último día abierto para sugerirlo
+      const { data: lastCaja } = await supabase.from('caja_diaria').select('remanente_cierre').order('fecha', { ascending: false }).limit(1).single();
+      if (lastCaja) {
+        setRemanenteAperturaInput(lastCaja.remanente_cierre.toString());
+      }
+    }
   };
 
   const cargarMesasAbiertas = async () => {
@@ -212,17 +246,21 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const cobrarMesa = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
+    // BLOQUEO DE SEGURIDAD: No se puede cobrar si la caja no está abierta
+    if (!cajaHoy || cajaHoy.estado === 'cerrada') {
+      alert('¡ATENCIÓN! La caja no está abierta. Ve a la pestaña "Caja y Cierre" para abrir el turno del día antes de cobrar.');
+      return;
+    }
+
     const mesaObj = mesasAbiertas.find(m => m.mesa === mesaNombre);
     if (!mesaObj) return;
 
     try {
-      // 1. SINCRONIZAR VENTA CON API DE LOYVERSE
+      // 1. Mandar venta a Loyverse
       const { data: cartaIds } = await supabase.from('productos_carta').select('nombre, loyverse_variant_id');
       const mapLoyverseIds: Record<string, string> = {};
       if (cartaIds) {
-        cartaIds.forEach(p => {
-          mapLoyverseIds[p.nombre] = p.loyverse_variant_id;
-        });
+        cartaIds.forEach(p => { mapLoyverseIds[p.nombre] = p.loyverse_variant_id; });
       }
 
       const itemsAEnviarLoyverse = mesaObj.items.map(it => ({
@@ -232,7 +270,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }));
 
       try {
-        const res = await fetch('/api/sync-receipt', {
+        await fetch('/api/sync-receipt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -242,43 +280,31 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             items: itemsAEnviarLoyverse
           })
         });
-        const jsonLoy = await res.json();
-        if (!res.ok) {
-          console.warn("Aviso Loyverse: ", jsonLoy);
-          // Omitimos frenar el flujo para no bloquear al camarero si falla Loyverse
-        }
       } catch (fetchErr) {
-        console.warn("API de Loyverse inaccesible en este momento.");
+        console.warn("Loyverse API no disponible.");
       }
 
-      // 2. CERRAR MESA EN SUPABASE Y SUMAR A CAJA DIARIA
+      // 2. Cerrar en Supabase y actualizar Caja Diaria
       await supabase
         .from('comandas_cocina')
         .update({ estado: 'servido', metodo_pago: metodo, loyverse_sync: true })
         .eq('mesa', mesaNombre)
         .neq('estado', 'servido');
 
-      const fechaHoy = new Date().toISOString().split('T')[0];
-      const { data: cajaData } = await supabase
+      const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? mesaObj.total_ticket : 0);
+      const nuevaTarjeta = Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? mesaObj.total_ticket : 0);
+      
+      await supabase
         .from('caja_diaria')
-        .select('*')
-        .eq('fecha', fechaHoy)
-        .single();
-
-      if (cajaData) {
-        const nuevoEfectivo = Number(cajaData.total_efectivo) + (metodo === 'efectivo' ? mesaObj.total_ticket : 0);
-        const nuevaTarjeta = Number(cajaData.total_tarjeta) + (metodo === 'tarjeta' ? mesaObj.total_ticket : 0);
-        await supabase
-          .from('caja_diaria')
-          .update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta })
-          .eq('id', cajaData.id);
-      }
+        .update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta })
+        .eq('id', cajaHoy.id);
 
       const mNumNum = mesaNombre.replace('MESA ', '');
       localStorage.removeItem(`nexus_mesa_${mNumNum}_cuenta`);
 
       alert(`¡Mesa ${mesaNombre} cobrada correctamente con ${metodo.toUpperCase()} (${mesaObj.total_ticket.toFixed(2)} €)!`);
       cargarMesasAbiertas();
+      cargarCaja(); // Refrescar caja local
     } catch (err: any) {
       alert('Error al cobrar la mesa: ' + err.message);
     }
@@ -286,6 +312,48 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const imprimirTicket = () => {
     window.print();
+  };
+
+  // FUNCIONES DE CAJA
+  const abrirCaja = async () => {
+    const fechaHoy = new Date().toISOString().split('T')[0];
+    const remanente = parseFloat(remanenteAperturaInput) || 0;
+    
+    await supabase.from('caja_diaria').insert([{ 
+      fecha: fechaHoy, 
+      remanente_apertura: remanente, 
+      total_efectivo: 0, 
+      total_tarjeta: 0, 
+      estado: 'abierta' 
+    }]);
+
+    alert(`Turno de hoy abierto con un fondo de caja de ${remanente.toFixed(2)} €.`);
+    cargarCaja();
+  };
+
+  const cerrarCaja = async () => {
+    if (!cajaHoy) return;
+    
+    const efectivoReal = parseFloat(efectivoRealInput) || 0;
+    const remanenteCierre = parseFloat(remanenteCierreInput) || 0;
+    
+    const teoricoEfectivo = Number(cajaHoy.remanente_apertura) + Number(cajaHoy.total_efectivo);
+    const descuadre = efectivoReal - teoricoEfectivo;
+    const efectivoRetirado = efectivoReal - remanenteCierre;
+
+    await supabase
+      .from('caja_diaria')
+      .update({ 
+        efectivo_real: efectivoReal,
+        descuadre: descuadre,
+        remanente_cierre: remanenteCierre,
+        efectivo_retirado: efectivoRetirado,
+        estado: 'cerrada' 
+      })
+      .eq('id', cajaHoy.id);
+
+    alert(`¡Caja cerrada! Descuadre: ${descuadre.toFixed(2)} €. Dinero a retirar: ${efectivoRetirado.toFixed(2)} €.`);
+    cargarCaja();
   };
 
   return (
@@ -298,8 +366,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <Utensils className="h-7 w-7" />
             </div>
             <div>
-              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · PORTAL DE CAMAREROS</h1>
-              <p className="text-xs text-slate-400">Chinales 45 · Toma de notas y cobro en sala</p>
+              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · PORTAL CAMAREROS</h1>
+              <p className="text-xs text-slate-400">Toma de notas, mesas y control de turno</p>
             </div>
           </div>
           
@@ -308,8 +376,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             onClick={onBack}
             className="sm:hidden flex items-center gap-1 px-3 py-1.5 rounded-xl border border-white/10 bg-white/5 text-xs text-slate-300"
           >
-            <ArrowLeft className="h-4 w-4" />
-            <span>Volver</span>
+            <ArrowLeft className="h-4 w-4" /> Volver
           </button>
         </div>
 
@@ -317,34 +384,36 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           <div className="flex gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
             <button
               onClick={() => setVistaSeccion('tomar_nota')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                vistaSeccion === 'tomar_nota' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
-              }`}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${vistaSeccion === 'tomar_nota' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
             >
               📝 Tomar Nota
             </button>
             <button
               onClick={() => setVistaSeccion('mesas_abiertas')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer relative ${
-                vistaSeccion === 'mesas_abiertas' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
-              }`}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all relative ${vistaSeccion === 'mesas_abiertas' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
             >
-              📋 Mesas Abiertas ({mesasAbiertas.length})
+              📋 Mesas ({mesasAbiertas.length})
+            </button>
+            <button
+              onClick={() => setVistaSeccion('caja')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${vistaSeccion === 'caja' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+            >
+              💰 Caja y Cierre
             </button>
           </div>
 
           <button
             type="button"
             onClick={onBack}
-            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
+            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 transition-all cursor-pointer"
           >
-            <ArrowLeft className="h-4 w-4" />
-            <span>Volver</span>
+            <ArrowLeft className="h-4 w-4" /> Volver
           </button>
         </div>
       </header>
 
-      {vistaSeccion === 'tomar_nota' ? (
+      {/* VISTA 1: TOMAR NOTA */}
+      {vistaSeccion === 'tomar_nota' && (
         <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24 print:block">
           
           <div className="md:col-span-2 space-y-4 print:hidden">
@@ -370,58 +439,31 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
               >
                 <Printer className="h-4 w-4" />
-                <span>Imprimir Factura Simplificada</span>
+                <span>Factura Simplificada</span>
               </button>
             </div>
 
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
-              <button
-                onClick={() => setCategoriaActiva('bebidas')}
-                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-                  categoriaActiva === 'bebidas' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
-                }`}
-              >
-                ☕ Cafetería
-              </button>
-              <button
-                onClick={() => setCategoriaActiva('tapeo')}
-                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-                  categoriaActiva === 'tapeo' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
-                }`}
-              >
-                🍳 Cocina / Tapas
-              </button>
-              <button
-                onClick={() => setCategoriaActiva('menus')}
-                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-                  categoriaActiva === 'menus' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
-                }`}
-              >
-                🍽️ Menú del Día
-              </button>
+              <button onClick={() => setCategoriaActiva('bebidas')} className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all ${categoriaActiva === 'bebidas' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'}`}>☕ Cafetería</button>
+              <button onClick={() => setCategoriaActiva('tapeo')} className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all ${categoriaActiva === 'tapeo' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'}`}>🍳 Cocina / Tapas</button>
+              <button onClick={() => setCategoriaActiva('menus')} className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all ${categoriaActiva === 'menus' ? 'bg-amber-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'}`}>🍽️ Menú del Día</button>
             </div>
 
             {loadingCarta ? (
               <div className="text-center py-20 text-slate-500 text-sm">Cargando artículos...</div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {productosCarta
-                  .filter(p => p.categoria === categoriaActiva)
-                  .map((prod) => (
-                    <div key={prod.id} className="p-3.5 rounded-2xl bg-[#0d0f17] border border-white/10 flex items-center justify-between gap-3 shadow-md">
-                      <div>
-                        <h4 className="font-bold text-white text-sm">{prod.nombre}</h4>
-                        <span className="font-mono text-amber-400 font-bold text-xs mt-0.5 block">{Number(prod.precio).toFixed(2)} €</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => agregarAlCarrito(prod)}
-                        className="h-9 w-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md font-bold"
-                      >
-                        <Plus className="h-5 w-5" />
-                      </button>
+                {productosCarta.filter(p => p.categoria === categoriaActiva).map((prod) => (
+                  <div key={prod.id} className="p-3.5 rounded-2xl bg-[#0d0f17] border border-white/10 flex items-center justify-between gap-3 shadow-md">
+                    <div>
+                      <h4 className="font-bold text-white text-sm">{prod.nombre}</h4>
+                      <span className="font-mono text-amber-400 font-bold text-xs mt-0.5 block">{Number(prod.precio).toFixed(2)} €</span>
                     </div>
-                  ))}
+                    <button onClick={() => agregarAlCarrito(prod)} className="h-9 w-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md font-bold">
+                      <Plus className="h-5 w-5" />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -429,6 +471,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           <div className="space-y-4 print:w-full">
             <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl print:border-none print:bg-white print:text-black">
               
+              {/* TICKET TÉRMICO PARA IMPRESIÓN */}
               <div className="hidden print:block space-y-3 text-black text-xs font-mono">
                 <div className="text-center space-y-1 pb-3 border-b border-black">
                   <h2 className="font-black text-sm">NEXUS CORDOBA SL</h2>
@@ -464,15 +507,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </div>
               </div>
 
+              {/* VISTA EN PANTALLA */}
               <div className="print:hidden">
                 <div className="flex items-center justify-between pb-3 border-b border-white/10">
                   <div>
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">Resumen Mesa</span>
                     <h3 className="text-lg font-black text-white">MESA {mesaSeleccionada}</h3>
                   </div>
-                  <span className="font-mono font-bold text-amber-400 text-base">
-                    {totalCuentaMesa.toFixed(2)} €
-                  </span>
+                  <span className="font-mono font-bold text-amber-400 text-base">{totalCuentaMesa.toFixed(2)} €</span>
                 </div>
 
                 <div className="space-y-2 mt-3">
@@ -483,10 +525,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
                       {cuentaMesaActual.map((item, idx) => (
                         <div key={idx} className="flex items-center justify-between text-xs bg-black/40 px-3 py-2 rounded-xl border border-white/5">
-                          <span className="text-white font-medium">
-                            <span className="text-amber-400 font-mono font-bold mr-2">{item.cantidad}x</span>
-                            {item.nombre}
-                          </span>
+                          <span className="text-white font-medium"><span className="text-amber-400 font-mono font-bold mr-2">{item.cantidad}x</span>{item.nombre}</span>
                           <span className="font-mono text-slate-300">{(item.precio * item.cantidad).toFixed(2)} €</span>
                         </div>
                       ))}
@@ -513,39 +552,28 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       ))}
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={enviando}
-                      onClick={enviarPedidoCamarero}
-                      className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-95 transition-all disabled:opacity-50"
-                    >
-                      <Send className="h-4 w-4" />
-                      {enviando ? 'Enviando a KDS...' : 'Enviar a Cocina / Barra'}
+                    <button disabled={enviando} onClick={enviarPedidoCamarero} className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-95 transition-all disabled:opacity-50">
+                      <Send className="h-4 w-4" /> {enviando ? 'Enviando...' : 'Enviar a Cocina / Barra'}
                     </button>
                   </div>
                 )}
-
                 {mensaje && (
                   <div className="p-3 mt-3 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 text-xs text-center font-semibold flex items-center justify-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 shrink-0" />
-                    <span>{mensaje}</span>
+                    <CheckCircle2 className="h-4 w-4 shrink-0" /> <span>{mensaje}</span>
                   </div>
                 )}
               </div>
             </div>
           </div>
-
         </main>
-      ) : (
-        <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
-          <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            <span>📋 Mesas Activas con Cuenta Pendiente</span>
-          </h2>
+      )}
 
+      {/* VISTA 2: LISTADO DE MESAS ABIERTAS */}
+      {vistaSeccion === 'mesas_abiertas' && (
+        <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
           {mesasAbiertas.length === 0 ? (
             <div className="text-center py-20 text-slate-500 space-y-2">
               <p className="text-base font-semibold">No hay mesas abiertas en este momento.</p>
-              <p className="text-xs">Todas las cuentas están cobradas y cerradas.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -553,46 +581,115 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 <div key={m.id} className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl flex flex-col justify-between">
                   <div className="space-y-3">
                     <div className="flex items-center justify-between pb-2 border-b border-white/10">
-                      <span className="font-black text-sm px-3 py-1 rounded-xl bg-amber-500 text-slate-950 uppercase shadow">
-                        {m.mesa}
-                      </span>
-                      <span className="font-mono text-lg font-black text-amber-400">
-                        {m.total_ticket.toFixed(2)} €
-                      </span>
+                      <span className="font-black text-sm px-3 py-1 rounded-xl bg-amber-500 text-slate-950 uppercase shadow">{m.mesa}</span>
+                      <span className="font-mono text-lg font-black text-amber-400">{m.total_ticket.toFixed(2)} €</span>
                     </div>
-
                     <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
                       {m.items.map((it, iIdx) => (
                         <div key={iIdx} className="flex justify-between text-xs bg-black/40 px-2.5 py-1.5 rounded-lg">
-                          <span className="text-slate-200">
-                            <span className="text-amber-400 font-mono font-bold mr-1.5">{it.cantidad}x</span>
-                            {it.nombre}
-                          </span>
+                          <span className="text-slate-200"><span className="text-amber-400 font-mono font-bold mr-1.5">{it.cantidad}x</span>{it.nombre}</span>
                           <span className="font-mono text-slate-400">{(it.precio * it.cantidad).toFixed(2)} €</span>
                         </div>
                       ))}
                     </div>
                   </div>
-
                   <div className="space-y-2 pt-3 border-t border-white/10">
-                    <p className="text-[10px] text-slate-400 uppercase font-bold text-center">Cobrar e identificar método de pago:</p>
+                    <p className="text-[10px] text-slate-400 uppercase font-bold text-center">Cobrar (Requiere caja abierta):</p>
                     <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => cobrarMesa(m.mesa, 'efectivo')}
-                        className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow"
-                      >
-                        <DollarSign className="h-4 w-4" /> Efectivo
-                      </button>
-                      <button
-                        onClick={() => cobrarMesa(m.mesa, 'tarjeta')}
-                        className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow"
-                      >
-                        <CreditCard className="h-4 w-4" /> Tarjeta
-                      </button>
+                      <button onClick={() => cobrarMesa(m.mesa, 'efectivo')} className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow"><DollarSign className="h-4 w-4" /> Efectivo</button>
+                      <button onClick={() => cobrarMesa(m.mesa, 'tarjeta')} className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow"><CreditCard className="h-4 w-4" /> Tarjeta</button>
                     </div>
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </main>
+      )}
+
+      {/* VISTA 3: APERTURA Y CIERRE DE CAJA */}
+      {vistaSeccion === 'caja' && (
+        <main className="flex-1 max-w-2xl w-full mx-auto space-y-6 pb-24">
+          
+          {!cajaHoy ? (
+            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-amber-500/40 space-y-5 shadow-xl">
+              <div className="flex items-center gap-3 text-amber-400 border-b border-white/10 pb-4">
+                <LockOpen className="h-6 w-6" />
+                <h2 className="text-xl font-bold text-white">Apertura de Turno</h2>
+              </div>
+              <p className="text-sm text-slate-400">No hay ninguna caja abierta para el día de hoy. Por favor, verifica el dinero inicial en el cajón para empezar a cobrar.</p>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-300 uppercase">Fondo Inicial / Remanente (€)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={remanenteAperturaInput}
+                  onChange={(e) => setRemanenteAperturaInput(e.target.value)}
+                  className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-lg font-mono font-bold text-white outline-none focus:border-amber-400"
+                />
+              </div>
+              <button onClick={abrirCaja} className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer shadow-lg">
+                <LockOpen className="h-5 w-5" /> Abrir Caja
+              </button>
+            </div>
+          ) : cajaHoy.estado === 'abierta' ? (
+            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-cyan-500/40 space-y-6 shadow-xl">
+              <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex items-center gap-3 text-cyan-400">
+                  <Calculator className="h-6 w-6" />
+                  <h2 className="text-xl font-bold text-white">Arqueo y Cierre de Caja</h2>
+                </div>
+                <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-xl text-xs font-bold">Turno Abierto</span>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
+                  <span className="text-xs text-slate-400 uppercase">Fondo Inicial:</span>
+                  <p className="font-mono text-lg font-bold text-white">{Number(cajaHoy.remanente_apertura).toFixed(2)} €</p>
+                </div>
+                <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
+                  <span className="text-xs text-slate-400 uppercase">Ventas Efectivo:</span>
+                  <p className="font-mono text-lg font-bold text-emerald-400">+{Number(cajaHoy.total_efectivo).toFixed(2)} €</p>
+                </div>
+                <div className="col-span-2 bg-sky-950/20 p-4 rounded-xl border border-sky-500/30 flex justify-between items-center">
+                  <span className="text-sm font-bold text-sky-400 uppercase">Teórico en Cajón:</span>
+                  <span className="font-mono text-2xl font-black text-white">{(Number(cajaHoy.remanente_apertura) + Number(cajaHoy.total_efectivo)).toFixed(2)} €</span>
+                </div>
+              </div>
+
+              <div className="space-y-4 pt-4 border-t border-white/10">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-amber-400 uppercase">Efectivo Real Contado (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="Dinero físico total en el cajón..."
+                    value={efectivoRealInput}
+                    onChange={(e) => setEfectivoRealInput(e.target.value)}
+                    className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-4 py-3 text-lg font-mono font-bold text-amber-400 outline-none focus:border-amber-400"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-300 uppercase">Fondo a dejar para mañana (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={remanenteCierreInput}
+                    onChange={(e) => setRemanenteCierreInput(e.target.value)}
+                    className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-lg font-mono font-bold text-white outline-none focus:border-cyan-400"
+                  />
+                </div>
+              </div>
+
+              <button onClick={cerrarCaja} className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer shadow-lg">
+                <Lock className="h-5 w-5" /> Cerrar Caja y Terminar Turno
+              </button>
+            </div>
+          ) : (
+            <div className="p-8 rounded-3xl bg-[#0d0f17] border border-white/10 text-center space-y-4 shadow-xl">
+              <Lock className="h-12 w-12 text-slate-600 mx-auto" />
+              <h2 className="text-xl font-bold text-white">Caja Cerrada</h2>
+              <p className="text-sm text-slate-400">El turno de hoy ya ha sido cerrado. Descuadre: <span className="font-mono text-white">{Number(cajaHoy.descuadre).toFixed(2)} €</span>. Efectivo retirado: <span className="font-mono text-white">{Number(cajaHoy.efectivo_retirado).toFixed(2)} €</span>.</p>
             </div>
           )}
         </main>
