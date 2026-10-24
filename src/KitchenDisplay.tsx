@@ -74,7 +74,9 @@ export default function KitchenDisplay() {
     elPlato.listo = !elPlato.listo;
 
     const todosListos = nuevosItems.every(it => it.listo);
-    const nuevoEstadoComanda = todosListos ? 'listo' : 'pendiente';
+    
+    // AQUÍ ESTÁ EL CAMBIO: Si todos están listos, pasa a 'servido' para que desaparezca automáticamente
+    const nuevoEstadoComanda = todosListos ? 'servido' : 'pendiente';
 
     // 1. Actualizar comanda en cocina
     await supabase
