@@ -1147,7 +1147,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 )}
               </div>
 
-              {/* SECCIÓN DE GESTIÓN Y BORRADO DE CATEGORÍAS VISUALES */}
               <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 space-y-2 text-xs">
                 <span className="font-bold text-slate-300 block">Categorías Visuales Existentes (Pestañas TPV):</span>
                 <div className="flex flex-wrap gap-1.5">
@@ -1157,16 +1156,14 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                       className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-black/50 border border-white/15 text-slate-200 font-bold text-xs"
                     >
                       {cat}
-                      {cat !== 'Cafetería' && (
-                        <button
-                          type="button"
-                          onClick={() => borrarCategoria(cat)}
-                          className="text-rose-400 hover:text-rose-300 ml-1 p-0.5 cursor-pointer"
-                          title={`Borrar categoría ${cat}`}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => borrarCategoria(cat)}
+                        className="text-rose-400 hover:text-rose-300 ml-1 p-0.5 cursor-pointer"
+                        title={`Borrar categoría ${cat}`}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
                     </span>
                   ))}
                 </div>
