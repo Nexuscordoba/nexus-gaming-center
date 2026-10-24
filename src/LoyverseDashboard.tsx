@@ -531,7 +531,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       notificar(
         editandoArticuloId
-          ? `Artículo "${artNombre}" modificado y sincronizado correctamente.`
+          ? `Artículo "${artNombre}" modificado y sincronizado correctamente en Supabase.`
           : `Artículo "${artNombre}" creado y sincronizado correctamente en TPV.`
       );
       limpiarFormularioArticulo();
@@ -1179,7 +1179,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   />
                 </div>
 
-                {/* CATEGORÍA VISUAL (PARA LAS PESTAÑAS DEL TPV DE CAMAREROS) */}
                 <div>
                   <label className="font-bold text-slate-300 block mb-1">Categoría Visual (Pestaña TPV)</label>
                   <div className="flex gap-1.5">
@@ -1211,7 +1210,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   </div>
                 </div>
 
-                {/* DESTINO FÍSICO KDS (COCINA O BARRA) */}
                 <div>
                   <label className="font-bold text-slate-300 block mb-1">Destino KDS (Pantalla de Impresión)</label>
                   <select
