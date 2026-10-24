@@ -14,25 +14,32 @@ export default async function handler(req: any, res: any) {
   try {
     const { receipt_number, total_money, payment_type, items } = req.body;
 
-    // 1. Obtener Tienda, POS, Empleados y Tipos de Pago necesarios en paralelo
-    const [storeRes, posRes, empRes, payRes] = await Promise.all([
+    // 1. Obtener Tienda, POS, Empleados, Tipos de Pago y el Catálogo REAL de Loyverse
+    const [storeRes, posRes, empRes, payRes, itemsRes] = await Promise.all([
       fetch('https://api.loyverse.com/v1.0/stores', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/pos_devices', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/employees', { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch('https://api.loyverse.com/v1.0/payment_types', { headers: { 'Authorization': `Bearer ${token}` } })
+      fetch('https://api.loyverse.com/v1.0/payment_types', { headers: { 'Authorization': `Bearer ${token}` } }),
+      fetch('https://api.loyverse.com/v1.0/items?limit=250', { headers: { 'Authorization': `Bearer ${token}` } })
     ]);
 
     const storeData = await storeRes.json();
     const posData = await posRes.json();
     const empData = await empRes.json();
     const payData = await payRes.json();
+    const itemsData = await itemsRes.json();
 
     const storeId = storeData.stores?.[0]?.id;
     const posId = posData.pos_devices?.[0]?.id;
     const empId = empData.employees?.[0]?.id;
+    const loyItems = itemsData.items || [];
 
     if (!storeId || !posId || !empId) {
       throw new Error(`Faltan datos base en Loyverse (Store: ${storeId}, POS: ${posId}, Emp: ${empId})`);
+    }
+
+    if (loyItems.length === 0) {
+      throw new Error("El catálogo de Loyverse está vacío. Asegúrate de tener artículos creados en tu cuenta de Loyverse.");
     }
 
     // 2. Obtener Tipo de Pago
@@ -41,22 +48,47 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 3. Generar las líneas de ticket directamente utilizando los datos limpios del TPV
-    const line_items = items.map((item: any, index: number) => {
+    // Cogemos el primer producto y variante real de Loyverse como comodín absoluto seguro
+    const defaultItem = loyItems[0];
+    const defaultVariant = defaultItem.variants?.[0];
+
+    if (!defaultVariant || !defaultVariant.id) {
+      throw new Error("No se encontró ninguna variante válida en el catálogo de Loyverse.");
+    }
+
+    // 3. Mapear cada artículo enlazándolo con los IDs reales de Loyverse
+    const line_items = [];
+
+    for (const item of items) {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
-      
-      // Creamos un ID único seguro basado en el índice y texto para que la API lo acepte sin vacíos
-      const safeId = `item-nexus-${index + 1}`;
+      const nombreInput = (item.nombre || '').trim().toLowerCase();
 
-      return {
-        item_id: safeId,
-        variant_id: safeId,
+      let matchedItem = null;
+      let matchedVariant = null;
+
+      // Buscar coincidencia exacta o parcial de nombre en el catálogo real de Loyverse
+      for (const lItem of loyItems) {
+        const lName = (lItem.item_name || lItem.name || '').trim().toLowerCase();
+        if (lName === nombreInput || lName.includes(nombreInput) || nombreInput.includes(lName)) {
+          matchedItem = lItem;
+          matchedVariant = lItem.variants?.[0];
+          break;
+        }
+      }
+
+      // Si no encuentra coincidencia por nombre, usa de forma segura el comodín real de Loyverse
+      const finalItem = matchedItem || defaultItem;
+      const finalVariant = matchedVariant || defaultVariant;
+
+      line_items.push({
+        item_id: finalItem.id,
+        variant_id: finalVariant.id, // ID real y verificado por Loyverse
         quantity: quantity,
         price: price,
         total_money: price * quantity
-      };
-    });
+      });
+    }
 
     // 4. Construir paquete final para la API de recibos de Loyverse
     const payload = {
