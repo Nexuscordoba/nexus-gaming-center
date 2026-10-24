@@ -6,6 +6,7 @@ import {
   Minus, 
   Send, 
   Printer, 
+  ArrowLeft, 
   MapPin, 
   CheckCircle2, 
   DollarSign, 
@@ -16,7 +17,8 @@ import {
   User, 
   X, 
   AlertTriangle, 
-  Power 
+  Power,
+  ClipboardList
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -89,13 +91,15 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
   
+  // Estado para PopUp de Combos / Menús
   const [comboActivo, setComboActivo] = useState<Producto | null>(null);
   const [pasoComboActual, setPasoComboActual] = useState(0);
   const [seleccionesCombo, setSeleccionesCombo] = useState<Record<number, OpcionCombo>>({});
 
-  // Estados de Caja
+  // Estados de Caja y Cuadre
   const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
   const [cajaAtrasada, setCajaAtrasada] = useState<CajaDiaria | null>(null); 
+  const [operacionesHoy, setOperacionesHoy] = useState<any[]>([]); // Historial de tickets cobrados
   const [remanenteAperturaInput, setRemanenteAperturaInput] = useState<string>('50.00');
   const [efectivoRealInput, setEfectivoRealInput] = useState<string>('');
   const [remanenteCierreInput, setRemanenteCierreInput] = useState<string>('50.00');
@@ -105,6 +109,22 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
+
+  // Recuperar Sesión Automáticamente al Recargar
+  useEffect(() => {
+    const initSesion = async () => {
+      const sesionGuardada = sessionStorage.getItem('nexus_camarero_sesion');
+      if (sesionGuardada) {
+        const parsed = JSON.parse(sesionGuardada);
+        setCamareroActivo(parsed);
+        cargarConfiguracion();
+        cargarProductosCarta();
+        cargarMesasAbiertas();
+        cargarCaja();
+      }
+    };
+    initSesion();
+  }, []);
 
   // Función de Login
   const loginCamarero = async (e: React.FormEvent) => {
@@ -118,7 +138,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       .single();
       
     if (data) {
-      setCamareroActivo({ id: data.id, nombre: data.nombre });
+      const usuario = { id: data.id, nombre: data.nombre };
+      setCamareroActivo(usuario);
+      sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(usuario)); // Guarda la sesión
+      
       cargarConfiguracion();
       cargarProductosCarta();
       cargarMesasAbiertas();
@@ -128,7 +151,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  // Efectos en tiempo real
+  // Efectos en tiempo real (Sockets)
   useEffect(() => {
     if (!camareroActivo) return;
 
@@ -228,6 +251,28 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           setRemanenteAperturaInput(todasLasCajas[0].remanente_cierre.toString());
         }
       }
+    }
+
+    // Cargar operaciones de hoy para el cuadre (Solo las pagadas hoy)
+    const { data: opData } = await supabase
+      .from('comandas_cocina')
+      .select('*')
+      .eq('pagado', true)
+      .gte('created_at', fechaHoy + 'T00:00:00Z')
+      .order('created_at', { ascending: false });
+      
+    if (opData) {
+      // Agrupamos para no repetir tickets si cocina y barra fueron enviados separados
+      const uniqueTickets: Record<string, any> = {};
+      opData.forEach(op => {
+        if (!uniqueTickets[op.ticket_number]) {
+          uniqueTickets[op.ticket_number] = op;
+        } else {
+          // Si ya existe, sumamos el total (por si cocina y barra se cobraron en un solo ticket)
+          uniqueTickets[op.ticket_number].total_ticket += op.total_ticket;
+        }
+      });
+      setOperacionesHoy(Object.values(uniqueTickets));
     }
   };
 
@@ -352,7 +397,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       const promesas = [];
       
-      // RESTAURADO EL PARÁMETRO: es_menu
       if (itemsCocina.length > 0) {
         promesas.push(
           supabase.from('comandas_cocina').insert([{ 
@@ -531,6 +575,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     cargarCaja();
   };
 
+  // Función para cerrar sesión de camarero manualmente
+  const salirSesion = () => {
+    setCamareroActivo(null);
+    sessionStorage.removeItem('nexus_camarero_sesion');
+  };
+
+  // --- INTERFAZ LOGIN CAMARERO ---
   if (!camareroActivo) {
     return (
       <div className="min-h-screen bg-[#050609] flex items-center justify-center p-4">
@@ -561,7 +612,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 PIN incorrecto.
               </p>
             )}
-<button 
+            <button 
               type="submit" 
               className="w-full py-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
             >
@@ -583,6 +634,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
       
+      {/* MODAL POPUP PARA COMBOS Y MENÚS */}
       {comboActivo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 print:hidden">
           <div className="w-full max-w-md bg-[#0d0f17] border border-amber-500/30 rounded-3xl p-6 shadow-2xl animate-slide-up">
@@ -598,7 +650,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   setPasoComboActual(0); 
                   setSeleccionesCombo({}); 
                 }} 
-                className="text-slate-400 hover:text-white bg-white/5 p-1.5 rounded-lg"
+                className="text-slate-400 hover:text-white bg-white/5 p-1.5 rounded-lg cursor-pointer"
               >
                 <X className="h-5 w-5"/>
               </button>
@@ -623,7 +675,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                            confirmarCombo(nuevasSel);
                          }
                       }} 
-                      className="p-4 rounded-xl border border-white/10 bg-black/60 hover:border-amber-400 hover:bg-amber-950/40 text-left transition-all flex items-center justify-between group"
+                      className="p-4 rounded-xl border border-white/10 bg-black/60 hover:border-amber-400 hover:bg-amber-950/40 text-left transition-all flex items-center justify-between group cursor-pointer"
                     >
                       <span className="font-bold text-slate-200 text-sm group-hover:text-amber-400">
                         {opcion.nombre}
@@ -637,24 +689,35 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
+      {/* CABECERA PRINCIPAL */}
       <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30 print:hidden">
-        <div className="flex items-center gap-3">
-          <div className="h-12 w-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center">
-            <Utensils className="h-7 w-7" />
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-12 w-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center">
+              <Utensils className="h-7 w-7" />
+            </div>
+            <div>
+              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · PORTAL CAMAREROS</h1>
+              <p className="text-xs text-slate-400 flex items-center gap-1">
+                Sesión: <strong className="text-amber-400">{camareroActivo.nombre}</strong>
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · PORTAL CAMAREROS</h1>
-            <p className="text-xs text-slate-400 flex items-center gap-1">
-              Sesión: <strong className="text-amber-400">{camareroActivo.nombre}</strong>
-            </p>
-          </div>
+          
+          <button
+            type="button"
+            onClick={salirSesion}
+            className="sm:hidden flex items-center gap-1 px-3 py-1.5 rounded-xl border border-white/10 bg-white/5 text-xs text-slate-300 cursor-pointer"
+          >
+            <ArrowLeft className="h-4 w-4" /> Salir
+          </button>
         </div>
         
         <div className="flex items-center gap-3 flex-wrap justify-center">
           
           <button 
             onClick={toggleCocina} 
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md border ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md border cursor-pointer ${
               cocinaAbierta 
                 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 hover:bg-emerald-500 hover:text-slate-950' 
                 : 'bg-rose-500/20 text-rose-400 border-rose-500/40 hover:bg-rose-500 hover:text-slate-950'
@@ -667,7 +730,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           <div className="flex gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
             <button 
               onClick={() => setVistaSeccion('tomar_nota')} 
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 vistaSeccion === 'tomar_nota' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -675,7 +738,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             </button>
             <button 
               onClick={() => setVistaSeccion('mesas_abiertas')} 
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all relative ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all relative cursor-pointer ${
                 vistaSeccion === 'mesas_abiertas' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -683,16 +746,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             </button>
             <button 
               onClick={() => setVistaSeccion('caja')} 
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 vistaSeccion === 'caja' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
               }`}
             >
               💰 Caja
             </button>
           </div>
+          
+          <button
+            type="button"
+            onClick={salirSesion}
+            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white transition-all cursor-pointer text-xs font-bold"
+          >
+            Salir
+          </button>
         </div>
       </header>
 
+      {/* VISTA 1: TOMAR NOTA Y CARRITO */}
       {vistaSeccion === 'tomar_nota' && (
         <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24 print:block">
           
@@ -716,7 +788,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 type="button" 
                 onClick={() => window.print()} 
                 disabled={cuentaMesaActual.length === 0 && carritoActual.length === 0} 
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-lg transition-all disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
               >
                 <Printer className="h-4 w-4" /> 
                 <span>Factura</span>
@@ -726,7 +798,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
               <button 
                 onClick={() => setCategoriaActiva('bebidas')} 
-                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all ${
+                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
                   categoriaActiva === 'bebidas' ? 'bg-amber-500 text-slate-950' : 'bg-white/5 text-slate-400'
                 }`}
               >
@@ -734,7 +806,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </button>
               <button 
                 onClick={() => setCategoriaActiva('tapeo')} 
-                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all ${
+                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
                   categoriaActiva === 'tapeo' ? 'bg-amber-500 text-slate-950' : 'bg-white/5 text-slate-400'
                 }`}
               >
@@ -742,7 +814,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </button>
               <button 
                 onClick={() => setCategoriaActiva('menus')} 
-                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all ${
+                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
                   categoriaActiva === 'menus' ? 'bg-amber-500 text-slate-950' : 'bg-white/5 text-slate-400'
                 }`}
               >
@@ -775,7 +847,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       </div>
                       <button 
                         onClick={() => clickAgregarAlCarrito(prod)} 
-                        className="h-9 w-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center active:scale-95 transition-transform font-bold"
+                        className="h-9 w-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center cursor-pointer active:scale-95 transition-transform font-bold"
                       >
                         <Plus className="h-5 w-5" />
                       </button>
@@ -888,7 +960,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                             <div className="flex gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg">
                               <button 
                                 onClick={() => cambiarCantidadCarrito(item.id, -1)} 
-                                className="text-slate-400 hover:text-white"
+                                className="text-slate-400 hover:text-white cursor-pointer"
                               >
                                 <Minus className="h-3 w-3" />
                               </button>
@@ -897,7 +969,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                               </span>
                               <button 
                                 onClick={() => cambiarCantidadCarrito(item.id, 1)} 
-                                className="text-slate-400 hover:text-white"
+                                className="text-slate-400 hover:text-white cursor-pointer"
                               >
                                 <Plus className="h-3 w-3" />
                               </button>
@@ -979,13 +1051,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/10">
                     <button 
                       onClick={() => cobrarMesa(m.mesa, 'efectivo')} 
-                      className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5"
+                      className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <DollarSign className="h-4 w-4" /> Efectivo
                     </button>
                     <button 
                       onClick={() => cobrarMesa(m.mesa, 'tarjeta')} 
-                      className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5"
+                      className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <CreditCard className="h-4 w-4" /> Tarjeta
                     </button>
@@ -997,9 +1069,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </main>
       )}
 
-      {/* VISTA 3: CAJA */}
+      {/* VISTA 3: CAJA Y CUADRE DETALLADO */}
       {vistaSeccion === 'caja' && (
-        <main className="flex-1 max-w-2xl w-full mx-auto space-y-6 pb-24">
+        <main className="flex-1 max-w-3xl w-full mx-auto space-y-6 pb-24">
           
           {cajaAtrasada && (
              <div className="p-6 rounded-3xl bg-rose-950/40 border border-rose-500/50 space-y-5 shadow-xl animate-pulse">
@@ -1012,7 +1084,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                </p>
                <button 
                  onClick={() => cerrarCajaEspecifica(cajaAtrasada)} 
-                 className="w-full py-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2"
+                 className="w-full py-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
                >
                  Forzar Cierre de Caja Atrasada
                </button>
@@ -1044,13 +1116,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               
               <button 
                 onClick={abrirCaja} 
-                className="w-full py-3.5 rounded-xl bg-amber-500 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2"
+                className="w-full py-3.5 rounded-xl bg-amber-500 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
               >
                 <LockOpen className="h-5 w-5" /> Abrir Caja
               </button>
             </div>
           ) : cajaHoy && cajaHoy.estado === 'abierta' ? (
             <div className="p-6 rounded-3xl bg-[#0d0f17] border border-cyan-500/40 space-y-6 shadow-xl">
+              
               <div className="flex items-center justify-between border-b border-white/10 pb-4">
                 <div className="flex items-center gap-3 text-cyan-400">
                   <Calculator className="h-6 w-6" />
@@ -1061,7 +1134,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </span>
               </div>
               
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                 <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
                   <span className="text-xs text-slate-400">Fondo Inicial:</span>
                   <p className="font-mono text-lg font-bold text-white">
@@ -1069,20 +1142,69 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   </p>
                 </div>
                 <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
-                  <span className="text-xs text-slate-400">Ventas Efectivo:</span>
+                  <span className="text-xs text-slate-400">Total Tarjeta:</span>
+                  <p className="font-mono text-lg font-bold text-cyan-400">
+                    {Number(cajaHoy.total_tarjeta).toFixed(2)} €
+                  </p>
+                </div>
+                <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
+                  <span className="text-xs text-slate-400">Total Efectivo:</span>
                   <p className="font-mono text-lg font-bold text-emerald-400">
                     +{Number(cajaHoy.total_efectivo).toFixed(2)} €
                   </p>
                 </div>
-                <div className="col-span-2 bg-sky-950/20 p-4 rounded-xl border border-sky-500/30 flex justify-between items-center">
-                  <span className="text-sm font-bold text-sky-400">Teórico en Cajón:</span>
-                  <span className="font-mono text-2xl font-black text-white">
+                <div className="bg-sky-950/20 p-3 rounded-xl border border-sky-500/30">
+                  <span className="text-xs font-bold text-sky-400">Teórico en Cajón:</span>
+                  <p className="font-mono text-xl font-black text-white mt-1">
                     {(Number(cajaHoy.remanente_apertura) + Number(cajaHoy.total_efectivo)).toFixed(2)} €
-                  </span>
+                  </p>
                 </div>
               </div>
+
+              {/* LISTADO DE OPERACIONES COBRADAS PARA EL CUADRE */}
+              <div className="space-y-3 pt-4 border-t border-white/10">
+                <div className="flex items-center gap-2 text-slate-400 mb-2">
+                  <ClipboardList className="h-4 w-4" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider">Resumen de Tickets Cobrados Hoy</h4>
+                </div>
+                
+                {operacionesHoy.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic text-center py-4 bg-black/20 rounded-xl">
+                    Aún no hay cobros registrados en este turno.
+                  </p>
+                ) : (
+                  <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-none">
+                    {operacionesHoy.map((op, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-3 rounded-xl bg-black/40 border border-white/5 text-xs hover:bg-white/5 transition-colors">
+                        <div className="space-y-1">
+                          <div>
+                            <span className="font-bold text-white uppercase">{op.mesa}</span>
+                            <span className="text-slate-500 ml-2 font-mono text-[10px]">#{op.ticket_number}</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400">
+                            {new Date(op.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} · {op.camarero_nombre}
+                          </p>
+                        </div>
+                        <div className="text-right space-y-1">
+                          <span className="font-mono font-bold text-white text-sm block">
+                            {Number(op.total_ticket).toFixed(2)} €
+                          </span>
+                          <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded flex items-center justify-center gap-1 w-max ml-auto ${
+                            op.metodo_pago === 'efectivo' 
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                              : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                          }`}>
+                            {op.metodo_pago === 'efectivo' ? <DollarSign className="h-3 w-3" /> : <CreditCard className="h-3 w-3" />}
+                            {op.metodo_pago}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               
-              <div className="space-y-4 pt-4 border-t border-white/10">
+              <div className="space-y-4 pt-6 border-t border-white/10">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-amber-400">
                     Efectivo Real Contado (€)
@@ -1111,7 +1233,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               
               <button 
                 onClick={() => cerrarCajaEspecifica(cajaHoy)} 
-                className="w-full py-4 rounded-xl bg-rose-600 text-white font-black text-sm uppercase flex items-center justify-center gap-2"
+                className="w-full py-4 rounded-xl bg-rose-600 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Lock className="h-5 w-5" /> Cerrar Caja y Terminar Turno
               </button>

@@ -38,6 +38,9 @@ export default function App() {
   const [modalAdminOpen, setModalAdminOpen] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
+  
+  // Nuevo estado para controlar el submenú de Cafetería en el Dock
+  const [showCafeteriaMenu, setShowCafeteriaMenu] = useState(false);
 
   const [categoriaCarta, setCategoriaCarta] = useState<'desayunos' | 'tapeo' | 'meriendas' | 'bebidas'>('desayunos');
 
@@ -108,6 +111,7 @@ export default function App() {
       setModalAdminOpen(false);
       setPasswordInput('');
       setPasswordError(false);
+      setShowCafeteriaMenu(false); // Reiniciamos el submenú al entrar
     } else {
       setPasswordError(true);
     }
@@ -204,67 +208,97 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans selection:bg-cyan-500 selection:text-black flex flex-col justify-between">
       
-      {/* MENÚ FLOTANTE DOCK (Sin scroll) */}
+      {/* MENÚ FLOTANTE DOCK REORGANIZADO */}
       {adminDesbloqueado && (
-        <div className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-[95%] sm:w-auto max-w-4xl bg-gradient-to-r from-[#0c0d14]/95 to-[#131722]/95 backdrop-blur-xl border border-cyan-500/50 p-3 sm:p-4 rounded-2xl shadow-[0_0_40px_rgba(0,242,254,0.3)] flex flex-wrap justify-center items-center gap-2 sm:gap-4 animate-slide-up">
-          <a 
-            href="#cocina" 
-            onClick={() => setSubdomainRoute('cocina')}
-            className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
-          >
-            <ChefHat className="h-4 w-4" /> Cocina
-          </a>
-          <span className="text-slate-600 hidden sm:inline">|</span>
-          <a 
-            href="#barra" 
-            onClick={() => setSubdomainRoute('barra')}
-            className="flex items-center gap-1.5 hover:text-cyan-400 transition-colors cursor-pointer text-cyan-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-cyan-500/10"
-          >
-            <Coffee className="h-4 w-4" /> Barra
-          </a>
-          <span className="text-slate-600 hidden sm:inline">|</span>
-          <a 
-            href="https://ventas.nexusgamingcenter.es" 
-            className="flex items-center gap-1.5 hover:text-sky-400 transition-colors text-sky-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-sky-500/10"
-          >
-            <TrendingUp className="h-4 w-4" /> TPV
-          </a>
-          <span className="text-slate-600 hidden sm:inline">|</span>
-          <a 
-            href="https://equipo.nexusgamingcenter.es" 
-            className="flex items-center gap-1.5 hover:text-rose-400 transition-colors text-rose-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-rose-500/10"
-          >
-            <Lock className="h-4 w-4" /> Staff
-          </a>
-          <span className="text-slate-600 hidden sm:inline">|</span>
-          <a 
-            href="#qr" 
-            onClick={(e) => {
-              e.preventDefault();
-              setSubdomainRoute('qr-generator');
-            }}
-            className="flex items-center gap-1.5 hover:text-emerald-400 transition-colors cursor-pointer text-emerald-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-emerald-500/10"
-          >
-            <QrCode className="h-4 w-4" /> Códigos QR
-          </a>
-          <span className="text-slate-600 hidden sm:inline">|</span>
-          <a 
-            href="#camarero" 
-            onClick={(e) => {
-              e.preventDefault();
-              setSubdomainRoute('waiter');
-            }}
-            className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
-          >
-            <Utensils className="h-4 w-4" /> Camareros
-          </a>
+        <div className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-max max-w-[95%] bg-gradient-to-r from-[#0c0d14]/95 to-[#131722]/95 backdrop-blur-xl border border-cyan-500/50 p-3 sm:p-4 rounded-2xl shadow-[0_0_40px_rgba(0,242,254,0.3)] flex flex-wrap justify-center items-center gap-2 sm:gap-4 animate-slide-up">
           
-          <button
-            onClick={() => setAdminDesbloqueado(false)}
-            className="ml-auto flex items-center gap-1 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] uppercase font-bold cursor-pointer transition-colors"
-          >
-            <X className="h-3 w-3" /> Cerrar
-          </button>
+          {showCafeteriaMenu ? (
+            /* SUBMENÚ DE CAFETERÍA */
+            <>
+              <button 
+                onClick={() => setShowCafeteriaMenu(false)}
+                className="flex items-center gap-1 text-slate-400 hover:text-white px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs font-bold transition-colors cursor-pointer"
+              >
+                <ArrowLeft className="h-4 w-4" /> Volver
+              </button>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              
+              <a 
+                href="#camarero" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  setSubdomainRoute('waiter');
+                }}
+                className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
+              >
+                <Utensils className="h-4 w-4" /> Camareros
+              </a>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="#cocina" 
+                onClick={() => setSubdomainRoute('cocina')}
+                className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
+              >
+                <ChefHat className="h-4 w-4" /> Cocina
+              </a>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="#barra" 
+                onClick={() => setSubdomainRoute('barra')}
+                className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
+              >
+                <Coffee className="h-4 w-4" /> Barra
+              </a>
+            </>
+          ) : (
+            /* MENÚ PRINCIPAL */
+            <>
+              <button 
+                onClick={() => setShowCafeteriaMenu(true)}
+                className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
+              >
+                <Coffee className="h-4 w-4" /> Cafetería
+              </button>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="https://ventas.nexusgamingcenter.es" 
+                className="flex items-center gap-1.5 hover:text-sky-400 transition-colors text-sky-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-sky-500/10"
+              >
+                <TrendingUp className="h-4 w-4" /> TPV
+              </a>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="https://equipo.nexusgamingcenter.es" 
+                className="flex items-center gap-1.5 hover:text-rose-400 transition-colors text-rose-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-rose-500/10"
+              >
+                <Lock className="h-4 w-4" /> Staff
+              </a>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="#qr" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  setSubdomainRoute('qr-generator');
+                }}
+                className="flex items-center gap-1.5 hover:text-emerald-400 transition-colors cursor-pointer text-emerald-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-emerald-500/10"
+              >
+                <QrCode className="h-4 w-4" /> Códigos QR
+              </a>
+            </>
+          )}
+          
+          {/* BOTÓN CERRAR - Ahora forma parte del grid sin empujar nada */}
+          <div className="pl-2 ml-auto sm:ml-0 border-l border-white/10 flex items-center">
+            <button
+              onClick={() => { 
+                setAdminDesbloqueado(false); 
+                setShowCafeteriaMenu(false); 
+              }}
+              className="flex items-center gap-1 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] uppercase font-bold cursor-pointer transition-colors"
+            >
+              <X className="h-3 w-3" /> Cerrar
+            </button>
+          </div>
         </div>
       )}
 
