@@ -86,8 +86,9 @@ export default function App() {
         setSubdomainRoute('barra');
       } else if (hash === '#qr' || hash === '#/qr') {
         setSubdomainRoute('qr-generator');
-      } else if (hash === '#camarero' || hash === '#/camarero') {
+      } else if (hash === '#camarero' || hash === '#/camarero' || hash === '#waiter') {
         setSubdomainRoute('waiter');
+        setAdminDesbloqueado(true); // Mantiene el dock y el acceso al refrescar
       } else {
         setCurrentView('home');
       }
@@ -227,6 +228,7 @@ export default function App() {
                 href="#camarero" 
                 onClick={(e) => {
                   e.preventDefault();
+                  window.location.hash = '#camarero';
                   setSubdomainRoute('waiter');
                 }}
                 className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
@@ -236,7 +238,11 @@ export default function App() {
               <span className="text-slate-600 hidden sm:inline">|</span>
               <a 
                 href="#cocina" 
-                onClick={() => setSubdomainRoute('cocina')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.location.hash = '#cocina';
+                  setSubdomainRoute('cocina');
+                }}
                 className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
               >
                 <ChefHat className="h-4 w-4" /> Cocina
@@ -244,7 +250,11 @@ export default function App() {
               <span className="text-slate-600 hidden sm:inline">|</span>
               <a 
                 href="#barra" 
-                onClick={() => setSubdomainRoute('barra')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.location.hash = '#barra';
+                  setSubdomainRoute('barra');
+                }}
                 className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
               >
                 <Coffee className="h-4 w-4" /> Barra
@@ -287,12 +297,12 @@ export default function App() {
             </>
           )}
           
-          {/* BOTÓN CERRAR - Ahora forma parte del grid sin empujar nada */}
           <div className="pl-2 ml-auto sm:ml-0 border-l border-white/10 flex items-center">
             <button
               onClick={() => { 
                 setAdminDesbloqueado(false); 
                 setShowCafeteriaMenu(false); 
+                window.location.hash = ''; // Limpia el hash al cerrar
               }}
               className="flex items-center gap-1 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] uppercase font-bold cursor-pointer transition-colors"
             >

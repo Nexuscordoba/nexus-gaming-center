@@ -5,7 +5,6 @@ import {
   Plus, 
   Minus, 
   Send, 
-  Printer, 
   ArrowLeft, 
   MapPin, 
   CheckCircle2, 
@@ -18,7 +17,8 @@ import {
   X, 
   AlertTriangle, 
   Power,
-  ClipboardList
+  ClipboardList,
+  RefreshCw
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -76,12 +76,10 @@ interface TableWaiterProps {
 }
 
 export default function TableWaiter({ onBack }: TableWaiterProps) {
-  // Estado de Login de Camarero
   const [camareroActivo, setCamareroActivo] = useState<{ id: string, nombre: string } | null>(null);
   const [pinInput, setPinInput] = useState('');
   const [loginError, setLoginError] = useState(false);
 
-  // Estados principales de Sala
   const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [loadingCarta, setLoadingCarta] = useState(true);
@@ -91,26 +89,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
   
-  // Estado para PopUp de Combos / Menús
   const [comboActivo, setComboActivo] = useState<Producto | null>(null);
   const [pasoComboActual, setPasoComboActual] = useState(0);
   const [seleccionesCombo, setSeleccionesCombo] = useState<Record<number, OpcionCombo>>({});
 
-  // Estados de Caja y Cuadre
   const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
   const [cajaAtrasada, setCajaAtrasada] = useState<CajaDiaria | null>(null); 
-  const [operacionesHoy, setOperacionesHoy] = useState<any[]>([]); // Historial de tickets cobrados
+  const [operacionesHoy, setOperacionesHoy] = useState<any[]>([]);
   const [remanenteAperturaInput, setRemanenteAperturaInput] = useState<string>('50.00');
   const [efectivoRealInput, setEfectivoRealInput] = useState<string>('');
   const [remanenteCierreInput, setRemanenteCierreInput] = useState<string>('50.00');
 
-  // Estados de Interfaz
   const [enviando, setEnviando] = useState(false);
+  const [sincronizandoLoyverse, setSincronizandoLoyverse] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
 
-  // Recuperar Sesión Automáticamente al Recargar
   useEffect(() => {
     const initSesion = async () => {
       const sesionGuardada = sessionStorage.getItem('nexus_camarero_sesion');
@@ -126,7 +121,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     initSesion();
   }, []);
 
-  // Función de Login
   const loginCamarero = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(false);
@@ -140,7 +134,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (data) {
       const usuario = { id: data.id, nombre: data.nombre };
       setCamareroActivo(usuario);
-      sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(usuario)); // Guarda la sesión
+      sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(usuario));
       
       cargarConfiguracion();
       cargarProductosCarta();
@@ -151,7 +145,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  // Efectos en tiempo real (Sockets)
   useEffect(() => {
     if (!camareroActivo) return;
 
@@ -240,20 +233,17 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         setCajaHoy(null);
       }
 
-      // Buscar si hay alguna caja anterior que se quedó sin cerrar
       const cajaAntiguaAbierta = todasLasCajas.find(c => c.estado === 'abierta' && c.fecha !== fechaHoy);
       if (cajaAntiguaAbierta) {
         setCajaAtrasada(cajaAntiguaAbierta as CajaDiaria);
       } else {
         setCajaAtrasada(null);
-        // Si no hay caja atrasada y hoy no se ha abierto, sugerir remanente de la última caja
         if (!cajaDeHoy && todasLasCajas[0]) {
           setRemanenteAperturaInput(todasLasCajas[0].remanente_cierre.toString());
         }
       }
     }
 
-    // Cargar operaciones de hoy para el cuadre (Solo las pagadas hoy)
     const { data: opData } = await supabase
       .from('comandas_cocina')
       .select('*')
@@ -262,13 +252,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       .order('created_at', { ascending: false });
       
     if (opData) {
-      // Agrupamos para no repetir tickets si cocina y barra fueron enviados separados
       const uniqueTickets: Record<string, any> = {};
       opData.forEach(op => {
         if (!uniqueTickets[op.ticket_number]) {
           uniqueTickets[op.ticket_number] = op;
         } else {
-          // Si ya existe, sumamos el total (por si cocina y barra se cobraron en un solo ticket)
           uniqueTickets[op.ticket_number].total_ticket += op.total_ticket;
         }
       });
@@ -277,7 +265,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const cargarMesasAbiertas = async () => {
-    // Solo cargamos lo que NO está pagado
     const { data } = await supabase
       .from('comandas_cocina')
       .select('*')
@@ -322,12 +309,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         return { ...m, total_ticket: total };
       });
       
-      // Evitamos mostrar mesas a 0€
       setMesasAbiertas(listado.filter(m => m.total_ticket > 0)); 
     }
   };
 
   const clickAgregarAlCarrito = (prod: Producto) => {
+    // Permitir selección flexible o individual de platos de menú
     if (prod.es_combo && prod.opciones_combo && prod.opciones_combo.length > 0) {
       setComboActivo(prod);
       setPasoComboActual(0);
@@ -450,6 +437,64 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
+  // NUEVA FUNCIÓN: Sincronizar / Enviar ticket actual de la mesa a Loyverse de forma manual por el camarero
+  const sincronizarTicketActualLoyverse = async () => {
+    if (totalCuentaMesa === 0) {
+      alert("La mesa está vacía, no hay nada que enviar a Loyverse.");
+      return;
+    }
+
+    setSincronizandoLoyverse(true);
+    try {
+      const { data: cartaIds } = await supabase
+        .from('productos_carta')
+        .select('nombre, loyverse_variant_id');
+        
+      const mapLoyverseIds: Record<string, string> = {};
+      if (cartaIds) {
+        cartaIds.forEach(p => { 
+          mapLoyverseIds[p.nombre.trim()] = p.loyverse_variant_id; 
+        });
+      }
+
+      // Combinamos lo que ya tiene la mesa con lo que hay en el carrito actual por enviar
+      const todosLosItems = cuentaMesaActual.concat(
+        carritoActual.map(c => ({ nombre: c.nombre, precio: Number(c.precio), cantidad: c.cantidad, destino: c.destino }))
+      );
+
+      const itemsAEnviarLoyverse = todosLosItems.map(it => {
+        const nombreLimpio = it.nombre.replace('├─', '').trim();
+        return { 
+          cantidad: it.cantidad, 
+          precio: it.precio, 
+          loyverse_variant_id: mapLoyverseIds[nombreLimpio] || "" 
+        };
+      });
+
+      const ticketNum = Math.floor(100000 + Math.random() * 900000).toString();
+
+      const res = await fetch('/api/sync-receipt', {
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          receipt_number: ticketNum, 
+          total_money: totalCuentaMesa, 
+          payment_type: 'efectivo', // Por defecto efectivo para emisión o impresión en TPV
+          items: itemsAEnviarLoyverse 
+        })
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Fallo al conectar con Loyverse');
+
+      alert(`¡Ticket #${ticketNum} enviado a Loyverse correctamente para su impresión en TPV!`);
+    } catch (err: any) {
+      alert('Error al sincronizar con Loyverse: ' + err.message);
+    } finally {
+      setSincronizandoLoyverse(false);
+    }
+  };
+
   const cobrarMesa = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
     if (cajaAtrasada) { 
       alert('¡ATENCIÓN! Tienes que cerrar la caja del día anterior antes de cobrar nada.'); 
@@ -470,7 +515,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .select('nombre, loyverse_variant_id');
         
       const mapLoyverseIds: Record<string, string> = {};
-      
       if (cartaIds) {
         cartaIds.forEach(p => { 
           mapLoyverseIds[p.nombre.trim()] = p.loyverse_variant_id; 
@@ -478,7 +522,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }
 
       const itemsAEnviarLoyverse = mesaObj.items.map(it => {
-        // Limpiamos los adornos del nombre para que empareje exacto con el Loyverse Variant ID
         const nombreLimpio = it.nombre.replace('├─', '').trim();
         return { 
           cantidad: it.cantidad, 
@@ -502,8 +545,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         console.warn("Aviso Loyverse (offline)."); 
       }
 
-      // IMPORTANTE: Marcamos pagado = true pero NO modificamos el "estado" a servido 
-      // para que siga apareciendo en las pantallas de cocina y barra.
       await supabase
         .from('comandas_cocina')
         .update({ 
@@ -575,13 +616,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     cargarCaja();
   };
 
-  // Función para cerrar sesión de camarero manualmente
   const salirSesion = () => {
     setCamareroActivo(null);
     sessionStorage.removeItem('nexus_camarero_sesion');
   };
 
-  // --- INTERFAZ LOGIN CAMARERO ---
   if (!camareroActivo) {
     return (
       <div className="min-h-screen bg-[#050609] flex items-center justify-center p-4">
@@ -634,7 +673,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
       
-      {/* MODAL POPUP PARA COMBOS Y MENÚS */}
       {comboActivo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 print:hidden">
           <div className="w-full max-w-md bg-[#0d0f17] border border-amber-500/30 rounded-3xl p-6 shadow-2xl animate-slide-up">
@@ -689,7 +727,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
-      {/* CABECERA PRINCIPAL */}
       <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/90 backdrop-blur-md z-30 print:hidden">
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between">
           <div className="flex items-center gap-3">
@@ -764,7 +801,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       </header>
 
-      {/* VISTA 1: TOMAR NOTA Y CARRITO */}
       {vistaSeccion === 'tomar_nota' && (
         <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24 print:block">
           
@@ -784,14 +820,15 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </select>
               </div>
               
+              {/* BOTÓN REEMPLAZADO: Enviar / Imprimir ticket actual en Loyverse */}
               <button 
                 type="button" 
-                onClick={() => window.print()} 
-                disabled={cuentaMesaActual.length === 0 && carritoActual.length === 0} 
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                onClick={sincronizarTicketActualLoyverse} 
+                disabled={sincronizandoLoyverse || (cuentaMesaActual.length === 0 && carritoActual.length === 0)} 
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
               >
-                <Printer className="h-4 w-4" /> 
-                <span>Factura</span>
+                <RefreshCw className={`h-4 w-4 ${sincronizandoLoyverse ? 'animate-spin' : ''}`} />
+                <span>{sincronizandoLoyverse ? 'Enviando...' : 'Imprimir en Loyverse'}</span>
               </button>
             </div>
             
@@ -861,7 +898,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl print:border-none print:bg-white print:text-black">
               
               <div className="hidden print:block space-y-3 text-black text-xs font-mono">
-                
                 <div className="text-center space-y-1 pb-3 border-b border-black">
                   <h2 className="font-black text-sm">NEXUS CORDOBA</h2>
                   <p>MESA: {mesaSeleccionada}</p>
@@ -890,7 +926,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 <div className="pt-2 text-right font-bold text-sm">
                   <p>TOTAL: {totalCuentaMesa.toFixed(2)} €</p>
                 </div>
-                
               </div>
               
               <div className="print:hidden">
@@ -1161,7 +1196,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </div>
               </div>
 
-              {/* LISTADO DE OPERACIONES COBRADAS PARA EL CUADRE */}
               <div className="space-y-3 pt-4 border-t border-white/10">
                 <div className="flex items-center gap-2 text-slate-400 mb-2">
                   <ClipboardList className="h-4 w-4" />
