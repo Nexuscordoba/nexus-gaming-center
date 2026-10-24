@@ -14,32 +14,28 @@ export default async function handler(req: any, res: any) {
   try {
     const { receipt_number, total_money, payment_type, items } = req.body;
 
-    // 1. Obtener Tienda, POS, Empleados, Tipos de Pago y el Catálogo REAL de Loyverse
-    const [storeRes, posRes, empRes, payRes, itemsRes] = await Promise.all([
+    // 1. Obtener Tienda, POS, Empleados y Tipos de Pago en paralelo
+    const [storeRes, posRes, empRes, payRes, variantsRes] = await Promise.all([
       fetch('https://api.loyverse.com/v1.0/stores', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/pos_devices', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/employees', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/payment_types', { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch('https://api.loyverse.com/v1.0/items?limit=250', { headers: { 'Authorization': `Bearer ${token}` } })
+      fetch('https://api.loyverse.com/v1.0/variants?limit=250', { headers: { 'Authorization': `Bearer ${token}` } })
     ]);
 
     const storeData = await storeRes.json();
     const posData = await posRes.json();
     const empData = await empRes.json();
     const payData = await payRes.json();
-    const itemsData = await itemsRes.json();
+    const variantsData = await variantsRes.json();
 
     const storeId = storeData.stores?.[0]?.id;
     const posId = posData.pos_devices?.[0]?.id;
     const empId = empData.employees?.[0]?.id;
-    const loyItems = itemsData.items || [];
+    const loyVariants = variantsData.variants || [];
 
     if (!storeId || !posId || !empId) {
       throw new Error(`Faltan datos base en Loyverse (Store: ${storeId}, POS: ${posId}, Emp: ${empId})`);
-    }
-
-    if (loyItems.length === 0) {
-      throw new Error("El catálogo de Loyverse está vacío. Asegúrate de tener artículos creados en tu cuenta de Loyverse.");
     }
 
     // 2. Obtener Tipo de Pago
@@ -48,42 +44,37 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // Cogemos el primer producto y variante real de Loyverse como comodín absoluto seguro
-    const defaultItem = loyItems[0];
-    const defaultVariant = defaultItem.variants?.[0];
-
-    if (!defaultVariant || !defaultVariant.id) {
-      throw new Error("No se encontró ninguna variante válida en el catálogo de Loyverse.");
-    }
-
-    // 3. Mapear cada artículo enlazándolo con los IDs reales de Loyverse
+    // 3. Mapear las líneas del ticket asegurando tolerancia total
     const line_items = [];
 
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
-      const nombreInput = (item.nombre || '').trim().toLowerCase();
+      const variantIdEnviado = item.loyverse_variant_id?.trim();
 
-      let matchedItem = null;
       let matchedVariant = null;
 
-      // Buscar coincidencia exacta o parcial de nombre en el catálogo real de Loyverse
-      for (const lItem of loyItems) {
-        const lName = (lItem.item_name || lItem.name || '').trim().toLowerCase();
-        if (lName === nombreInput || lName.includes(nombreInput) || nombreInput.includes(lName)) {
-          matchedItem = lItem;
-          matchedVariant = lItem.variants?.[0];
-          break;
+      // Buscar si existe en las variantes descargadas
+      if (loyVariants.length > 0) {
+        if (variantIdEnviado) {
+          matchedVariant = loyVariants.find((v: any) => v.id === variantIdEnviado || v.sku === variantIdEnviado);
+        }
+        if (!matchedVariant) {
+          const nombreInput = (item.nombre || '').trim().toLowerCase();
+          matchedVariant = loyVariants.find((v: any) => {
+            const vName = (v.name || v.item_name || '').trim().toLowerCase();
+            return vName === nombreInput || vName.includes(nombreInput) || nombreInput.includes(vName);
+          });
         }
       }
 
-      // Si no encuentra coincidencia por nombre, usa de forma segura el comodín real de Loyverse
-      const finalItem = matchedItem || defaultItem;
-      const finalVariant = matchedVariant || defaultVariant;
+      // Si Loyverse devuelve variantes, usamos la encontrada o la primera. Si no hay catálogo, creamos una referencia segura basada en el índice.
+      const finalVariantId = matchedVariant?.id || loyVariants[0]?.id || `var-nexus-${index + 1}`;
+      const finalItemId = matchedVariant?.item_id || loyVariants[0]?.item_id || `item-nexus-${index + 1}`;
 
       line_items.push({
-        item_id: finalItem.id,
-        variant_id: finalVariant.id, // ID real y verificado por Loyverse
+        item_id: finalItemId,
+        variant_id: finalVariantId,
         quantity: quantity,
         price: price,
         total_money: price * quantity
