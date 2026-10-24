@@ -115,7 +115,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [configFiscal, setConfigFiscal] = useState<ConfiguracionFiscal | null>(null);
   const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
-  const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos']);
+  const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas']);
   const [categoriaActiva, setCategoriaActiva] = useState<string>('Cafetería');
   const [busquedaCodigoBarras, setBusquedaCodigoBarras] = useState('');
   const [loadingCarta, setLoadingCarta] = useState(true);
@@ -1505,7 +1505,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </button>
             </div>
 
-            {/* Pestañas con la Categoría Visual Independiente */}
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
               {categoriasDisponibles.map((cat) => (
                 <button
@@ -1528,8 +1527,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   .filter((p) => {
                     const catProd = (p.categoria || '').trim().toLowerCase();
                     const catActiva = categoriaActiva.trim().toLowerCase();
-                    // Filtro estricto por categoría visual (separado del destino físico de KDS)
-                    return catProd === catActiva;
+                    if (!catProd) return true;
+                    return catProd === catActiva || catProd.includes(catActiva) || catActiva.includes(catProd);
                   })
                   .map((prod) => (
                     <div
@@ -1552,7 +1551,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                             <span className="font-mono text-amber-400 font-bold text-xs">
                               {Number(prod.precio).toFixed(2)} €
                             </span>
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400 uppercase">
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                                (prod.destino || 'barra').toLowerCase() === 'cocina'
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                  : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                              }`}
+                            >
                               {prod.destino || 'barra'}
                             </span>
                           </div>
@@ -1669,7 +1674,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               {carritoActual.length > 0 && (
                 <div className="pt-4 mt-4 border-t border-white/10 space-y-3">
                   <span className="text-xs font-bold text-cyan-400 block">
-                    Nuevos a enviar a KDS ({totalCarritoActual.toFixed(2)} €):
+                    Nuevos a enviar al KDS ({totalCarritoActual.toFixed(2)} €):
                   </span>
 
                   <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
