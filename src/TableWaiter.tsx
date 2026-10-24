@@ -626,16 +626,17 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       await Promise.all(promesas);
 
-      mostrarAlerta(`¡Comanda enviada a Cocina/Barra correctamente!`, 'exito');
-      setCarritoActual([]);
+      mostrarAlerta(`¡Comanda enviada a Cocina/Barra correctamente! Actualizando...`, 'exito');
+      setCarritoActualchno: [];
       cargarMesasAbiertas();
 
+      // Recarga automática a los 4 segundos para refrescar el total y las mesas abiertas
       setTimeout(() => {
-        setVistaSeccion('mesas_abiertas');
-      }, 1000);
+        window.location.reload();
+      }, 4000);
+
     } catch (err: any) {
       mostrarAlerta('Error: ' + err.message, 'error');
-    } finally {
       setEnviando(false);
     }
   };
