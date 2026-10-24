@@ -115,28 +115,32 @@ export default function LoyverseDashboard() {
     setSincronizando(true);
     setMensaje(null);
     try {
-      // Usamos directamente los artículos que ya ha descargado la pantalla
-      const itemsRemotos = articulosLoyverse;
+      const res = await fetch('/api/loyverse');
+      if (!res.ok) throw new Error('Fallo al conectar con Loyverse.');
+      const json = await res.json();
+      
+      console.log("Estructura recibida de Loyverse:", json);
 
-      if (!itemsRemotos || itemsRemotos.length === 0) {
-        throw new Error('No hay artículos cargados en memoria. Pulsa "Actualizar API" primero.');
+      const itemsRemotos = json.items || [];
+
+      if (itemsRemotos.length === 0) {
+        throw new Error('La API de Loyverse no ha devuelto ningún artículo.');
       }
 
       let countProcesados = 0;
 
       for (const item of itemsRemotos) {
-        const nombreItem = item.item_name || item.name;
+        const nombreItem = item.item_name || item.name || item.title;
         if (!nombreItem) continue;
 
-        const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
+        const catNombre = (item.category_name || item.category || '').toLowerCase();
         const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
         const categoriaLocal = catNombre.includes('cocina') ? 'tapeo' : 'bebidas';
         
-        const mainVariant = item.variants && item.variants.length > 0 ? item.variants[0] : {};
+        const mainVariant = (item.variants && item.variants.length > 0) ? item.variants[0] : {};
         const skuRef = mainVariant.sku || mainVariant.variant_id || item.id?.toString() || `SKU-${Math.random().toString(36).substring(7)}`;
         const precioItem = Number(mainVariant.price || item.price || 3.00);
 
-        // Hacemos el upsert a Supabase de manera directa
         const { error } = await supabase
           .from('productos_carta')
           .upsert([
@@ -159,7 +163,7 @@ export default function LoyverseDashboard() {
         }
       }
 
-      setMensaje(`¡Sincronización completada con éxito! Se han volcado ${countProcesados} artículos en Supabase.`);
+      setMensaje(`¡Sincronización completada! Se han volcado ${countProcesados} artículos en Supabase.`);
     } catch (err: any) {
       setMensaje('Error en sincronización: ' + err.message);
     } finally {
