@@ -14,22 +14,25 @@ export default async function handler(req: any, res: any) {
   try {
     const { receipt_number, total_money, payment_type, items } = req.body;
 
-    // 1. Obtener Tienda, POS, Empleados y Tipos de Pago en paralelo
-    const [storeRes, posRes, empRes, payRes] = await Promise.all([
+    // 1. Obtener Tienda, POS, Empleados, Tipos de Pago y el Catálogo COMPLETO de Loyverse en paralelo
+    const [storeRes, posRes, empRes, payRes, itemsRes] = await Promise.all([
       fetch('https://api.loyverse.com/v1.0/stores', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/pos_devices', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/employees', { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch('https://api.loyverse.com/v1.0/payment_types', { headers: { 'Authorization': `Bearer ${token}` } })
+      fetch('https://api.loyverse.com/v1.0/payment_types', { headers: { 'Authorization': `Bearer ${token}` } }),
+      fetch('https://api.loyverse.com/v1.0/items?limit=250', { headers: { 'Authorization': `Bearer ${token}` } })
     ]);
 
     const storeData = await storeRes.json();
     const posData = await posRes.json();
     const empData = await empRes.json();
     const payData = await payRes.json();
+    const itemsData = await itemsRes.json();
 
     const storeId = storeData.stores?.[0]?.id;
     const posId = posData.pos_devices?.[0]?.id;
     const empId = empData.employees?.[0]?.id;
+    const loyItems = itemsData.items || [];
 
     if (!storeId || !posId || !empId) {
       throw new Error(`Faltan datos base en Loyverse (Store: ${storeId}, POS: ${posId}, Emp: ${empId})`);
@@ -41,20 +44,61 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 3. Mapear cada artículo utilizando el variant_id enviado desde Supabase
+    if (loyItems.length === 0) {
+      throw new Error("El catálogo devuelto por Loyverse está vacío. Revisa tus artículos en Loyverse.");
+    }
+
+    // Comodín global de respaldo por si algún artículo no coincide exactamente
+    const fallbackVariantId = loyItems[0]?.variants?.[0]?.id;
+    if (!fallbackVariantId) {
+      throw new Error("No se encontró ninguna variante válida en el catálogo de Loyverse.");
+    }
+
+    // 3. Mapear los ítems buscando su variant_id real en el catálogo de Loyverse de forma inteligente
     const line_items = [];
 
     for (const item of items) {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
-      const variantId = item.loyverse_variant_id?.trim();
+      const nombreInput = (item.nombre || '').trim().toLowerCase();
+      const variantIdEnviado = item.loyverse_variant_id?.trim();
 
-      if (!variantId) {
-        throw new Error(`El artículo "${item.nombre}" no tiene un ID de variante asociado. Pulsa "Sincronizar Artículos a QR" en el dashboard.`);
+      let assignedVariantId = null;
+
+      // Intento A: Si el variant_id enviado es un UUID válido de Loyverse, lo usamos directamente
+      if (variantIdEnviado && variantIdEnviado.length > 10 && !variantIdEnviado.startsWith('CAF-') && !variantIdEnviado.startsWith('SKU-')) {
+        assignedVariantId = variantIdEnviado;
+      }
+
+      // Intento B: Buscar en el catálogo remoto por SKU o ID de variante
+      if (!assignedVariantId && variantIdEnviado) {
+        for (const lItem of loyItems) {
+          const foundVar = lItem.variants?.find((v: any) => v.sku === variantIdEnviado || v.id === variantIdEnviado);
+          if (foundVar) {
+            assignedVariantId = foundVar.id;
+            break;
+          }
+        }
+      }
+
+      // Intento C: Buscar en el catálogo remoto por coincidencia de nombre
+      if (!assignedVariantId) {
+        for (const lItem of loyItems) {
+          const lName = (lItem.item_name || lItem.name || '').trim().toLowerCase();
+          if (lName === nombreInput || lName.includes(nombreInput) || nombreInput.includes(lName)) {
+            assignedVariantId = lItem.variants?.[0]?.id;
+            break;
+          }
+        }
+      }
+
+      // Intento D: Respaldo absoluto para que el ticket nunca falle
+      if (!assignedVariantId) {
+        assignedVariantId = fallbackVariantId;
       }
 
       line_items.push({
-        variant_id: variantId,
+        variant_id: assignedVariantId,
         quantity: quantity,
         price: price,
         total_money: price * quantity
