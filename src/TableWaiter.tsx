@@ -486,13 +486,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .filter(it => !it.nombre.includes('├─') && it.precio > 0)
         .map(it => {
           const nombreLimpio = it.nombre.trim();
-          const variantId = mapLoyverseIds[nombreLimpio] || `VAR-${Math.random().toString(36).substring(7)}`;
-          
           return { 
             nombre: nombreLimpio, 
             cantidad: it.cantidad, 
             precio: it.precio, 
-            loyverse_variant_id: variantId 
+            loyverse_variant_id: mapLoyverseIds[nombreLimpio] || "" 
           };
         });
 
@@ -512,7 +510,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Fallo al conectar con Loyverse');
 
-      mostrarAlerta(`¡Ticket #${ticketNum} enviado a Loyverse correctamente para su impresión en TPV!`, 'exito');
+      mostrarAlerta(`¡Ticket #${ticketNum} enviado a Loyverse correctamente!`, 'exito');
     } catch (err: any) {
       mostrarAlerta('Error al sincronizar con Loyverse: ' + err.message, 'error');
     } finally {
@@ -552,13 +550,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .filter(it => !it.nombre.includes('├─') && it.precio > 0)
         .map(it => {
           const nombreLimpio = it.nombre.trim();
-          const variantId = mapLoyverseIds[nombreLimpio] || `VAR-${Math.random().toString(36).substring(7)}`;
-          
           return { 
             nombre: nombreLimpio, 
             cantidad: it.cantidad, 
             precio: it.precio, 
-            loyverse_variant_id: variantId 
+            loyverse_variant_id: mapLoyverseIds[nombreLimpio] || "" 
           };
         });
 
@@ -922,7 +918,21 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {productosCarta
-                  .filter(p => p.categoria === categoriaActiva)
+                  .filter(p => {
+                    const cat = (p.categoria || '').toLowerCase();
+                    const nombre = (p.nombre || '').toLowerCase();
+                    
+                    if (categoriaActiva === 'bebidas') {
+                      return cat.includes('bebida') || cat.includes('café') || cat.includes('cafeteria') || nombre.includes('café') || nombre.includes('zumo') || nombre.includes('cola') || nombre.includes('cerveza');
+                    }
+                    if (categoriaActiva === 'tapeo') {
+                      return cat.includes('tapeo') || cat.includes('tapa') || cat.includes('comida') || nombre.includes('carne') || nombre.includes('pescao') || nombre.includes('tarta') || nombre.includes('hamburguesa') || nombre.includes('ensalada');
+                    }
+                    if (categoriaActiva === 'menus') {
+                      return cat.includes('menu') || cat.includes('combo') || nombre.includes('menú');
+                    }
+                    return true;
+                  })
                   .map((prod) => (
                     <div 
                       key={prod.id} 
