@@ -115,53 +115,51 @@ export default function LoyverseDashboard() {
     setSincronizando(true);
     setMensaje(null);
     try {
-      const res = await fetch('/api/loyverse');
-      if (!res.ok) throw new Error('Fallo al conectar con Loyverse al sincronizar.');
-      const json = await res.json();
-      const itemsRemotos = json.items || [];
+      // Usamos directamente los artículos que ya ha descargado la pantalla
+      const itemsRemotos = articulosLoyverse;
 
-      if (itemsRemotos.length > 0) {
-        let countProcesados = 0;
-
-        for (const item of itemsRemotos) {
-          const nombreItem = item.item_name || item.name;
-          if (!nombreItem) continue;
-
-          const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
-          const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
-          const categoriaLocal = catNombre.includes('cocina') ? 'tapeo' : 'bebidas';
-          
-          const mainVariant = item.variants && item.variants.length > 0 ? item.variants[0] : {};
-          const skuRef = mainVariant.sku || mainVariant.variant_id || `SKU-${Math.random().toString(36).substring(7)}`;
-          const precioItem = Number(mainVariant.price || item.price || 3.00);
-
-          const { error } = await supabase
-            .from('productos_carta')
-            .upsert([
-              {
-                nombre: nombreItem,
-                precio: precioItem,
-                categoria: categoriaLocal,
-                destino: destinoAsignado,
-                activo: true,
-                loyverse_variant_id: skuRef
-              }
-            ], { 
-              onConflict: 'loyverse_variant_id' 
-            });
-
-          if (!error) {
-            countProcesados++;
-          } else {
-            console.error("Error en upsert para:", nombreItem, error.message);
-          }
-        }
-
-        setArticulosLoyverse(itemsRemotos);
-        setMensaje(`¡Sincronización completada con éxito! Se han procesado y volcado ${countProcesados} artículos en Supabase.`);
-      } else {
-        setMensaje('No se encontraron artículos remotos en Loyverse para sincronizar.');
+      if (!itemsRemotos || itemsRemotos.length === 0) {
+        throw new Error('No hay artículos cargados en memoria. Pulsa "Actualizar API" primero.');
       }
+
+      let countProcesados = 0;
+
+      for (const item of itemsRemotos) {
+        const nombreItem = item.item_name || item.name;
+        if (!nombreItem) continue;
+
+        const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
+        const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
+        const categoriaLocal = catNombre.includes('cocina') ? 'tapeo' : 'bebidas';
+        
+        const mainVariant = item.variants && item.variants.length > 0 ? item.variants[0] : {};
+        const skuRef = mainVariant.sku || mainVariant.variant_id || item.id?.toString() || `SKU-${Math.random().toString(36).substring(7)}`;
+        const precioItem = Number(mainVariant.price || item.price || 3.00);
+
+        // Hacemos el upsert a Supabase de manera directa
+        const { error } = await supabase
+          .from('productos_carta')
+          .upsert([
+            {
+              nombre: nombreItem,
+              precio: precioItem,
+              categoria: categoriaLocal,
+              destino: destinoAsignado,
+              activo: true,
+              loyverse_variant_id: skuRef
+            }
+          ], { 
+            onConflict: 'loyverse_variant_id' 
+          });
+
+        if (!error) {
+          countProcesados++;
+        } else {
+          console.error("Error en upsert para:", nombreItem, error.message);
+        }
+      }
+
+      setMensaje(`¡Sincronización completada con éxito! Se han volcado ${countProcesados} artículos en Supabase.`);
     } catch (err: any) {
       setMensaje('Error en sincronización: ' + err.message);
     } finally {
