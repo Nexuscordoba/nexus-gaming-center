@@ -18,7 +18,8 @@ import {
   AlertTriangle, 
   Power,
   ClipboardList,
-  RefreshCw
+  RefreshCw,
+  Info
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -75,6 +76,12 @@ interface TableWaiterProps {
   onBack: () => void;
 }
 
+interface AlertaPersonalizada {
+  id: number;
+  mensaje: string;
+  tipo: 'exito' | 'error' | 'aviso';
+}
+
 export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [camareroActivo, setCamareroActivo] = useState<{ id: string, nombre: string } | null>(null);
   const [pinInput, setPinInput] = useState('');
@@ -102,9 +109,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const [enviando, setEnviando] = useState(false);
   const [sincronizandoLoyverse, setSincronizandoLoyverse] = useState(false);
-  const [mensaje, setMensaje] = useState<string | null>(null);
   const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
+
+  const [alertaFlotante, setAlertaFlotante] = useState<AlertaPersonalizada | null>(null);
+
+  const mostrarAlerta = (mensaje: string, tipo: 'exito' | 'error' | 'aviso' = 'aviso') => {
+    const id = Date.now();
+    setAlertaFlotante({ id, mensaje, tipo });
+    setTimeout(() => {
+      setAlertaFlotante(prev => prev?.id === id ? null : prev);
+    }, 4500);
+  };
 
   useEffect(() => {
     const initSesion = async () => {
@@ -179,7 +195,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setCuentaMesaActual([]);
     }
     setCarritoActual([]);
-    setMensaje(null);
   }, [mesaSeleccionada, mesasAbiertas]);
 
   const cargarConfiguracion = async () => {
@@ -314,7 +329,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const clickAgregarAlCarrito = (prod: Producto) => {
-    // Permitir selección flexible o individual de platos de menú
     if (prod.es_combo && prod.opciones_combo && prod.opciones_combo.length > 0) {
       setComboActivo(prod);
       setPasoComboActual(0);
@@ -327,7 +341,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         }
         return [...prev, { ...prod, cantidad: 1 }];
       });
-      setMensaje(null);
     }
   };
 
@@ -337,7 +350,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     const baseId = Date.now();
     const itemsNuevos: Array<Producto & { cantidad: number }> = [];
     
-    itemsNuevos.push({ ...comboActivo, id: baseId, cantidad: 1 });
+    itemsNuevos.push({ 
+      ...comboActivo, 
+      id: baseId, 
+      cantidad: 1 
+    });
     
     comboActivo.opciones_combo?.forEach((_, idx) => {
       const seleccion = seleccionesFinales[idx];
@@ -375,7 +392,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const enviarPedidoCamarero = async () => {
     if (carritoActual.length === 0 || !camareroActivo) return;
     setEnviando(true);
-    setMensaje(null);
     
     try {
       const itemsCocina = carritoActual.filter(i => i.destino === 'cocina');
@@ -421,26 +437,24 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       await Promise.all(promesas);
       
-      setMensaje(`¡Pedido enviado con éxito!`);
+      mostrarAlerta(`¡Pedido enviado con éxito!`, 'exito');
       setCarritoActual([]);
       cargarMesasAbiertas();
       
       setTimeout(() => { 
         setVistaSeccion('mesas_abiertas'); 
-        setMensaje(null); 
       }, 1500);
 
     } catch (err: any) { 
-      setMensaje('Error: ' + err.message); 
+      mostrarAlerta('Error: ' + err.message, 'error'); 
     } finally { 
       setEnviando(false); 
     }
   };
 
-  // NUEVA FUNCIÓN: Sincronizar / Enviar ticket actual de la mesa a Loyverse de forma manual por el camarero
   const sincronizarTicketActualLoyverse = async () => {
     if (totalCuentaMesa === 0) {
-      alert("La mesa está vacía, no hay nada que enviar a Loyverse.");
+      mostrarAlerta("La mesa está vacía, no hay nada que enviar a Loyverse.", 'aviso');
       return;
     }
 
@@ -457,9 +471,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         });
       }
 
-      // Combinamos lo que ya tiene la mesa con lo que hay en el carrito actual por enviar
       const todosLosItems = cuentaMesaActual.concat(
-        carritoActual.map(c => ({ nombre: c.nombre, precio: Number(c.precio), cantidad: c.cantidad, destino: c.destino }))
+        carritoActual.map(c => ({ 
+          nombre: c.nombre, 
+          precio: Number(c.precio), 
+          cantidad: c.cantidad, 
+          destino: c.destino 
+        }))
       );
 
       const itemsAEnviarLoyverse = todosLosItems.map(it => {
@@ -479,7 +497,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         body: JSON.stringify({ 
           receipt_number: ticketNum, 
           total_money: totalCuentaMesa, 
-          payment_type: 'efectivo', // Por defecto efectivo para emisión o impresión en TPV
+          payment_type: 'efectivo', 
           items: itemsAEnviarLoyverse 
         })
       });
@@ -487,9 +505,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Fallo al conectar con Loyverse');
 
-      alert(`¡Ticket #${ticketNum} enviado a Loyverse correctamente para su impresión en TPV!`);
+      mostrarAlerta(`¡Ticket #${ticketNum} enviado a Loyverse correctamente para su impresión en TPV!`, 'exito');
     } catch (err: any) {
-      alert('Error al sincronizar con Loyverse: ' + err.message);
+      mostrarAlerta('Error al sincronizar con Loyverse: ' + err.message, 'error');
     } finally {
       setSincronizandoLoyverse(false);
     }
@@ -497,12 +515,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const cobrarMesa = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
     if (cajaAtrasada) { 
-      alert('¡ATENCIÓN! Tienes que cerrar la caja del día anterior antes de cobrar nada.'); 
+      mostrarAlerta('¡ATENCIÓN! Tienes que cerrar la caja del día anterior antes de cobrar nada.', 'aviso'); 
       return; 
     }
     
     if (!cajaHoy || cajaHoy.estado === 'cerrada') { 
-      alert('¡ATENCIÓN! Abre la caja de hoy primero.'); 
+      mostrarAlerta('¡ATENCIÓN! Abre la caja de hoy primero.', 'aviso'); 
       return; 
     }
     
@@ -567,12 +585,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         })
         .eq('id', cajaHoy.id);
 
-      alert(`¡Mesa ${mesaNombre} cobrada por ${camareroActivo.nombre} en ${metodo.toUpperCase()}!`);
+      mostrarAlerta(`¡Mesa ${mesaNombre} cobrada por ${camareroActivo.nombre} en ${metodo.toUpperCase()}!`, 'exito');
       
       cargarMesasAbiertas();
       cargarCaja();
     } catch (err: any) { 
-      alert('Error al cobrar la mesa: ' + err.message); 
+      mostrarAlerta('Error al cobrar la mesa: ' + err.message, 'error'); 
     }
   };
 
@@ -590,7 +608,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         estado: 'abierta' 
       }]);
       
-    alert(`Turno de hoy abierto.`);
+    mostrarAlerta(`Turno de hoy abierto.`, 'exito');
     cargarCaja();
   };
 
@@ -612,7 +630,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       })
       .eq('id', caja.id);
       
-    alert(`¡Caja de fecha ${caja.fecha} cerrada correctamente!`);
+    mostrarAlerta(`¡Caja de fecha ${caja.fecha} cerrada correctamente!`, 'exito');
     cargarCaja();
   };
 
@@ -673,6 +691,29 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
       
+      {alertaFlotante && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[9999] animate-slide-down">
+          <div className={`flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-2xl border backdrop-blur-md ${
+            alertaFlotante.tipo === 'exito' ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-100 shadow-[0_10px_40px_rgba(16,185,129,0.2)]' :
+            alertaFlotante.tipo === 'error' ? 'bg-rose-950/90 border-rose-500/50 text-rose-100 shadow-[0_10px_40px_rgba(244,63,94,0.2)]' :
+            'bg-amber-950/90 border-amber-500/50 text-amber-100 shadow-[0_10px_40px_rgba(245,158,11,0.2)]'
+          }`}>
+            {alertaFlotante.tipo === 'exito' && <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />}
+            {alertaFlotante.tipo === 'error' && <AlertTriangle className="h-5 w-5 text-rose-400 shrink-0" />}
+            {alertaFlotante.tipo === 'aviso' && <Info className="h-5 w-5 text-amber-400 shrink-0" />}
+            <p className="text-sm font-semibold max-w-xs sm:max-w-md">
+              {alertaFlotante.mensaje}
+            </p>
+            <button 
+              onClick={() => setAlertaFlotante(null)} 
+              className="ml-2 p-1 hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
+            >
+              <X className="h-4 w-4 opacity-70 hover:opacity-100" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {comboActivo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 print:hidden">
           <div className="w-full max-w-md bg-[#0d0f17] border border-amber-500/30 rounded-3xl p-6 shadow-2xl animate-slide-up">
@@ -734,7 +775,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <Utensils className="h-7 w-7" />
             </div>
             <div>
-              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · PORTAL CAMAREROS</h1>
+              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">
+                NEXUS · PORTAL CAMAREROS
+              </h1>
               <p className="text-xs text-slate-400 flex items-center gap-1">
                 Sesión: <strong className="text-amber-400">{camareroActivo.nombre}</strong>
               </p>
@@ -820,7 +863,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </select>
               </div>
               
-              {/* BOTÓN REEMPLAZADO: Enviar / Imprimir ticket actual en Loyverse */}
               <button 
                 type="button" 
                 onClick={sincronizarTicketActualLoyverse} 
@@ -1024,19 +1066,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   </div>
                 )}
                 
-                {mensaje && (
-                  <div className="p-3 mt-3 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 text-xs text-center font-semibold">
-                    <CheckCircle2 className="h-4 w-4 inline mr-1" /> 
-                    {mensaje}
-                  </div>
-                )}
               </div>
             </div>
           </div>
         </main>
       )}
 
-      {/* VISTA 2: LISTADO DE MESAS ABIERTAS */}
       {vistaSeccion === 'mesas_abiertas' && (
         <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
           
@@ -1104,7 +1139,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </main>
       )}
 
-      {/* VISTA 3: CAJA Y CUADRE DETALLADO */}
       {vistaSeccion === 'caja' && (
         <main className="flex-1 max-w-3xl w-full mx-auto space-y-6 pb-24">
           
