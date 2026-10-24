@@ -467,7 +467,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const mapLoyverseIds: Record<string, string> = {};
       if (cartaIds) {
         cartaIds.forEach(p => { 
-          mapLoyverseIds[p.nombre.trim()] = p.loyverse_variant_id; 
+          if (p.loyverse_variant_id) {
+            mapLoyverseIds[p.nombre.trim()] = p.loyverse_variant_id; 
+          }
         });
       }
 
@@ -480,15 +482,19 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         }))
       );
 
-      const itemsAEnviarLoyverse = todosLosItems.map(it => {
-        const nombreLimpio = it.nombre.replace('├─', '').trim();
-        return { 
-          nombre: nombreLimpio, // <- Enviamos el nombre para que el backend lo use si falta el ID
-          cantidad: it.cantidad, 
-          precio: it.precio, 
-          loyverse_variant_id: mapLoyverseIds[nombreLimpio] || "" 
-        };
-      });
+      const itemsAEnviarLoyverse = todosLosItems
+        .filter(it => !it.nombre.includes('├─') && it.precio > 0)
+        .map(it => {
+          const nombreLimpio = it.nombre.trim();
+          const variantId = mapLoyverseIds[nombreLimpio] || `VAR-${Math.random().toString(36).substring(7)}`;
+          
+          return { 
+            nombre: nombreLimpio, 
+            cantidad: it.cantidad, 
+            precio: it.precio, 
+            loyverse_variant_id: variantId 
+          };
+        });
 
       const ticketNum = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -536,19 +542,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const mapLoyverseIds: Record<string, string> = {};
       if (cartaIds) {
         cartaIds.forEach(p => { 
-          mapLoyverseIds[p.nombre.trim()] = p.loyverse_variant_id; 
+          if (p.loyverse_variant_id) {
+            mapLoyverseIds[p.nombre.trim()] = p.loyverse_variant_id; 
+          }
         });
       }
 
-      const itemsAEnviarLoyverse = mesaObj.items.map(it => {
-        const nombreLimpio = it.nombre.replace('├─', '').trim();
-        return { 
-          nombre: nombreLimpio, // <- Enviamos el nombre
-          cantidad: it.cantidad, 
-          precio: it.precio, 
-          loyverse_variant_id: mapLoyverseIds[nombreLimpio] || "" 
-        };
-      });
+      const itemsAEnviarLoyverse = mesaObj.items
+        .filter(it => !it.nombre.includes('├─') && it.precio > 0)
+        .map(it => {
+          const nombreLimpio = it.nombre.trim();
+          const variantId = mapLoyverseIds[nombreLimpio] || `VAR-${Math.random().toString(36).substring(7)}`;
+          
+          return { 
+            nombre: nombreLimpio, 
+            cantidad: it.cantidad, 
+            precio: it.precio, 
+            loyverse_variant_id: variantId 
+          };
+        });
 
       try {
         await fetch('/api/sync-receipt', {
@@ -933,7 +945,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         <Plus className="h-5 w-5" />
                       </button>
                     </div>
-                ))}
+                  ))}
               </div>
             )}
           </div>
@@ -964,7 +976,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                           {(it.precio * it.cantidad).toFixed(2)} €
                         </span>
                       </div>
-                  ))}
+                    ))}
                 </div>
                 
                 <div className="pt-2 text-right font-bold text-sm">
