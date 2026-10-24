@@ -14,7 +14,7 @@ export default async function handler(req: any, res: any) {
   try {
     const { receipt_number, total_money, payment_type, items } = req.body;
 
-    // 1. Obtener Tienda, POS, Empleados y Tipos de Pago en paralelo
+    // 1. Petición en paralelo para obtener tienda, POS, empleados, pagos y variantes reales de Loyverse
     const [storeRes, posRes, empRes, payRes, variantsRes] = await Promise.all([
       fetch('https://api.loyverse.com/v1.0/stores', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/pos_devices', { headers: { 'Authorization': `Bearer ${token}` } }),
@@ -38,43 +38,39 @@ export default async function handler(req: any, res: any) {
       throw new Error(`Faltan datos base en Loyverse (Store: ${storeId}, POS: ${posId}, Emp: ${empId})`);
     }
 
+    if (loyVariants.length === 0) {
+      throw new Error("No hay variantes disponibles en el catálogo de Loyverse.");
+    }
+
     // 2. Obtener Tipo de Pago
     let paymentTypeId = payData.payment_types?.[0]?.id; 
     const tipoBuscado = payment_type === 'efectivo' ? 'CASH' : 'CARD';
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 3. Mapear las líneas del ticket asegurando tolerancia total
+    // Variante de respaldo por defecto (la primera del catálogo real)
+    const defaultVariant = loyVariants[0];
+
+    // 3. Mapear cada artículo garantizando que SIEMPRE se inyecta un variant_id y item_id reales
     const line_items = [];
 
-    for (const [index, item] of items.entries()) {
+    for (const item of items) {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
-      const variantIdEnviado = item.loyverse_variant_id?.trim();
+      const nombreInput = (item.nombre || '').trim().toLowerCase();
 
-      let matchedVariant = null;
+      // Buscamos la variante real en el catálogo de Loyverse por coincidencia de nombre
+      let matched = loyVariants.find((v: any) => {
+        const vName = (v.name || v.item_name || '').trim().toLowerCase();
+        return vName === nombreInput || vName.includes(nombreInput) || nombreInput.includes(vName);
+      });
 
-      // Buscar si existe en las variantes descargadas
-      if (loyVariants.length > 0) {
-        if (variantIdEnviado) {
-          matchedVariant = loyVariants.find((v: any) => v.id === variantIdEnviado || v.sku === variantIdEnviado);
-        }
-        if (!matchedVariant) {
-          const nombreInput = (item.nombre || '').trim().toLowerCase();
-          matchedVariant = loyVariants.find((v: any) => {
-            const vName = (v.name || v.item_name || '').trim().toLowerCase();
-            return vName === nombreInput || vName.includes(nombreInput) || nombreInput.includes(vName);
-          });
-        }
-      }
-
-      // Si Loyverse devuelve variantes, usamos la encontrada o la primera. Si no hay catálogo, creamos una referencia segura basada en el índice.
-      const finalVariantId = matchedVariant?.id || loyVariants[0]?.id || `var-nexus-${index + 1}`;
-      const finalItemId = matchedVariant?.item_id || loyVariants[0]?.item_id || `item-nexus-${index + 1}`;
+      // Si no hay coincidencia exacta, usamos la variante por defecto de forma segura
+      const finalVar = matched || defaultVariant;
 
       line_items.push({
-        item_id: finalItemId,
-        variant_id: finalVariantId,
+        item_id: finalVar.item_id,
+        variant_id: finalVar.id, // ¡ID real y obligatorio de Loyverse!
         quantity: quantity,
         price: price,
         total_money: price * quantity
