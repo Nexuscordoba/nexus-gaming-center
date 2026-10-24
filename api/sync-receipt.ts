@@ -6,7 +6,8 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const token = process.env.LOYVERSE_ACCESS_TOKEN; 
+  // Corregido: Ahora coincide exactamente con el nombre de tu variable en Vercel
+  const token = process.env.LOYVERSE_API_KEY; 
   if (!token) {
     return res.status(500).json({ error: 'No token' });
   }
