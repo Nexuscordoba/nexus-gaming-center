@@ -133,47 +133,63 @@ export default function LoyverseDashboard() {
           const categoriaLocal = catNombre.includes('cocina') ? 'tapeo' : 'bebidas';
           
           const mainVariant = item.variants && item.variants.length > 0 ? item.variants[0] : {};
-          const skuRef = mainVariant.sku || '';
+          const skuRef = mainVariant.sku || mainVariant.variant_id || item.id;
           const precioItem = Number(mainVariant.price || item.price || 3.00);
 
-          // Comprobamos si el producto ya existe exactamente por su nombre en Supabase
-          const { data: existente } = await supabase
+          const { data: existentePorSku } = await supabase
             .from('productos_carta')
             .select('id')
-            .eq('nombre', nombreItem)
+            .eq('loyverse_variant_id', skuRef)
             .maybeSingle();
 
-          if (existente) {
-            // Si ya existe, actualizamos su precio y su REF
-            const { error: errUpdate } = await supabase
+          if (existentePorSku) {
+            await supabase
               .from('productos_carta')
               .update({
-                precio: precioItem,
-                loyverse_variant_id: skuRef
-              })
-              .eq('id', existente.id);
-
-            if (!errUpdate) actualizados++;
-          } else {
-            // Si no existe, lo insertamos nuevo asegurando todos los campos
-            const { error: errInsert } = await supabase
-              .from('productos_carta')
-              .insert([{
                 nombre: nombreItem,
-                precio: precioItem,
-                categoria: categoriaLocal,
-                destino: destinoAsignado,
-                activo: true,
-                loyverse_variant_id: skuRef
-              }]);
+                precio: precioItem
+              })
+              .eq('id', existentePorSku.id);
+            actualizados++;
+          } else {
+            const { data: existentePorNombre } = await supabase
+              .from('productos_carta')
+              .select('id')
+              .eq('nombre', nombreItem)
+              .maybeSingle();
 
-            if (!errInsert) agregados++;
-            else console.error("Error insertando:", errInsert.message);
+            if (existentePorNombre) {
+              await supabase
+                .from('productos_carta')
+                .update({
+                  precio: precioItem,
+                  loyverse_variant_id: skuRef
+                })
+                .eq('id', existentePorNombre.id);
+              actualizados++;
+            } else {
+              const { error: errInsert } = await supabase
+                .from('productos_carta')
+                .insert([{
+                  nombre: nombreItem,
+                  precio: precioItem,
+                  categoria: categoriaLocal,
+                  destino: destinoAsignado,
+                  activo: true,
+                  loyverse_variant_id: skuRef
+                }]);
+
+              if (!errInsert) {
+                agregados++;
+              } else {
+                console.error("Error al insertar el artículo:", nombreItem, errInsert.message);
+              }
+            }
           }
         }
 
         setArticulosLoyverse(itemsRemotos);
-        setMensaje(`¡Sincronización completada! Añadidos: ${agregados}, Actualizados: ${actualizados} artículos en Supabase.`);
+        setMensaje(`¡Sincronización completada! Se han añadido ${agregados} artículos nuevos y actualizado ${actualizados} existentes.`);
       } else {
         setMensaje('No se encontraron artículos remotos en Loyverse para sincronizar.');
       }
