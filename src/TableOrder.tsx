@@ -16,7 +16,7 @@ interface Producto {
   id: number;
   nombre: string;
   precio: number;
-  categoria: 'bebidas' | 'tapeo' | 'menus';
+  categoria: string;
   destino: 'cocina' | 'barra';
   es_combo?: boolean;
   opciones_combo?: PasoCombo[];
@@ -34,6 +34,8 @@ interface ItemPedido {
 export default function TableOrder() {
   const [mesaNum, setMesaNum] = useState<string>('1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
+  const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Cocina / Tapas', 'Menús y Combos']);
+  const [categoriaActiva, setCategoriaActiva] = useState<string>('Cafetería');
   const [loadingCarta, setLoadingCarta] = useState(true);
   const [cocinaAbierta, setCocinaAbierta] = useState(true);
   
@@ -48,7 +50,6 @@ export default function TableOrder() {
   const [enviando, setEnviando] = useState(false);
   const [enviandoCuenta, setEnviandoCuenta] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
-  const [categoriaActiva, setCategoriaActiva] = useState<'bebidas' | 'tapeo' | 'menus'>('bebidas');
 
   useEffect(() => {
     const hash = window.location.hash;
@@ -107,10 +108,6 @@ export default function TableOrder() {
 
     if (data) {
       setCocinaAbierta(data.cocina_abierta);
-      // Si la cocina se cierra mientras el cliente estaba viéndola, lo mandamos a bebidas automáticamente
-      if (!data.cocina_abierta && (categoriaActiva === 'tapeo' || categoriaActiva === 'menus')) {
-        setCategoriaActiva('bebidas');
-      }
     }
   };
 
@@ -122,7 +119,16 @@ export default function TableOrder() {
       .eq('activo', true)
       .order('id', { ascending: true });
 
-    if (data) setProductosCarta(data as Producto[]);
+    if (data && data.length > 0) {
+      setProductosCarta(data as Producto[]);
+      
+      // Extraer categorías únicas dinámicamente de los productos cargados
+      const catsUnicas = Array.from(new Set(data.map((p: any) => p.categoria || 'Cafetería'))) as string[];
+      if (catsUnicas.length > 0) {
+        setCategoriasDisponibles(catsUnicas);
+        setCategoriaActiva(prev => catsUnicas.includes(prev) ? prev : catsUnicas[0]);
+      }
+    }
     setLoadingCarta(false);
   };
 
@@ -133,7 +139,7 @@ export default function TableOrder() {
       .eq('mesa', `MESA ${mNum}`)
       .neq('estado', 'servido')
       .neq('tipo_destino', 'cuenta')
-      .eq('pagado', false); // Filtro importante actualizado
+      .eq('pagado', false);
 
     if (data && data.length > 0) {
       const itemsAcumulados: ItemPedido[] = [];
@@ -230,7 +236,6 @@ export default function TableOrder() {
   const enviarPedido = async () => {
     if (carritoActual.length === 0) return;
     
-    // Doble validación por si la cocina cerró mientras el cliente elegía
     const itemsCocina = carritoActual.filter(i => i.destino === 'cocina');
     if (itemsCocina.length > 0 && !cocinaAbierta) {
       alert("Lo sentimos, la cocina acaba de cerrar. Por favor, retira los platos de comida de tu pedido para poder enviar las bebidas.");
@@ -246,7 +251,6 @@ export default function TableOrder() {
 
       const promesas = [];
 
-      // ETIQUETAS "pagado: false" Y "estado: 'pendiente'" RESTAURADAS PARA EVITAR PEDIDOS FANTASMAS
       if (itemsCocina.length > 0) {
         promesas.push(
           supabase.from('comandas_cocina').insert([{
@@ -261,7 +265,7 @@ export default function TableOrder() {
               cantidad: i.cantidad, 
               variante: '', 
               comentarios: 'Pedido desde QR mesa', 
-              es_menu: i.categoria === 'menus' 
+              es_menu: (i.categoria || '').toLowerCase().includes('menu') 
             }))
           }])
         );
@@ -427,7 +431,7 @@ export default function TableOrder() {
                     {item.nombre}
                   </span>
                   <span className="font-mono text-slate-300">
-                    {item.nombre.includes('├─') ? '' : `${(item.precio * item.cantidad).toFixed(2)} €`}
+                    {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
                   </span>
                 </div>
               ))}
@@ -436,49 +440,35 @@ export default function TableOrder() {
         )}
 
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
-          <button
-            onClick={() => setCategoriaActiva('bebidas')}
-            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'bebidas' ? 'bg-cyan-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
-            }`}
-          >
-            ☕ Cafetería
-          </button>
-          
-          <button
-            onClick={() => {
-              if (!cocinaAbierta) return;
-              setCategoriaActiva('tapeo');
-            }}
-            disabled={!cocinaAbierta}
-            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 ${
-              !cocinaAbierta 
-                ? 'bg-rose-950/20 text-rose-500/50 border border-rose-900/30 cursor-not-allowed opacity-60'
-                : categoriaActiva === 'tapeo' ? 'bg-cyan-500 text-slate-950 shadow-md font-black cursor-pointer' : 'bg-white/5 text-slate-400 cursor-pointer'
-            }`}
-          >
-            🍳 Cocina / Tapas {!cocinaAbierta && <Lock className="h-3 w-3" />}
-          </button>
-          
-          <button
-            onClick={() => {
-              if (!cocinaAbierta) return;
-              setCategoriaActiva('menus');
-            }}
-            disabled={!cocinaAbierta}
-            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 ${
-              !cocinaAbierta 
-                ? 'bg-rose-950/20 text-rose-500/50 border border-rose-900/30 cursor-not-allowed opacity-60'
-                : categoriaActiva === 'menus' ? 'bg-cyan-500 text-slate-950 shadow-md font-black cursor-pointer' : 'bg-white/5 text-slate-400 cursor-pointer'
-            }`}
-          >
-            🍽️ Menús y Combos {!cocinaAbierta && <Lock className="h-3 w-3" />}
-          </button>
+          {categoriasDisponibles.map((cat) => {
+            const esCocina = cat.toLowerCase().includes('cocina') || cat.toLowerCase().includes('tapa') || cat.toLowerCase().includes('menu');
+            const bloqueado = esCocina && !cocinaAbierta;
+
+            return (
+              <button
+                key={cat}
+                onClick={() => {
+                  if (bloqueado) return;
+                  setCategoriaActiva(cat);
+                }}
+                disabled={bloqueado}
+                className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 ${
+                  bloqueado
+                    ? 'bg-rose-950/20 text-rose-500/50 border border-rose-900/30 cursor-not-allowed opacity-60'
+                    : categoriaActiva === cat
+                    ? 'bg-cyan-500 text-slate-950 shadow-md font-black cursor-pointer'
+                    : 'bg-white/5 text-slate-400 cursor-pointer'
+                }`}
+              >
+                <span>{cat}</span> {bloqueado && <Lock className="h-3 w-3" />}
+              </button>
+            );
+          })}
         </div>
 
         {loadingCarta ? (
           <div className="text-center py-20 text-slate-500 text-sm">Cargando carta...</div>
-        ) : !cocinaAbierta && (categoriaActiva === 'tapeo' || categoriaActiva === 'menus') ? (
+        ) : !cocinaAbierta && (categoriaActiva.toLowerCase().includes('cocina') || categoriaActiva.toLowerCase().includes('tapa') || categoriaActiva.toLowerCase().includes('menu')) ? (
           <div className="text-center py-16 px-4 bg-rose-950/20 border border-rose-900/50 rounded-3xl">
             <Lock className="h-10 w-10 text-rose-500 mx-auto mb-3 opacity-80" />
             <h3 className="text-rose-400 font-bold text-lg mb-1">Cocina Cerrada</h3>
@@ -487,7 +477,12 @@ export default function TableOrder() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {productosCarta
-              .filter(p => p.categoria === categoriaActiva)
+              .filter(p => {
+                const catProd = (p.categoria || '').trim().toLowerCase();
+                const catActiva = categoriaActiva.trim().toLowerCase();
+                if (!catProd) return true;
+                return catProd === catActiva || catProd.includes(catActiva) || catActiva.includes(catProd);
+              })
               .map((prod) => (
                 <div 
                   key={prod.id} 
@@ -550,11 +545,11 @@ export default function TableOrder() {
                       {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
                     </span>
                     <div className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg">
-                      <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white">
+                      <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white cursor-pointer">
                         <Minus className="h-3 w-3" />
                       </button>
                       <span className="font-mono font-bold text-white w-3 text-center">{item.cantidad}</span>
-                      <button onClick={() => cambiarCantidadCarrito(item.id, 1)} className="text-slate-400 hover:text-white">
+                      <button onClick={() => cambiarCantidadCarrito(item.id, 1)} className="text-slate-400 hover:text-white cursor-pointer">
                         <Plus className="h-3 w-3" />
                       </button>
                     </div>
