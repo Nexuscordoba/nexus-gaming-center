@@ -231,41 +231,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
     if (arts && arts.length > 0) {
       setArticulosMaestro(arts);
-    } else {
-      const { data: cartaExistente } = await supabase.from('productos_carta').select('*');
-      if (cartaExistente && cartaExistente.length > 0) {
-        for (const p of cartaExistente) {
-          const { data: insertado } = await supabase
-            .from('articulos_cafeteria')
-            .insert([
-              {
-                nombre: p.nombre,
-                categoria: p.categoria || 'Cafetería',
-                destino: p.destino || 'barra',
-                precio_venta: Number(p.precio || 0),
-                coste_unitario: Number(p.coste_unitario || 0),
-                unidad_medida: p.unidad_medida || 'ud',
-                controla_stock: Boolean(p.controla_stock),
-                stock_actual: Number(p.stock_actual || 0),
-                vendible_tpv: true
-              }
-            ])
-            .select()
-            .single();
-
-          if (insertado) {
-            await supabase
-              .from('productos_carta')
-              .update({ articulo_inventario_id: insertado.id })
-              .eq('id', p.id);
-          }
-        }
-        const { data: artsRecargados } = await supabase
-          .from('articulos_cafeteria')
-          .select('*')
-          .order('nombre', { ascending: true });
-        if (artsRecargados) setArticulosMaestro(artsRecargados);
-      }
     }
   };
 
@@ -549,6 +514,22 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setArtCategoria(nombreLimpio);
     setNuevaCategoriaInput('');
     notificar(`Categoría visual "${nombreLimpio}" añadida.`);
+  };
+
+  const borrarCategoria = async (catNombre: string) => {
+    const confirmacion = window.confirm(`¿Seguro que deseas eliminar la categoría "${catNombre}"?`);
+    if (!confirmacion) return;
+
+    try {
+      await supabase.from('categorias_cafeteria').delete().eq('nombre', catNombre);
+      setCategorias((prev) => prev.filter((c) => c !== catNombre));
+      if (artCategoria === catNombre) {
+        setArtCategoria('Cafetería');
+      }
+      notificar(`Categoría "${catNombre}" eliminada correctamente.`);
+    } catch (err: any) {
+      notificar('Error al borrar la categoría: ' + err.message, 'error');
+    }
   };
 
   const registrarCompraMercancia = async (e: React.FormEvent) => {
@@ -1164,6 +1145,31 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                     Cancelar edición y crear nuevo
                   </button>
                 )}
+              </div>
+
+              {/* SECCIÓN DE GESTIÓN Y BORRADO DE CATEGORÍAS VISUALES */}
+              <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 space-y-2 text-xs">
+                <span className="font-bold text-slate-300 block">Categorías Visuales Existentes (Pestañas TPV):</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {categorias.map((cat) => (
+                    <span
+                      key={cat}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-black/50 border border-white/15 text-slate-200 font-bold text-xs"
+                    >
+                      {cat}
+                      {cat !== 'Cafetería' && (
+                        <button
+                          type="button"
+                          onClick={() => borrarCategoria(cat)}
+                          className="text-rose-400 hover:text-rose-300 ml-1 p-0.5 cursor-pointer"
+                          title={`Borrar categoría ${cat}`}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
