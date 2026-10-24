@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X } from 'lucide-react';
+import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X, Lock } from 'lucide-react';
 
 interface OpcionCombo {
   nombre: string;
@@ -35,6 +35,7 @@ export default function TableOrder() {
   const [mesaNum, setMesaNum] = useState<string>('1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [loadingCarta, setLoadingCarta] = useState(true);
+  const [cocinaAbierta, setCocinaAbierta] = useState(true);
   
   const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number }>>([]);
   const [cuentaMesa, setCuentaMesa] = useState<ItemPedido[]>([]);
@@ -62,17 +63,16 @@ export default function TableOrder() {
     }
     setMesaNum(mNum);
 
+    cargarConfiguracion();
     cargarProductosCarta();
     cargarCuentaDesdeSupabase(mNum);
 
-    // Escuchar cambios en vivo (Si el camarero añade algo o si cobra la cuenta)
     const channel = supabase
       .channel(`mesa-${mNum}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'comandas_cocina', filter: `mesa=eq.MESA ${mNum}` },
         (payload: any) => {
-          // Si el camarero marca la cuenta como servida, limpiamos la mesa
           const comanda = payload.new;
           if (comanda && comanda.tipo_destino === 'cuenta' && comanda.estado === 'servido') {
             setCuentaMesa([]);
@@ -80,9 +80,15 @@ export default function TableOrder() {
             localStorage.removeItem(`nexus_mesa_${mNum}_cuenta`);
             setMensaje('¡Cuenta cobrada con éxito! Gracias por vuestra visita.');
           } else {
-            // Si hay otro cambio, recargamos la cuenta para ver los nuevos platos
             cargarCuentaDesdeSupabase(mNum);
           }
+        }
+      )
+      .on(
+        'postgres_changes', 
+        { event: '*', schema: 'public', table: 'configuracion_local' }, 
+        () => {
+          cargarConfiguracion();
         }
       )
       .subscribe();
@@ -91,6 +97,22 @@ export default function TableOrder() {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  const cargarConfiguracion = async () => {
+    const { data } = await supabase
+      .from('configuracion_local')
+      .select('*')
+      .eq('id', 1)
+      .single();
+
+    if (data) {
+      setCocinaAbierta(data.cocina_abierta);
+      // Si la cocina se cierra mientras el cliente estaba viéndola, lo mandamos a bebidas automáticamente
+      if (!data.cocina_abierta && (categoriaActiva === 'tapeo' || categoriaActiva === 'menus')) {
+        setCategoriaActiva('bebidas');
+      }
+    }
+  };
 
   const cargarProductosCarta = async () => {
     setLoadingCarta(true);
@@ -110,7 +132,8 @@ export default function TableOrder() {
       .select('*')
       .eq('mesa', `MESA ${mNum}`)
       .neq('estado', 'servido')
-      .neq('tipo_destino', 'cuenta');
+      .neq('tipo_destino', 'cuenta')
+      .eq('pagado', false); // Filtro importante actualizado
 
     if (data && data.length > 0) {
       const itemsAcumulados: ItemPedido[] = [];
@@ -161,14 +184,12 @@ export default function TableOrder() {
     const baseId = Date.now();
     const itemsNuevos: Array<Producto & { cantidad: number }> = [];
 
-    // Añadir el menú base
     itemsNuevos.push({ 
       ...comboActivo, 
       id: baseId, 
       cantidad: 1 
     });
 
-    // Añadir las opciones seleccionadas a 0€ usando un bucle for tradicional para evitar variables sin uso
     const opcionesLength = comboActivo.opciones_combo?.length || 0;
     for (let idx = 0; idx < opcionesLength; idx++) {
       const seleccion = seleccionesFinales[idx];
@@ -208,28 +229,38 @@ export default function TableOrder() {
 
   const enviarPedido = async () => {
     if (carritoActual.length === 0) return;
+    
+    // Doble validación por si la cocina cerró mientras el cliente elegía
+    const itemsCocina = carritoActual.filter(i => i.destino === 'cocina');
+    if (itemsCocina.length > 0 && !cocinaAbierta) {
+      alert("Lo sentimos, la cocina acaba de cerrar. Por favor, retira los platos de comida de tu pedido para poder enviar las bebidas.");
+      return;
+    }
+
     setEnviando(true);
     setMensaje(null);
 
     try {
-      const itemsCocina = carritoActual.filter(i => i.destino === 'cocina');
       const itemsBarra = carritoActual.filter(i => i.destino === 'barra');
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
 
       const promesas = [];
 
+      // ETIQUETAS "pagado: false" Y "estado: 'pendiente'" RESTAURADAS PARA EVITAR PEDIDOS FANTASMAS
       if (itemsCocina.length > 0) {
         promesas.push(
           supabase.from('comandas_cocina').insert([{
             ticket_number: ticketNum,
             mesa: `MESA ${mesaNum}`,
             tipo_destino: 'cocina',
+            estado: 'pendiente',
+            pagado: false,
             items: itemsCocina.map(i => ({ 
               nombre: i.nombre, 
               precio: Number(i.precio), 
               cantidad: i.cantidad, 
               variante: '', 
-              comentarios: '', 
+              comentarios: 'Pedido desde QR mesa', 
               es_menu: i.categoria === 'menus' 
             }))
           }])
@@ -242,12 +273,14 @@ export default function TableOrder() {
             ticket_number: ticketNum,
             mesa: `MESA ${mesaNum}`,
             tipo_destino: 'barra',
+            estado: 'pendiente',
+            pagado: false,
             items: itemsBarra.map(i => ({ 
               nombre: i.nombre, 
               precio: Number(i.precio), 
               cantidad: i.cantidad, 
               variante: '', 
-              comentarios: '' 
+              comentarios: 'Pedido desde QR mesa' 
             }))
           }])
         );
@@ -274,6 +307,7 @@ export default function TableOrder() {
         mesa: `MESA ${mesaNum}`,
         tipo_destino: 'cuenta',
         estado: 'pendiente',
+        pagado: false,
         items: [{ 
           nombre: '¡EL CLIENTE PIDE LA CUENTA!', 
           cantidad: 1, 
@@ -293,7 +327,6 @@ export default function TableOrder() {
   return (
     <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
       
-      {/* MODAL DE COMBOS / MENÚS FLOTANTE */}
       {comboActivo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
           <div className="w-full max-w-md bg-[#0d0f17] border border-cyan-500/30 rounded-3xl p-6 shadow-2xl animate-slide-up">
@@ -411,26 +444,46 @@ export default function TableOrder() {
           >
             ☕ Cafetería
           </button>
+          
           <button
-            onClick={() => setCategoriaActiva('tapeo')}
-            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'tapeo' ? 'bg-cyan-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
+            onClick={() => {
+              if (!cocinaAbierta) return;
+              setCategoriaActiva('tapeo');
+            }}
+            disabled={!cocinaAbierta}
+            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 ${
+              !cocinaAbierta 
+                ? 'bg-rose-950/20 text-rose-500/50 border border-rose-900/30 cursor-not-allowed opacity-60'
+                : categoriaActiva === 'tapeo' ? 'bg-cyan-500 text-slate-950 shadow-md font-black cursor-pointer' : 'bg-white/5 text-slate-400 cursor-pointer'
             }`}
           >
-            🍳 Cocina / Tapas
+            🍳 Cocina / Tapas {!cocinaAbierta && <Lock className="h-3 w-3" />}
           </button>
+          
           <button
-            onClick={() => setCategoriaActiva('menus')}
-            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-              categoriaActiva === 'menus' ? 'bg-cyan-500 text-slate-950 shadow-md font-black' : 'bg-white/5 text-slate-400'
+            onClick={() => {
+              if (!cocinaAbierta) return;
+              setCategoriaActiva('menus');
+            }}
+            disabled={!cocinaAbierta}
+            className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 ${
+              !cocinaAbierta 
+                ? 'bg-rose-950/20 text-rose-500/50 border border-rose-900/30 cursor-not-allowed opacity-60'
+                : categoriaActiva === 'menus' ? 'bg-cyan-500 text-slate-950 shadow-md font-black cursor-pointer' : 'bg-white/5 text-slate-400 cursor-pointer'
             }`}
           >
-            🍽️ Menús y Combos
+            🍽️ Menús y Combos {!cocinaAbierta && <Lock className="h-3 w-3" />}
           </button>
         </div>
 
         {loadingCarta ? (
           <div className="text-center py-20 text-slate-500 text-sm">Cargando carta...</div>
+        ) : !cocinaAbierta && (categoriaActiva === 'tapeo' || categoriaActiva === 'menus') ? (
+          <div className="text-center py-16 px-4 bg-rose-950/20 border border-rose-900/50 rounded-3xl">
+            <Lock className="h-10 w-10 text-rose-500 mx-auto mb-3 opacity-80" />
+            <h3 className="text-rose-400 font-bold text-lg mb-1">Cocina Cerrada</h3>
+            <p className="text-xs text-rose-300/70">En este momento solo estamos sirviendo productos de cafetería y bebida.</p>
+          </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {productosCarta

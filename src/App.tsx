@@ -203,6 +203,71 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans selection:bg-cyan-500 selection:text-black flex flex-col justify-between">
+      
+      {/* MENÚ FLOTANTE DOCK (Sin scroll) */}
+      {adminDesbloqueado && (
+        <div className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-[95%] sm:w-auto max-w-4xl bg-gradient-to-r from-[#0c0d14]/95 to-[#131722]/95 backdrop-blur-xl border border-cyan-500/50 p-3 sm:p-4 rounded-2xl shadow-[0_0_40px_rgba(0,242,254,0.3)] flex flex-wrap justify-center items-center gap-2 sm:gap-4 animate-slide-up">
+          <a 
+            href="#cocina" 
+            onClick={() => setSubdomainRoute('cocina')}
+            className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
+          >
+            <ChefHat className="h-4 w-4" /> Cocina
+          </a>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <a 
+            href="#barra" 
+            onClick={() => setSubdomainRoute('barra')}
+            className="flex items-center gap-1.5 hover:text-cyan-400 transition-colors cursor-pointer text-cyan-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-cyan-500/10"
+          >
+            <Coffee className="h-4 w-4" /> Barra
+          </a>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <a 
+            href="https://ventas.nexusgamingcenter.es" 
+            className="flex items-center gap-1.5 hover:text-sky-400 transition-colors text-sky-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-sky-500/10"
+          >
+            <TrendingUp className="h-4 w-4" /> TPV
+          </a>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <a 
+            href="https://equipo.nexusgamingcenter.es" 
+            className="flex items-center gap-1.5 hover:text-rose-400 transition-colors text-rose-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-rose-500/10"
+          >
+            <Lock className="h-4 w-4" /> Staff
+          </a>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <a 
+            href="#qr" 
+            onClick={(e) => {
+              e.preventDefault();
+              setSubdomainRoute('qr-generator');
+            }}
+            className="flex items-center gap-1.5 hover:text-emerald-400 transition-colors cursor-pointer text-emerald-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-emerald-500/10"
+          >
+            <QrCode className="h-4 w-4" /> Códigos QR
+          </a>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <a 
+            href="#camarero" 
+            onClick={(e) => {
+              e.preventDefault();
+              setSubdomainRoute('waiter');
+            }}
+            className="flex items-center gap-1.5 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10"
+          >
+            <Utensils className="h-4 w-4" /> Camareros
+          </a>
+          
+          <button
+            onClick={() => setAdminDesbloqueado(false)}
+            className="ml-auto flex items-center gap-1 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] uppercase font-bold cursor-pointer transition-colors"
+          >
+            <X className="h-3 w-3" /> Cerrar
+          </button>
+        </div>
+      )}
+
       <header className="border-b border-white/[0.06] bg-[#06070a]/90 backdrop-blur sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
           <div 
@@ -485,7 +550,7 @@ export default function App() {
         </main>
       )}
 
-      <section id="ubicacion" className="max-w-6xl mx-auto px-5 pb-12 w-full">
+      <section id="ubicacion" className="max-w-6xl mx-auto px-5 pb-24 w-full">
         <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/80 p-8 shadow-xl">
           <div className="grid gap-8 md:grid-cols-2">
             <div>
@@ -574,77 +639,19 @@ export default function App() {
             <span className="flex items-center gap-1">
               <Shield className="h-3.5 w-3.5" /> Empresa registrada
             </span>
-            <span>·</span>
-
-            {adminDesbloqueado ? (
-              <div className="flex items-center gap-3 bg-white/5 px-3 py-1.5 rounded-xl border border-white/10 flex-wrap">
-                <a 
-                  href="#cocina" 
-                  onClick={() => setSubdomainRoute('cocina')}
-                  className="flex items-center gap-1 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-bold text-xs"
-                >
-                  <ChefHat className="h-3.5 w-3.5" /> Cocina
-                </a>
+            
+            {!adminDesbloqueado && (
+              <>
                 <span>·</span>
-                <a 
-                  href="#barra" 
-                  onClick={() => setSubdomainRoute('barra')}
-                  className="flex items-center gap-1 hover:text-cyan-400 transition-colors cursor-pointer text-cyan-400 font-bold text-xs"
-                >
-                  <Coffee className="h-3.5 w-3.5" /> Barra
-                </a>
-                <span>·</span>
-                <a 
-                  href="https://ventas.nexusgamingcenter.es" 
-                  className="flex items-center gap-1 hover:text-sky-400 transition-colors text-sky-400 font-bold text-xs"
-                >
-                  <TrendingUp className="h-3.5 w-3.5" /> TPV
-                </a>
-                <span>·</span>
-                <a 
-                  href="https://equipo.nexusgamingcenter.es" 
-                  className="flex items-center gap-1 hover:text-rose-400 transition-colors text-rose-400 font-bold text-xs"
-                >
-                  <Lock className="h-3.5 w-3.5" /> Staff
-                </a>
-                <span>·</span>
-                <a 
-                  href="#qr" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setSubdomainRoute('qr-generator');
-                  }}
-                  className="flex items-center gap-1 hover:text-emerald-400 transition-colors cursor-pointer text-emerald-400 font-bold text-xs"
-                >
-                  <QrCode className="h-3.5 w-3.5" /> Códigos QR
-                </a>
-                <span>·</span>
-                <a 
-                  href="#camarero" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setSubdomainRoute('waiter');
-                  }}
-                  className="flex items-center gap-1 hover:text-amber-400 transition-colors cursor-pointer text-amber-400 font-bold text-xs"
-                >
-                  <Utensils className="h-3.5 w-3.5" /> Camareros
-                </a>
                 <button
-                  onClick={() => setAdminDesbloqueado(false)}
-                  className="text-slate-400 hover:text-white ml-2 text-[10px] uppercase font-bold underline cursor-pointer"
+                  onClick={() => setModalAdminOpen(true)}
+                  className="flex items-center gap-1 text-slate-600 hover:text-slate-400 transition-colors cursor-pointer bg-transparent border-0 text-xs"
+                  title="Área de Gestión Interna"
                 >
-                  Cerrar
+                  <Lock className="h-3 w-3" />
+                  <span>Área Interna</span>
                 </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setModalAdminOpen(true)}
-                className="flex items-center gap-1 text-slate-600 hover:text-slate-400 transition-colors cursor-pointer bg-transparent border-0 text-xs"
-                title="Área de Gestión Interna"
-              >
-                <Lock className="h-3 w-3" />
-                <span>Área Interna</span>
-              </button>
+              </>
             )}
           </div>
         </div>
