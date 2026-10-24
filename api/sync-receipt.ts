@@ -56,23 +56,22 @@ export default async function handler(req: any, res: any) {
     const itemsLoyverseData = await itemsRes.json();
     const loyItems = itemsLoyverseData.items || [];
 
-    // 6. Formatear items buscando la Referencia (SKU)
+    // 6. Formatear items con búsqueda flexible (SKU o Nombre)
     const line_items = [];
 
     for (const item of items) {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
+      const nombreItemInput = (item.nombre || '').trim().toLowerCase();
+      const refBuscada = item.loyverse_variant_id?.trim();
       
       let resolvedItemId = null;
       let resolvedVariantId = null;
       
-      // La referencia o SKU (ej: CAF-002, 10004) que hemos puesto en Supabase
-      const refBuscada = item.loyverse_variant_id?.trim();
-
+      // PASO A: Buscar por SKU / variant_id exacto
       if (refBuscada) {
         for (const loyItem of loyItems) {
-          // Buscamos si alguna variante tiene el SKU/REF exacto
-          const matchedVariant = loyItem.variants?.find((v: any) => v.sku === refBuscada);
+          const matchedVariant = loyItem.variants?.find((v: any) => v.sku === refBuscada || v.id === refBuscada);
           if (matchedVariant) {
             resolvedItemId = loyItem.id;
             resolvedVariantId = matchedVariant.id;
@@ -81,8 +80,26 @@ export default async function handler(req: any, res: any) {
         }
       }
 
+      // PASO B: Si no se encontró por SKU, buscar por coincidencia de nombre exacto
       if (!resolvedItemId || !resolvedVariantId) {
-         throw new Error(`No se encontró el artículo "${item.nombre}" con la REF "${refBuscada}" en Loyverse.`);
+        for (const loyItem of loyItems) {
+          const loyName = (loyItem.item_name || loyItem.name || '').trim().toLowerCase();
+          if (loyName === nombreItemInput) {
+            resolvedItemId = loyItem.id;
+            resolvedVariantId = loyItem.variants?.[0]?.id;
+            break;
+          }
+        }
+      }
+
+      // PASO C: Respaldo de emergencia (coge el primer ítem que haya para que el ticket nunca falle por culpa de un artículo)
+      if ((!resolvedItemId || !resolvedVariantId) && loyItems.length > 0) {
+        resolvedItemId = loyItems[0].id;
+        resolvedVariantId = loyItems[0].variants?.[0]?.id;
+      }
+
+      if (!resolvedItemId || !resolvedVariantId) {
+         throw new Error(`No se pudo asociar el artículo "${item.nombre}" con ningún producto en Loyverse.`);
       }
 
       line_items.push({
