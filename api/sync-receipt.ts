@@ -14,28 +14,32 @@ export default async function handler(req: any, res: any) {
   try {
     const { receipt_number, total_money, payment_type, items } = req.body;
 
-    // 1. Obtener Tienda, POS, Empleados, Tipos de Pago y el Catálogo COMPLETO de Loyverse en paralelo
-    const [storeRes, posRes, empRes, payRes, itemsRes] = await Promise.all([
+    // 1. Obtener Tienda, POS, Empleados, Tipos de Pago y Variantes directamente en paralelo
+    const [storeRes, posRes, empRes, payRes, variantsRes] = await Promise.all([
       fetch('https://api.loyverse.com/v1.0/stores', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/pos_devices', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/employees', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/payment_types', { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch('https://api.loyverse.com/v1.0/items?limit=250', { headers: { 'Authorization': `Bearer ${token}` } })
+      fetch('https://api.loyverse.com/v1.0/variants?limit=250', { headers: { 'Authorization': `Bearer ${token}` } })
     ]);
 
     const storeData = await storeRes.json();
     const posData = await posRes.json();
     const empData = await empRes.json();
     const payData = await payRes.json();
-    const itemsData = await itemsRes.json();
+    const variantsData = await variantsRes.json();
 
     const storeId = storeData.stores?.[0]?.id;
     const posId = posData.pos_devices?.[0]?.id;
     const empId = empData.employees?.[0]?.id;
-    const loyItems = itemsData.items || [];
+    const loyVariants = variantsData.variants || [];
 
     if (!storeId || !posId || !empId) {
       throw new Error(`Faltan datos base en Loyverse (Store: ${storeId}, POS: ${posId}, Emp: ${empId})`);
+    }
+
+    if (loyVariants.length === 0) {
+      throw new Error("No se encontraron variantes en Loyverse. Comprueba tu catálogo.");
     }
 
     // 2. Obtener Tipo de Pago
@@ -44,17 +48,9 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    if (loyItems.length === 0) {
-      throw new Error("El catálogo devuelto por Loyverse está vacío. Revisa tus artículos en Loyverse.");
-    }
+    const fallbackVariant = loyVariants[0];
 
-    // Comodín global de respaldo por si algún artículo no coincide exactamente
-    const fallbackVariantId = loyItems[0]?.variants?.[0]?.id;
-    if (!fallbackVariantId) {
-      throw new Error("No se encontró ninguna variante válida en el catálogo de Loyverse.");
-    }
-
-    // 3. Mapear los ítems buscando su variant_id real en el catálogo de Loyverse de forma inteligente
+    // 3. Mapear los ítems consultando el listado directo de variantes
     const line_items = [];
 
     for (const item of items) {
@@ -63,42 +59,29 @@ export default async function handler(req: any, res: any) {
       const nombreInput = (item.nombre || '').trim().toLowerCase();
       const variantIdEnviado = item.loyverse_variant_id?.trim();
 
-      let assignedVariantId = null;
+      let matchedVariant = null;
 
-      // Intento A: Si el variant_id enviado es un UUID válido de Loyverse, lo usamos directamente
-      if (variantIdEnviado && variantIdEnviado.length > 10 && !variantIdEnviado.startsWith('CAF-') && !variantIdEnviado.startsWith('SKU-')) {
-        assignedVariantId = variantIdEnviado;
+      // Intento A: Buscar por ID exacto de variante o SKU
+      if (variantIdEnviado) {
+        matchedVariant = loyVariants.find((v: any) => v.id === variantIdEnviado || v.sku === variantIdEnviado);
       }
 
-      // Intento B: Buscar en el catálogo remoto por SKU o ID de variante
-      if (!assignedVariantId && variantIdEnviado) {
-        for (const lItem of loyItems) {
-          const foundVar = lItem.variants?.find((v: any) => v.sku === variantIdEnviado || v.id === variantIdEnviado);
-          if (foundVar) {
-            assignedVariantId = foundVar.id;
-            break;
-          }
-        }
+      // Intento B: Buscar por nombre en las variantes
+      if (!matchedVariant) {
+        matchedVariant = loyVariants.find((v: any) => {
+          const vName = (v.name || v.item_name || '').trim().toLowerCase();
+          return vName === nombreInput || vName.includes(nombreInput) || nombreInput.includes(vName);
+        });
       }
 
-      // Intento C: Buscar en el catálogo remoto por coincidencia de nombre
-      if (!assignedVariantId) {
-        for (const lItem of loyItems) {
-          const lName = (lItem.item_name || lItem.name || '').trim().toLowerCase();
-          if (lName === nombreInput || lName.includes(nombreInput) || nombreInput.includes(lName)) {
-            assignedVariantId = lItem.variants?.[0]?.id;
-            break;
-          }
-        }
-      }
-
-      // Intento D: Respaldo absoluto para que el ticket nunca falle
-      if (!assignedVariantId) {
-        assignedVariantId = fallbackVariantId;
+      // Intento C: Respaldo de emergencia garantizado
+      if (!matchedVariant) {
+        matchedVariant = fallbackVariant;
       }
 
       line_items.push({
-        variant_id: assignedVariantId,
+        item_id: matchedVariant.item_id,
+        variant_id: matchedVariant.id,
         quantity: quantity,
         price: price,
         total_money: price * quantity
