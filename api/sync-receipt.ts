@@ -44,12 +44,12 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 3. Obtener una variante de respaldo global del catálogo por si algún producto no coincide
+    // 3. Obtener el primer elemento válido del catálogo como comodín principal si existe
     const fallbackItem = loyItems[0] || null;
     const fallbackVariantId = fallbackItem?.variants?.[0]?.id || null;
     const fallbackItemId = fallbackItem?.id || null;
 
-    // 4. Mapear cada artículo del ticket con tolerancia absoluta
+    // 4. Mapear cada artículo asegurando que siempre se inyecta un ID de variante real o el comodín
     const line_items = [];
 
     for (const item of items) {
@@ -62,7 +62,7 @@ export default async function handler(req: any, res: any) {
       let matchedVariant = null;
 
       if (loyItems.length > 0) {
-        // Búsqueda por SKU o ID exacto
+        // Intento 1: Buscar por SKU exacto o variant_id
         if (refBuscada) {
           for (const lItem of loyItems) {
             const v = lItem.variants?.find((varObj: any) => varObj.sku === refBuscada || varObj.id === refBuscada);
@@ -74,7 +74,7 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        // Búsqueda por coincidencia de nombre
+        // Intento 2: Buscar por nombre
         if (!matchedVariant) {
           for (const lItem of loyItems) {
             const lName = (lItem.item_name || lItem.name || '').trim().toLowerCase();
@@ -87,19 +87,20 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // Si no encuentra coincidencia pero hay productos en Loyverse, usa el primero
-      if (!matchedVariant && fallbackVariantId && fallbackItemId) {
+      // Si no hay coincidencia pero tenemos un comodín en el catálogo, lo usamos
+      if (!matchedVariant && fallbackVariantId) {
         matchedItem = fallbackItem;
         matchedVariant = fallbackItem.variants?.[0];
       }
 
-      // Si por completo el catálogo está vacío en la API, generamos un item directo utilizando los datos del TPV
-      const finalItemId = matchedItem?.id || fallbackItemId || "item-generico-nexus";
-      const finalVariantId = matchedVariant?.id || fallbackVariantId || "variant-generico-nexus";
+      // Si la API de Loyverse devolvió el catálogo vacío, lanzamos un aviso claro para revisar el Token de Vercel
+      if (!matchedVariant || !matchedVariant.id) {
+        throw new Error(`El catálogo de Loyverse está vacío o no accesible. Comprueba que el token de Loyverse en Vercel sea correcto y tenga permisos.`);
+      }
 
       line_items.push({
-        item_id: finalItemId,
-        variant_id: finalVariantId,
+        item_id: matchedItem.id,
+        variant_id: matchedVariant.id,
         quantity: quantity,
         price: price,
         total_money: price * quantity
