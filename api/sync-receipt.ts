@@ -49,28 +49,27 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 5. Cargar Items de Loyverse para resolver el item_id padre
-    const itemsRes = await fetch('https://api.loyverse.com/v1.0/items', {
+    // 5. Cargar Catálogo de Loyverse (ampliado a 250 items para asegurar que lee toda la carta)
+    const itemsRes = await fetch('https://api.loyverse.com/v1.0/items?limit=250', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const itemsLoyverseData = await itemsRes.json();
     const loyItems = itemsLoyverseData.items || [];
 
-    // 6. Formatear items de forma segura
-    const line_items = items.map((item: any) => {
+    // Función para normalizar nombres (quita tildes y mayúsculas para emparejar mejor)
+    const normalizeStr = (s: string) => s ? s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim() : "";
+
+    // 6. Formatear items de forma segura y estricta
+    const line_items = [];
+
+    for (const item of items) {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
       
-      const lineItem: any = {
-        quantity: quantity,
-        price: price,
-        total_money: price * quantity
-      };
-
       let resolvedItemId = null;
       let resolvedVariantId = item.loyverse_variant_id?.trim();
 
-      // Si tenemos variant_id, buscamos su item_id padre
+      // Buscar por variant_id si lo tenemos guardado
       if (resolvedVariantId) {
         for (const loyItem of loyItems) {
           if (loyItem.variants && loyItem.variants.some((v: any) => v.id === resolvedVariantId)) {
@@ -80,10 +79,11 @@ export default async function handler(req: any, res: any) {
         }
       } 
       
-      // Si no lo encuentra por ID, lo busca por nombre exacto
+      // Si no, buscar por nombre exacto normalizado
       if (!resolvedItemId) {
+        const nomBuscado = normalizeStr(item.nombre);
         for (const loyItem of loyItems) {
-          if (loyItem.item_name.toLowerCase() === item.nombre.toLowerCase()) {
+          if (normalizeStr(loyItem.item_name) === nomBuscado) {
             resolvedItemId = loyItem.id;
             resolvedVariantId = loyItem.variants?.[0]?.id;
             break;
@@ -91,18 +91,21 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // Si encuentra la pareja de IDs la asigna, si no, lo pasa como artículo libre
-      if (resolvedItemId && resolvedVariantId) {
-        lineItem.item_id = resolvedItemId;
-        lineItem.variant_id = resolvedVariantId;
-      } else {
-        lineItem.item_name = (item.nombre || "Artículo de barra/cocina").substring(0, 50);
+      // Validación estricta: Si no lo encontramos, cortamos y avisamos al camarero
+      if (!resolvedItemId || !resolvedVariantId) {
+         throw new Error(`El artículo "${item.nombre}" no existe en Loyverse o el nombre no coincide exactamente.`);
       }
 
-      return lineItem;
-    });
+      line_items.push({
+        item_id: resolvedItemId,
+        variant_id: resolvedVariantId,
+        quantity: quantity,
+        price: price,
+        total_money: price * quantity
+      });
+    }
 
-    // 7. Construir paquete final DIRECTO en la raíz
+    // 7. Construir paquete final
     const payload = {
       store_id: storeId,
       pos_id: posId,
