@@ -1,6 +1,18 @@
 // api/sync-receipt.ts
 declare var process: any;
 
+// Función auxiliar para limpiar nombres (quita tildes, barras, espacios extra y pasa a minúsculas)
+function normalizar(texto: string) {
+  if (!texto) return '';
+  return texto
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // Elimina tildes
+    .replace(/[/\\-_]/g, " ")       // Sustituye barras y guiones por espacios
+    .replace(/\s+/g, " ")           // Espacios múltiples a uno solo
+    .trim();
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -56,19 +68,19 @@ export default async function handler(req: any, res: any) {
     const itemsLoyverseData = await itemsRes.json();
     const loyItems = itemsLoyverseData.items || [];
 
-    // 6. Formatear items con búsqueda flexible (SKU o Nombre)
+    // 6. Formatear items con coincidencia ultratolerante y respaldo
     const line_items = [];
 
     for (const item of items) {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
-      const nombreItemInput = (item.nombre || '').trim().toLowerCase();
+      const nombreLimpioInput = normalizar(item.nombre);
       const refBuscada = item.loyverse_variant_id?.trim();
       
       let resolvedItemId = null;
       let resolvedVariantId = null;
       
-      // PASO A: Buscar por SKU / variant_id exacto
+      // Intento A: Buscar por SKU o variant_id exacto
       if (refBuscada) {
         for (const loyItem of loyItems) {
           const matchedVariant = loyItem.variants?.find((v: any) => v.sku === refBuscada || v.id === refBuscada);
@@ -80,11 +92,11 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // PASO B: Si no se encontró por SKU, buscar por coincidencia de nombre exacto
+      // Intento B: Buscar por nombre normalizado exacto
       if (!resolvedItemId || !resolvedVariantId) {
         for (const loyItem of loyItems) {
-          const loyName = (loyItem.item_name || loyItem.name || '').trim().toLowerCase();
-          if (loyName === nombreItemInput) {
+          const loyNameNorm = normalizar(loyItem.item_name || loyItem.name);
+          if (loyNameNorm === nombreLimpioInput) {
             resolvedItemId = loyItem.id;
             resolvedVariantId = loyItem.variants?.[0]?.id;
             break;
@@ -92,7 +104,19 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // PASO C: Respaldo de emergencia (coge el primer ítem que haya para que el ticket nunca falle por culpa de un artículo)
+      // Intento C: Búsqueda parcial (si contiene parte del nombre, ej: "cafe con leche")
+      if (!resolvedItemId || !resolvedVariantId) {
+        for (const loyItem of loyItems) {
+          const loyNameNorm = normalizar(loyItem.item_name || loyItem.name);
+          if (loyNameNorm.includes(nombreLimpioInput) || nombreLimpioInput.includes(loyNameNorm)) {
+            resolvedItemId = loyItem.id;
+            resolvedVariantId = loyItem.variants?.[0]?.id;
+            break;
+          }
+        }
+      }
+
+      // Intento D: Respaldo absoluto de emergencia para que el ticket NUNCA falle
       if ((!resolvedItemId || !resolvedVariantId) && loyItems.length > 0) {
         resolvedItemId = loyItems[0].id;
         resolvedVariantId = loyItems[0].variants?.[0]?.id;
@@ -111,7 +135,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // 7. Construir paquete final
+    // 7. Construir paquete final para Loyverse
     const payload = {
       store_id: storeId,
       pos_id: posId,
