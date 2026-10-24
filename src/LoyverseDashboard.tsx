@@ -133,57 +133,44 @@ export default function LoyverseDashboard() {
           const categoriaLocal = catNombre.includes('cocina') ? 'tapeo' : 'bebidas';
           
           const mainVariant = item.variants && item.variants.length > 0 ? item.variants[0] : {};
-          const skuRef = mainVariant.sku || mainVariant.variant_id || item.id;
+          const skuRef = mainVariant.sku || mainVariant.variant_id || '';
           const precioItem = Number(mainVariant.price || item.price || 3.00);
 
-          const { data: existentePorSku } = await supabase
+          // Buscamos estrictamente por nombre exacto en Supabase
+          const { data: existente } = await supabase
             .from('productos_carta')
             .select('id')
-            .eq('loyverse_variant_id', skuRef)
+            .eq('nombre', nombreItem)
             .maybeSingle();
 
-          if (existentePorSku) {
-            await supabase
+          if (existente) {
+            // Si ya existe exactamente con ese nombre, actualizamos su precio y su REF
+            const { error: errUpdate } = await supabase
               .from('productos_carta')
               .update({
-                nombre: nombreItem,
-                precio: precioItem
+                precio: precioItem,
+                loyverse_variant_id: skuRef
               })
-              .eq('id', existentePorSku.id);
-            actualizados++;
+              .eq('id', existente.id);
+
+            if (!errUpdate) actualizados++;
           } else {
-            const { data: existentePorNombre } = await supabase
+            // Si NO existe, lo insertamos como un artículo nuevo obligatorio
+            const { error: errInsert } = await supabase
               .from('productos_carta')
-              .select('id')
-              .eq('nombre', nombreItem)
-              .maybeSingle();
+              .insert([{
+                nombre: nombreItem,
+                precio: precioItem,
+                categoria: categoriaLocal,
+                destino: destinoAsignado,
+                activo: true,
+                loyverse_variant_id: skuRef
+              }]);
 
-            if (existentePorNombre) {
-              await supabase
-                .from('productos_carta')
-                .update({
-                  precio: precioItem,
-                  loyverse_variant_id: skuRef
-                })
-                .eq('id', existentePorNombre.id);
-              actualizados++;
+            if (!errInsert) {
+              agregados++;
             } else {
-              const { error: errInsert } = await supabase
-                .from('productos_carta')
-                .insert([{
-                  nombre: nombreItem,
-                  precio: precioItem,
-                  categoria: categoriaLocal,
-                  destino: destinoAsignado,
-                  activo: true,
-                  loyverse_variant_id: skuRef
-                }]);
-
-              if (!errInsert) {
-                agregados++;
-              } else {
-                console.error("Error al insertar el artículo:", nombreItem, errInsert.message);
-              }
+              console.error("Error al insertar:", nombreItem, errInsert.message);
             }
           }
         }
