@@ -55,7 +55,6 @@ interface IngredienteEscandalloUI {
 }
 
 export default function LoyverseDashboard({ onBack }: BackofficeProps) {
-  // Control de Acceso Exclusivo para Rol Administrador
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
   const [pinAdminLogin, setPinAdminLogin] = useState('');
   const [errorLoginAdmin, setErrorLoginAdmin] = useState('');
@@ -76,7 +75,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const [mensajeAlerta, setMensajeAlerta] = useState<{ texto: string; tipo: 'ok' | 'error' } | null>(null);
 
-  // Estado Pestaña 1 & 2: Tickets, Ventas del Día y Cuadres de Caja
   const [ticketsHistorico, setTicketsHistorico] = useState<any[]>([]);
   const [fechaFiltroInicio, setFechaFiltroInicio] = useState<string>(new Date().toISOString().split('T')[0]);
   const [fechaFiltroFin, setFechaFiltroFin] = useState<string>(new Date().toISOString().split('T')[0]);
@@ -85,13 +83,11 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [cajaHoy, setCajaHoy] = useState<any | null>(null);
   const [cierresTrabajadores, setCierresTrabajadores] = useState<any[]>([]);
 
-  // Estado Pestaña 3: Artículos, Categorías y Escandallos
   const [articulosMaestro, setArticulosMaestro] = useState<any[]>([]);
   const [categorias, setCategorias] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas', 'Materia Prima (Interno)']);
   const [nuevaCategoriaInput, setNuevaCategoriaInput] = useState('');
   const [filtroArticulos, setFiltroArticulos] = useState('');
 
-  // Formulario de Creación / Edición de Artículo
   const [editandoArticuloId, setEditandoArticuloId] = useState<string | null>(null);
   const [artNombre, setArtNombre] = useState('');
   const [artCategoria, setArtCategoria] = useState('Cafetería');
@@ -109,13 +105,11 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [artEsCompuesto, setArtEsCompuesto] = useState(false);
   const [lineasEscandallo, setLineasEscandallo] = useState<IngredienteEscandalloUI[]>([]);
 
-  // Selector temporal para añadir ingrediente al escandallo
   const [ingredienteSelId, setIngredienteSelId] = useState('');
   const [ingredienteCantidad, setIngredienteCantidad] = useState('1');
   const [ingredienteUnidadUso, setIngredienteUnidadUso] = useState<UnidadMedida>('g');
   const [ingredienteMerma, setIngredienteMerma] = useState('0');
 
-  // Estado Pestaña 4: Inventario y Recepción de Compras
   const [movimientosStock, setMovimientosStock] = useState<any[]>([]);
   const [compraArticuloId, setCompraArticuloId] = useState('');
   const [compraCantidad, setCompraCantidad] = useState('');
@@ -238,7 +232,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     if (arts && arts.length > 0) {
       setArticulosMaestro(arts);
     } else {
-      // Si articulos_cafeteria está vacía la primera vez, importamos automáticamente los productos actuales de productos_carta
       const { data: cartaExistente } = await supabase.from('productos_carta').select('*');
       if (cartaExistente && cartaExistente.length > 0) {
         for (const p of cartaExistente) {
@@ -247,7 +240,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             .insert([
               {
                 nombre: p.nombre,
-                categoria: p.categoria === 'tapeo' ? 'Tapas' : p.categoria === 'menus' ? 'Menús/Combos' : 'Cafetería',
+                categoria: p.categoria || 'Cafetería',
+                destino: p.destino || 'barra',
                 precio_venta: Number(p.precio || 0),
                 coste_unitario: Number(p.coste_unitario || 0),
                 unidad_medida: p.unidad_medida || 'ud',
@@ -287,7 +281,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-  // Recalcular automáticamente el coste unitario cuando el artículo es compuesto (Escandallo)
   useEffect(() => {
     if (artEsCompuesto) {
       const sumaCosteEscandallo = lineasEscandallo.reduce((acc, l) => acc + l.coste_calculado, 0);
@@ -357,6 +350,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setEditandoArticuloId(art.id);
     setArtNombre(art.nombre);
     setArtCategoria(art.categoria || 'Cafetería');
+    setArtDestino(art.destino || 'barra');
     setArtImagenUrl(art.imagen_url || '');
     setArtCodigoBarras(art.codigo_barras || '');
     setArtPrecioVenta(String(art.precio_venta || 0));
@@ -403,7 +397,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-  // Subida gratuita de imagen de producto a Supabase Storage (o DataURL si el bucket no existe)
   const manejarSubidaImagen = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -418,7 +411,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       setArtImagenUrl(pubUrl.publicUrl);
       notificar('Imagen subida correctamente a Supabase Storage.');
     } else {
-      // Fallback automático gratuito en Base64 comprimido si el usuario aún no creó el bucket público 'productos'
       const reader = new FileReader();
       reader.onloadend = () => {
         if (typeof reader.result === 'string') {
@@ -430,7 +422,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-  // Guardar / Actualizar Artículo y Sincronizar Automáticamente en Supabase (articulos_cafeteria + productos_carta + escandallos)
   const guardarYSincronizarArticulo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!artNombre.trim()) return;
@@ -447,6 +438,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       const payloadMaestro = {
         nombre: artNombre.trim(),
         categoria: artCategoria,
+        destino: artDestino,
         imagen_url: artImagenUrl.trim(),
         codigo_barras: artCodigoBarras.trim(),
         precio_venta: precioNum,
@@ -491,7 +483,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         }
       }
 
-      // Actualizar tabla de Escandallos si es un artículo compuesto
       if (articuloIdFinal) {
         await supabase.from('escandallos_cafeteria').delete().eq('articulo_padre_id', articuloIdFinal);
 
@@ -506,7 +497,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           await supabase.from('escandallos_cafeteria').insert(filasEsc);
         }
 
-        // Sincronizar automáticamente con productos_carta para que aparezca al instante en el TPV y en los QR de las mesas
         const payloadCarta = {
           nombre: artNombre.trim(),
           precio: precioNum,
@@ -541,8 +531,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       notificar(
         editandoArticuloId
-          ? `Artículo "${artNombre}" modificado y sincronizado automáticamente en Supabase.`
-          : `Artículo "${artNombre}" creado y sincronizado automáticamente en TPV y QR.`
+          ? `Artículo "${artNombre}" modificado y sincronizado correctamente.`
+          : `Artículo "${artNombre}" creado y sincronizado correctamente en TPV.`
       );
       limpiarFormularioArticulo();
       cargarArticulosYCategorias();
@@ -558,10 +548,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setCategorias((prev) => [...prev, nombreLimpio]);
     setArtCategoria(nombreLimpio);
     setNuevaCategoriaInput('');
-    notificar(`Categoría "${nombreLimpio}" añadida.`);
+    notificar(`Categoría visual "${nombreLimpio}" añadida.`);
   };
 
-  // Registrar Compra de Mercancía y Sumar al Stock Real automáticamente
   const registrarCompraMercancia = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!compraArticuloId) return;
@@ -591,7 +580,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         })
         .eq('id', compraArticuloId);
 
-      // Sincronizar también el stock en productos_carta
       await supabase
         .from('productos_carta')
         .update({
@@ -637,7 +625,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     notificar('Datos fiscales y PIN de autorización actualizados correctamente.');
   };
 
-  // Pantalla de bloqueo si no es Administrador
   if (!adminVerificado) {
     return (
       <div className="min-h-screen bg-[#050609] flex items-center justify-center p-4">
@@ -681,7 +668,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     );
   }
 
-  // Cálculos Analíticos para la Pestaña de Ventas del Día e Histórico
   const ticketsFiltrados = ticketsHistorico.filter((t) => {
     const coincideSerie = filtroSerie === 'TODAS' || t.serie === filtroSerie;
     const texto = `${t.numero_completo} ${t.vendedor_nombre} ${t.mesa} ${t.cliente_nif || ''} ${t.cliente_nombre_razon || ''}`.toLowerCase();
@@ -698,10 +684,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const numOperacionesValidas = ticketsFiltrados.filter((t) => t.serie === 'T').length;
   const ticketMedioPeriodo = numOperacionesValidas > 0 ? totalFacturadoPeriodo / numOperacionesValidas : 0;
 
-  // Agrupación de Ventas por Vendedor y Ticket Medio por Vendedor
   const mapaVendedores: Record<string, { nombre: string; operaciones: number; total: number }> = {};
   ticketsFiltrados.forEach((t) => {
-    if (t.serie === 'F') return; // Evitar duplicar importe en canje nominativo
+    if (t.serie === 'F') return;
     const vend = t.vendedor_nombre || 'Sin asignar';
     if (!mapaVendedores[vend]) {
       mapaVendedores[vend] = { nombre: vend, operaciones: 0, total: 0 };
@@ -711,7 +696,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   });
   const ventasPorVendedor = Object.values(mapaVendedores).sort((a, b) => b.total - a.total);
 
-  // Agrupación de Ventas por Horas (00:00 a 23:00)
   const mapaHoras: Record<string, { hora: string; operaciones: number; total: number }> = {};
   ticketsFiltrados.forEach((t) => {
     if (t.serie === 'F') return;
@@ -759,7 +743,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         </div>
       </header>
 
-      {/* Navegación de las Pantallas del Backoffice */}
       <div className="max-w-7xl w-full mx-auto mb-6 flex flex-wrap gap-2 border-b border-white/10 pb-4">
         <button
           onClick={() => setPestanaActiva('ventas_dia')}
@@ -821,9 +804,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           </div>
         )}
 
-        {/* ====================================================================
-            PANTALLA 1: HISTÓRICO DE VENTAS DEL DÍA, VENDEDORES, HORAS Y CUADRE
-           ==================================================================== */}
         {pestanaActiva === 'ventas_dia' && (
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4 bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
@@ -844,7 +824,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </span>
             </div>
 
-            {/* Cuadro Resumen con Total Operaciones, Efectivo, Tarjeta y Ticket Medio */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-1">
                 <div className="flex justify-between text-xs text-slate-400 font-bold uppercase">
@@ -884,7 +863,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Ventas por Vendedor y Ticket Medio */}
               <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
                 <div className="flex items-center gap-2 text-amber-400 border-b border-white/10 pb-3">
                   <Users className="h-5 w-5" />
@@ -918,7 +896,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 )}
               </div>
 
-              {/* Ventas por Tramo Horario */}
               <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
                 <div className="flex items-center gap-2 text-cyan-400 border-b border-white/10 pb-3">
                   <Clock className="h-5 w-5" />
@@ -945,7 +922,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
             </div>
 
-            {/* Cuadre y Auditoría de Cierres de Caja de los Trabajadores */}
             <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
               <div className="flex items-center justify-between border-b border-white/10 pb-3">
                 <div className="flex items-center gap-2 text-emerald-400">
@@ -1022,9 +998,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           </div>
         )}
 
-        {/* ====================================================================
-            PANTALLA 2: HISTÓRICO DE TICKETS Y FACTURAS (EXPORTACIÓN PDF Y EXCEL)
-           ==================================================================== */}
         {pestanaActiva === 'historico_tickets' && (
           <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-5">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/10 pb-4">
@@ -1172,19 +1145,15 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           </div>
         )}
 
-        {/* ====================================================================
-            PANTALLA 3: CREACIÓN DE ARTÍCULOS, IMÁGENES, UNIDADES Y ESCANDALLOS
-           ==================================================================== */}
         {pestanaActiva === 'articulos_escandallos' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Formulario Creador / Editor con Escandallo */}
             <form
               onSubmit={guardarYSincronizarArticulo}
               className="lg:col-span-7 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-5"
             >
               <div className="flex items-center justify-between border-b border-white/10 pb-3">
                 <h3 className="font-black text-white text-base">
-                  {editandoArticuloId ? '✏️ Editando Artículo (Sincronización Activa)' : '➕ Crear Nuevo Artículo / Receta'}
+                  {editandoArticuloId ? '✏️ Editando Artículo' : '➕ Crear Nuevo Artículo / Receta'}
                 </h3>
                 {editandoArticuloId && (
                   <button
@@ -1203,15 +1172,16 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   <input
                     type="text"
                     required
-                    placeholder="Ej: Café con Leche / Bolsa Café 1kg"
+                    placeholder="Ej: Café con Leche / Tapa Salmorejo"
                     value={artNombre}
                     onChange={(e) => setArtNombre(e.target.value)}
                     className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-bold"
                   />
                 </div>
 
+                {/* CATEGORÍA VISUAL (PARA LAS PESTAÑAS DEL TPV DE CAMAREROS) */}
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">Categoría</label>
+                  <label className="font-bold text-slate-300 block mb-1">Categoría Visual (Pestaña TPV)</label>
                   <div className="flex gap-1.5">
                     <select
                       value={artCategoria}
@@ -1241,14 +1211,25 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   </div>
                 </div>
 
+                {/* DESTINO FÍSICO KDS (COCINA O BARRA) */}
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">
-                    Unidad de Medida Base (Peso / Volumen / Ud)
-                  </label>
+                  <label className="font-bold text-slate-300 block mb-1">Destino KDS (Pantalla de Impresión)</label>
+                  <select
+                    value={artDestino}
+                    onChange={(e) => setArtDestino(e.target.value as 'barra' | 'cocina')}
+                    className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-cyan-300 font-bold"
+                  >
+                    <option value="barra">Barra</option>
+                    <option value="cocina">Cocina</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-300 block mb-1">Unidad de Medida Base</label>
                   <select
                     value={artUnidadMedida}
                     onChange={(e) => setArtUnidadMedida(e.target.value as UnidadMedida)}
-                    className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-3 py-2.5 text-amber-300 font-bold"
+                    className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-amber-300 font-bold"
                   >
                     <option value="ud">Unidad (ud)</option>
                     <option value="kg">Kilogramos (kg)</option>
@@ -1318,7 +1299,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 </div>
               </div>
 
-              {/* Opciones de Inventario, Visibilidad TPV y Destino KDS */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-2xl bg-black/40 border border-white/10 text-xs">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -1352,7 +1332,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
 
               {artControlaStock && !artEsCompuesto && (
-                <div className="grid grid-cols-3 gap-3 p-3.5 rounded-2xl bg-cyan-950/20 border border-cyan-500/30 text-xs">
+                <div className="grid grid-cols-2 gap-3 p-3.5 rounded-2xl bg-cyan-950/20 border border-cyan-500/30 text-xs">
                   <div>
                     <label className="font-bold text-cyan-300 block mb-1">
                       Stock Inicial / Actual ({artUnidadMedida})
@@ -1375,21 +1355,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                       className="w-full bg-black/60 border border-white/20 rounded-xl px-3 py-2 text-white font-mono"
                     />
                   </div>
-                  <div>
-                    <label className="font-bold text-slate-300 block mb-1">Destino Comanda</label>
-                    <select
-                      value={artDestino}
-                      onChange={(e) => setArtDestino(e.target.value as 'barra' | 'cocina')}
-                      className="w-full bg-black/60 border border-white/20 rounded-xl px-3 py-2 text-white"
-                    >
-                      <option value="barra">Barra</option>
-                      <option value="cocina">Cocina</option>
-                    </select>
-                  </div>
                 </div>
               )}
 
-              {/* CONSTRUCTOR DE ESCANDALLO PRECISO POR PESOS / VOLÚMENES / UNIDADES */}
               {artEsCompuesto && (
                 <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/40 space-y-4 text-xs">
                   <div className="flex items-center justify-between">
@@ -1517,7 +1485,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </button>
             </form>
 
-            {/* Listado de Artículos Creados para Editar al Instante */}
             <div className="lg:col-span-5 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
               <div className="flex items-center justify-between border-b border-white/10 pb-3">
                 <h3 className="font-bold text-white text-sm">Catálogo Sincronizado ({articulosMaestro.length})</h3>
@@ -1563,8 +1530,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                             )}
                           </div>
                           <div className="text-[11px] text-slate-400">
-                            {art.categoria} · PVP: <strong className="text-emerald-400">{Number(art.precio_venta).toFixed(2)}€</strong> ·
-                            Coste: <strong className="text-amber-400">{Number(art.coste_unitario).toFixed(3)}€/{art.unidad_medida}</strong>
+                            Pestaña: <strong className="text-cyan-300">{art.categoria}</strong> · Destino:{' '}
+                            <strong className="text-amber-300 uppercase">{art.destino || 'barra'}</strong> · PVP:{' '}
+                            <strong className="text-emerald-400">{Number(art.precio_venta).toFixed(2)}€</strong>
                           </div>
                         </div>
                       </div>
@@ -1583,13 +1551,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           </div>
         )}
 
-        {/* ====================================================================
-            PANTALLA 4: INVENTARIO / STOCK REAL Y RECEPCIÓN DE COMPRAS
-           ==================================================================== */}
         {pestanaActiva === 'inventario_compras' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Formulario de Entrada de Compras de Mercancía */}
               <form
                 onSubmit={registrarCompraMercancia}
                 className="lg:col-span-5 p-6 rounded-3xl bg-[#0d0f17] border border-emerald-500/30 space-y-4 text-xs"
@@ -1677,7 +1641,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 </button>
               </form>
 
-              {/* Tabla de Stock Real de Todos los Artículos */}
               <div className="lg:col-span-7 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
                   <h3 className="font-bold text-white text-sm">Estado del Stock Real por Artículo</h3>
@@ -1697,7 +1660,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                     <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
                       <tr>
                         <th className="p-2.5">Artículo</th>
-                        <th className="p-2.5">Categoría</th>
+                        <th className="p-2.5">Pestaña TPV</th>
                         <th className="p-2.5 text-right">Coste Unit.</th>
                         <th className="p-2.5 text-right">Stock Real Actual</th>
                         <th className="p-2.5 text-right">Estado</th>
@@ -1742,7 +1705,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
             </div>
 
-            {/* Historial de Movimientos y Compras de Stock */}
             <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-3">
               <h3 className="font-bold text-white text-sm">Últimos Movimientos de Inventario (Compras, Ventas y Escandallos)</h3>
               <div className="overflow-x-auto max-h-60">
@@ -1791,9 +1753,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           </div>
         )}
 
-        {/* ====================================================================
-            PANTALLA 5: CONFIGURACIÓN FISCAL DEL TICKET Y PIN MAESTRO ADMIN
-           ==================================================================== */}
         {pestanaActiva === 'datos_fiscales' && (
           <form
             onSubmit={guardarConfiguracionFiscal}

@@ -125,12 +125,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
 
-  // Estados de Descuentos por Mesa y Línea (Requiere Autorización de Administrador)
   const [descuentosLineas, setDescuentosLineas] = useState<Record<string, number>>({});
   const [descuentoGeneralMesa, setDescuentoGeneralMesa] = useState<Record<string, number>>({});
   const [autorizadorDescuentoMesa, setAutorizadorDescuentoMesa] = useState<Record<string, string>>({});
 
-  // Modal de Autorización de Administrador para Descuentos
   const [modalAuthDescuento, setModalAuthDescuento] = useState<{
     abierto: boolean;
     tipo: 'linea' | 'general';
@@ -140,7 +138,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     pinAdmin: string;
   } | null>(null);
 
-  // Modal Factura Rectificativa Simplificada (Anulación / Devolución legal)
   const [modalRectificativa, setModalRectificativa] = useState<{
     factura: any;
     motivo: string;
@@ -148,7 +145,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     procesando: boolean;
   } | null>(null);
 
-  // Modal Conversión a Factura Nominativa Completa
   const [modalFacturaNominativa, setModalFacturaNominativa] = useState<{
     factura: any;
     razonSocial: string;
@@ -1509,6 +1505,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </button>
             </div>
 
+            {/* Pestañas con la Categoría Visual Independiente */}
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
               {categoriasDisponibles.map((cat) => (
                 <button
@@ -1529,19 +1526,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {productosCarta
                   .filter((p) => {
-                    const catProd = (p.categoria || '').toLowerCase();
-                    const catSel = categoriaActiva.toLowerCase();
-                    if (catProd === catSel) return true;
-                    if (catSel.includes('cafeter') || catSel.includes('bebida')) {
-                      return catProd.includes('bebida') || catProd.includes('caf');
-                    }
-                    if (catSel.includes('tapa')) {
-                      return catProd.includes('tapeo') || catProd.includes('tapa');
-                    }
-                    if (catSel.includes('men') || catSel.includes('combo')) {
-                      return catProd.includes('menu') || catProd.includes('combo');
-                    }
-                    return true;
+                    const catProd = (p.categoria || '').trim().toLowerCase();
+                    const catActiva = categoriaActiva.trim().toLowerCase();
+                    // Filtro estricto por categoría visual (separado del destino físico de KDS)
+                    return catProd === catActiva;
                   })
                   .map((prod) => (
                     <div
@@ -1564,17 +1552,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                             <span className="font-mono text-amber-400 font-bold text-xs">
                               {Number(prod.precio).toFixed(2)} €
                             </span>
-                            {prod.controla_stock && (
-                              <span
-                                className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
-                                  Number(prod.stock_actual) > 0
-                                    ? 'bg-emerald-950/50 text-emerald-400'
-                                    : 'bg-rose-950/50 text-rose-400'
-                                }`}
-                              >
-                                Stock: {Number(prod.stock_actual).toFixed(0)} {prod.unidad_medida || 'ud'}
-                              </span>
-                            )}
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400 uppercase">
+                              {prod.destino || 'barra'}
+                            </span>
                           </div>
                         </div>
                       </div>
