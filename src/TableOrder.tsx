@@ -121,8 +121,6 @@ export default function TableOrder() {
 
     if (data && data.length > 0) {
       setProductosCarta(data as Producto[]);
-      
-      // Extraer categorías únicas dinámicamente de los productos cargados
       const catsUnicas = Array.from(new Set(data.map((p: any) => p.categoria || 'Cafetería'))) as string[];
       if (catsUnicas.length > 0) {
         setCategoriasDisponibles(catsUnicas);
@@ -293,10 +291,15 @@ export default function TableOrder() {
       await Promise.all(promesas);
       
       setCarritoActual([]);
-      setMensaje('¡Pedido enviado a cocina y barra correctamente!');
+      setMensaje('¡Pedido enviado! Actualizando cuenta en unos segundos...');
+
+      // Recarga automática a los 4 segundos
+      setTimeout(() => {
+        window.location.reload();
+      }, 4000);
+
     } catch (err: any) {
       setMensaje('Error al enviar el pedido: ' + err.message);
-    } finally {
       setEnviando(false);
     }
   };
@@ -345,7 +348,7 @@ export default function TableOrder() {
                   setPasoComboActual(0); 
                   setSeleccionesCombo({}); 
                 }} 
-                className="text-slate-400 hover:text-white bg-white/5 p-1.5 rounded-lg transition-colors"
+                className="text-slate-400 hover:text-white bg-white/5 p-1.5 rounded-lg transition-colors cursor-pointer"
               >
                 <X className="h-5 w-5"/>
               </button>
@@ -370,7 +373,7 @@ export default function TableOrder() {
                             confirmarCombo(nuevasSel);
                          }
                       }}
-                      className="p-4 rounded-xl border border-white/10 bg-black/60 hover:border-cyan-400 hover:bg-cyan-950/40 text-left transition-all flex items-center justify-between group"
+                      className="p-4 rounded-xl border border-white/10 bg-black/60 hover:border-cyan-400 hover:bg-cyan-950/40 text-left transition-all flex items-center justify-between group cursor-pointer"
                     >
                       <span className="font-bold text-slate-200 text-sm group-hover:text-cyan-400">{opcion.nombre}</span>
                       <Plus className="h-4 w-4 text-slate-600 group-hover:text-cyan-400" />
