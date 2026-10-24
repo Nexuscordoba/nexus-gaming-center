@@ -1,3 +1,4 @@
+// src/App.tsx
 import React, { useState, useEffect } from 'react';
 import { 
   Coffee, 
@@ -39,7 +40,7 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
   
-  // Nuevo estado para controlar el submenú de Cafetería en el Dock
+  // Estado para controlar el submenú de Cafetería en el Dock
   const [showCafeteriaMenu, setShowCafeteriaMenu] = useState(false);
 
   const [categoriaCarta, setCategoriaCarta] = useState<'desayunos' | 'tapeo' | 'meriendas' | 'bebidas'>('desayunos');
@@ -55,7 +56,7 @@ export default function App() {
       } else if (hostname.startsWith('escape.')) {
         setSubdomainRoute('escape');
         return;
-      } else if (hostname.startsWith('ventas.') || hostname.startsWith('tpv.')) {
+      } else if (hostname.startsWith('ventas.') || hostname.startsWith('tpv.') || hostname.startsWith('backoffice.')) {
         setSubdomainRoute('ventas');
         return;
       } else if (hostname.startsWith('cocina.')) {
@@ -78,8 +79,10 @@ export default function App() {
         setSubdomainRoute('staff');
       } else if (hash === '#escape' || hash === '#escaperooms') {
         setSubdomainRoute('escape');
-      } else if (hash === '#ventas' || hash === '#tpv') {
+      } else if (hash === '#backoffice' || hash === '#/backoffice' || hash === '#ventas' || hash === '#tpv') {
         setSubdomainRoute('ventas');
+        setAdminDesbloqueado(true);
+        setShowCafeteriaMenu(true);
       } else if (hash === '#cocina' || hash === '#/cocina') {
         setSubdomainRoute('cocina');
       } else if (hash === '#barra' || hash === '#/barra') {
@@ -156,7 +159,14 @@ export default function App() {
   }
 
   if (subdomainRoute === 'ventas') {
-    return <LoyverseDashboard />;
+    return (
+      <LoyverseDashboard
+        onBack={() => {
+          window.location.hash = '';
+          setSubdomainRoute('main');
+        }}
+      />
+    );
   }
 
   if (subdomainRoute === 'cocina') {
@@ -214,7 +224,7 @@ export default function App() {
         <div className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-max max-w-[95%] bg-gradient-to-r from-[#0c0d14]/95 to-[#131722]/95 backdrop-blur-xl border border-cyan-500/50 p-3 sm:p-4 rounded-2xl shadow-[0_0_40px_rgba(0,242,254,0.3)] flex flex-wrap justify-center items-center gap-2 sm:gap-4 animate-slide-up">
           
           {showCafeteriaMenu ? (
-            /* SUBMENÚ DE CAFETERÍA */
+            /* SUBMENÚ DE CAFETERÍA (INCLUYE BACKOFFICE SOLO PARA ADMINISTRADORES) */
             <>
               <button 
                 onClick={() => setShowCafeteriaMenu(false)}
@@ -259,6 +269,18 @@ export default function App() {
               >
                 <Coffee className="h-4 w-4" /> Barra
               </a>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="#backoffice" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.location.hash = '#backoffice';
+                  setSubdomainRoute('ventas');
+                }}
+                className="flex items-center gap-1.5 hover:text-sky-400 transition-colors cursor-pointer text-sky-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-sky-500/10"
+              >
+                <TrendingUp className="h-4 w-4" /> Backoffice
+              </a>
             </>
           ) : (
             /* MENÚ PRINCIPAL */
@@ -269,13 +291,6 @@ export default function App() {
               >
                 <Coffee className="h-4 w-4" /> Cafetería
               </button>
-              <span className="text-slate-600 hidden sm:inline">|</span>
-              <a 
-                href="https://ventas.nexusgamingcenter.es" 
-                className="flex items-center gap-1.5 hover:text-sky-400 transition-colors text-sky-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-sky-500/10"
-              >
-                <TrendingUp className="h-4 w-4" /> TPV
-              </a>
               <span className="text-slate-600 hidden sm:inline">|</span>
               <a 
                 href="https://equipo.nexusgamingcenter.es" 
