@@ -14,7 +14,7 @@ export default async function handler(req: any, res: any) {
   try {
     const { receipt_number, total_money, payment_type, items } = req.body;
 
-    // 1. Obtener el Store ID (Tienda) requerido por Loyverse
+    // 1. Obtener el Store ID (Tienda)
     const storeRes = await fetch('https://api.loyverse.com/v1.0/stores', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
@@ -25,7 +25,7 @@ export default async function handler(req: any, res: any) {
       throw new Error("No se pudo recuperar el ID de la tienda en Loyverse.");
     }
 
-    // 2. Obtener los IDs de los métodos de pago
+    // 2. Obtener los métodos de pago
     const payRes = await fetch('https://api.loyverse.com/v1.0/payment_types', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
@@ -36,39 +36,42 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 3. Formatear items protegiendo los que no tienen variant_id mapeado
+    // 3. Mapeo estricto de los ítems para evitar campos vacíos o nulos
     const line_items = items.map((item: any) => {
-      const line: any = {
-        quantity: item.cantidad,
-        price: item.precio,
-        total_money: item.precio * item.cantidad
+      const quantity = Number(item.cantidad) || 1;
+      const price = Number(item.precio) || 0;
+      
+      const lineItem: any = {
+        quantity: quantity,
+        price: price,
+        total_money: price * quantity
       };
-      
-      // Si tiene ID válido se lo pasamos, si no, lo mandamos por nombre (custom item)
+
+      // Si tiene un variant_id válido de Loyverse lo usamos; si no, pasamos item_name
       if (item.loyverse_variant_id && item.loyverse_variant_id.trim() !== "") {
-        line.variant_id = item.loyverse_variant_id;
+        lineItem.variant_id = item.loyverse_variant_id.trim();
       } else {
-        line.item_name = item.nombre || 'Artículo de barra/cocina';
+        lineItem.item_name = (item.nombre || "Artículo libre").substring(0, 50);
       }
-      
-      return line;
+
+      return lineItem;
     });
 
-    // 4. Construir payload con el store_id añadido
+    // 4. Estructura exacta requerida por Loyverse v1.0 para Receipts
     const payload = {
       receipts: [
         {
-          store_id: storeId, // Campo obligatorio
-          receipt_number: `NEXUS-${receipt_number}`,
+          store_id: storeId,
+          receipt_number: `NEX-${receipt_number}`,
           receipt_date: new Date().toISOString(),
           receipt_type: "SALE",
-          total_money: total_money,
+          total_money: Number(total_money),
           total_discount: 0,
           line_items: line_items,
           payments: [
             {
               payment_type_id: paymentTypeId, 
-              money_amount: total_money
+              money_amount: Number(total_money)
             }
           ]
         }
@@ -85,7 +88,10 @@ export default async function handler(req: any, res: any) {
     });
 
     const data = await response.json();
-    if (!response.ok) throw new Error(data.errors?.[0]?.details || 'Error interno de Loyverse');
+    if (!response.ok) {
+      const errorMsg = data.message || data.errors?.[0]?.details || JSON.stringify(data);
+      throw new Error(errorMsg);
+    }
 
     return res.status(200).json({ success: true, loyverse_response: data });
   } catch (error: any) {
