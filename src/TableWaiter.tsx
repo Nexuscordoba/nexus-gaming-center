@@ -483,6 +483,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const itemsAEnviarLoyverse = todosLosItems.map(it => {
         const nombreLimpio = it.nombre.replace('├─', '').trim();
         return { 
+          nombre: nombreLimpio, // <- Enviamos el nombre para que el backend lo use si falta el ID
           cantidad: it.cantidad, 
           precio: it.precio, 
           loyverse_variant_id: mapLoyverseIds[nombreLimpio] || "" 
@@ -542,6 +543,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const itemsAEnviarLoyverse = mesaObj.items.map(it => {
         const nombreLimpio = it.nombre.replace('├─', '').trim();
         return { 
+          nombre: nombreLimpio, // <- Enviamos el nombre
           cantidad: it.cantidad, 
           precio: it.precio, 
           loyverse_variant_id: mapLoyverseIds[nombreLimpio] || "" 
