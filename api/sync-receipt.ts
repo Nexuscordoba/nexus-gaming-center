@@ -21,14 +21,14 @@ export default async function handler(req: any, res: any) {
     const storeData = await storeRes.json();
     const storeId = storeData.stores?.[0]?.id;
 
-    // 2. Obtener Caja Registradora (pos_id) - OBLIGATORIO EN LOYVERSE
+    // 2. Obtener Caja Registradora (pos_id)
     const posRes = await fetch('https://api.loyverse.com/v1.0/pos_devices', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const posData = await posRes.json();
     const posId = posData.pos_devices?.[0]?.id;
 
-    // 3. Obtener Empleado (employee_id) - OBLIGATORIO EN LOYVERSE
+    // 3. Obtener Empleado (employee_id)
     const empRes = await fetch('https://api.loyverse.com/v1.0/employees', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
@@ -49,7 +49,7 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 5. Cargar Items de Loyverse para resolver el item_id padre (Obligatorio)
+    // 5. Cargar Items de Loyverse para resolver el item_id padre
     const itemsRes = await fetch('https://api.loyverse.com/v1.0/items', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
@@ -102,25 +102,21 @@ export default async function handler(req: any, res: any) {
       return lineItem;
     });
 
-    // 7. Construir paquete final con todos los campos obligatorios
+    // 7. Construir paquete final DIRECTO en la raíz
     const payload = {
-      receipts: [
+      store_id: storeId,
+      pos_id: posId,
+      employee_id: empId,
+      receipt_number: `NEX-${receipt_number}`,
+      receipt_date: new Date().toISOString(),
+      receipt_type: "SALE",
+      total_money: Number(total_money),
+      total_discount: 0,
+      line_items: line_items,
+      payments: [
         {
-          store_id: storeId,
-          pos_id: posId,
-          employee_id: empId,
-          receipt_number: `NEX-${receipt_number}`,
-          receipt_date: new Date().toISOString(),
-          receipt_type: "SALE",
-          total_money: Number(total_money),
-          total_discount: 0,
-          line_items: line_items,
-          payments: [
-            {
-              payment_type_id: paymentTypeId, 
-              money_amount: Number(total_money)
-            }
-          ]
+          payment_type_id: paymentTypeId, 
+          money_amount: Number(total_money)
         }
       ]
     };
@@ -136,7 +132,6 @@ export default async function handler(req: any, res: any) {
 
     const data = await response.json();
     if (!response.ok) {
-      // Si falla, formatea el error para que veamos qué campo exacto pide Loyverse
       const errorDetails = data.errors?.[0];
       const errorField = errorDetails?.field ? `Falta el campo: ${errorDetails.field}` : JSON.stringify(errorDetails || data);
       throw new Error(`Rechazado por Loyverse -> ${errorField}`);
