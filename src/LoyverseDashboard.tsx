@@ -115,44 +115,61 @@ export default function LoyverseDashboard() {
     setSincronizando(true);
     setMensaje(null);
     try {
+      // 1. Descargamos el catálogo completo de Loyverse mediante la API unificada
       const res = await fetch('/api/loyverse');
       if (!res.ok) throw new Error('Fallo al conectar con Loyverse al sincronizar.');
       const json = await res.json();
       const itemsRemotos = json.items || [];
 
       if (itemsRemotos.length > 0) {
-        const loyverseIds: string[] = [];
+        let agregados = 0;
+        let actualizados = 0;
 
         for (const item of itemsRemotos) {
           const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
           const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
-          const variantId = item.variants && item.variants.length > 0 ? item.variants[0].variant_id : item.id;
+          const categoriaLocal = catNombre.includes('cocina') ? 'tapeo' : 'bebidas';
           
-          loyverseIds.push(variantId);
-          
-          await supabase.from('productos_carta').upsert([{
-            nombre: item.item_name || item.name,
-            precio: item.price || 3.00,
-            categoria: catNombre.includes('cocina') ? 'tapeo' : 'bebidas',
-            destino: destinoAsignado,
-            activo: true,
-            loyverse_variant_id: variantId
-          }], { onConflict: 'nombre' });
-        }
+          // Extraemos el SKU / REF principal de la variante de Loyverse
+          const mainVariant = item.variants && item.variants.length > 0 ? item.variants[0] : {};
+        
+          const skuRef = mainVariant.sku || '';
+          const nombreItem = item.item_name || item.name;
+          const precioItem = mainVariant.price || item.price || 3.00;
 
-        const { data: dbItems } = await supabase.from('productos_carta').select('id, loyverse_variant_id');
-        if (dbItems) {
-          const idsToDelete = dbItems
-            .filter(dbItem => dbItem.loyverse_variant_id && !loyverseIds.includes(dbItem.loyverse_variant_id))
-            .map(i => i.id);
-          
-          if (idsToDelete.length > 0) {
-            await supabase.from('productos_carta').delete().in('id', idsToDelete);
+          // Comprobamos si ya existe en Supabase por su variante o por nombre
+          const { data: existente } = await supabase
+            .from('productos_carta')
+            .select('*')
+            .or(`loyverse_variant_id.eq.${skuRef},nombre.eq.${nombreItem}`)
+            .maybeSingle();
+
+          if (existente) {
+            // Actualizamos precio y aseguramos que tenga su REF vinculada
+            await supabase
+              .from('productos_carta')
+              .update({
+                precio: precioItem,
+                loyverse_variant_id: skuRef || existente.loyverse_variant_id
+              })
+              .eq('id', existente.id);
+            actualizados++;
+          } else {
+            // Insertamos nuevo plato
+            await supabase.from('productos_carta').insert([{
+              nombre: nombreItem,
+              precio: precioItem,
+              categoria: categoriaLocal,
+              destino: destinoAsignado,
+              activo: true,
+              loyverse_variant_id: skuRef
+            }]);
+            agregados++;
           }
         }
 
         setArticulosLoyverse(itemsRemotos);
-        setMensaje(`¡Catálogo sincronizado! ${itemsRemotos.length} artículos volcados a la carta digital.`);
+        setMensaje(`¡Sincronización completada! Añadidos: ${agregados}, Actualizados: ${actualizados} artículos en Supabase.`);
       } else {
         setMensaje('No se encontraron artículos remotos en Loyverse para sincronizar.');
       }

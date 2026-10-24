@@ -49,17 +49,14 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // 5. Cargar Catálogo de Loyverse (ampliado a 250 items para asegurar que lee toda la carta)
+    // 5. Cargar Catálogo de Loyverse
     const itemsRes = await fetch('https://api.loyverse.com/v1.0/items?limit=250', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const itemsLoyverseData = await itemsRes.json();
     const loyItems = itemsLoyverseData.items || [];
 
-    // Función para normalizar nombres (quita tildes y mayúsculas para emparejar mejor)
-    const normalizeStr = (s: string) => s ? s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim() : "";
-
-    // 6. Formatear items de forma segura y estricta
+    // 6. Formatear items buscando la Referencia (SKU)
     const line_items = [];
 
     for (const item of items) {
@@ -67,33 +64,25 @@ export default async function handler(req: any, res: any) {
       const price = Number(item.precio) || 0;
       
       let resolvedItemId = null;
-      let resolvedVariantId = item.loyverse_variant_id?.trim();
-
-      // Buscar por variant_id si lo tenemos guardado
-      if (resolvedVariantId) {
-        for (const loyItem of loyItems) {
-          if (loyItem.variants && loyItem.variants.some((v: any) => v.id === resolvedVariantId)) {
-            resolvedItemId = loyItem.id;
-            break;
-          }
-        }
-      } 
+      let resolvedVariantId = null;
       
-      // Si no, buscar por nombre exacto normalizado
-      if (!resolvedItemId) {
-        const nomBuscado = normalizeStr(item.nombre);
+      // La referencia o SKU (ej: CAF-002, 10004) que hemos puesto en Supabase
+      const refBuscada = item.loyverse_variant_id?.trim();
+
+      if (refBuscada) {
         for (const loyItem of loyItems) {
-          if (normalizeStr(loyItem.item_name) === nomBuscado) {
+          // Buscamos si alguna variante tiene el SKU/REF exacto
+          const matchedVariant = loyItem.variants?.find((v: any) => v.sku === refBuscada);
+          if (matchedVariant) {
             resolvedItemId = loyItem.id;
-            resolvedVariantId = loyItem.variants?.[0]?.id;
+            resolvedVariantId = matchedVariant.id;
             break;
           }
         }
       }
 
-      // Validación estricta: Si no lo encontramos, cortamos y avisamos al camarero
       if (!resolvedItemId || !resolvedVariantId) {
-         throw new Error(`El artículo "${item.nombre}" no existe en Loyverse o el nombre no coincide exactamente.`);
+         throw new Error(`No se encontró el artículo "${item.nombre}" con la REF "${refBuscada}" en Loyverse.`);
       }
 
       line_items.push({
