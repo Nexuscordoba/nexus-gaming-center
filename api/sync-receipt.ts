@@ -14,7 +14,7 @@ export default async function handler(req: any, res: any) {
   try {
     const { receipt_number, total_money, payment_type, items } = req.body;
 
-    // 1. Petición en paralelo para obtener tienda, POS, empleados, pagos y variantes reales de Loyverse
+    // 1. Obtener Tienda, POS, Empleados, Tipos de Pago y las variantes reales de Loyverse
     const [storeRes, posRes, empRes, payRes, variantsRes] = await Promise.all([
       fetch('https://api.loyverse.com/v1.0/stores', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('https://api.loyverse.com/v1.0/pos_devices', { headers: { 'Authorization': `Bearer ${token}` } }),
@@ -48,33 +48,34 @@ export default async function handler(req: any, res: any) {
     const tipoEncontrado = payData.payment_types?.find((p: any) => p.type === tipoBuscado);
     if (tipoEncontrado) paymentTypeId = tipoEncontrado.id;
 
-    // Variante de respaldo por defecto (la primera del catálogo real)
+    // Variante por defecto obligatoria para usar como comodín seguro
     const defaultVariant = loyVariants[0];
 
-    // 3. Mapear cada artículo garantizando que SIEMPRE se inyecta un variant_id y item_id reales
-    const line_items = [];
-
-    for (const item of items) {
+    // 3. Mapear las líneas ignorando los IDs del cliente y usando directamente las variantes reales
+    const line_items = (items || []).map((item: any) => {
       const quantity = Number(item.cantidad) || 1;
       const price = Number(item.precio) || 0;
       const nombreInput = (item.nombre || '').trim().toLowerCase();
 
-      // Buscamos la variante real en el catálogo de Loyverse por coincidencia de nombre
+      // Buscamos la variante en el catálogo real por nombre
       let matched = loyVariants.find((v: any) => {
         const vName = (v.name || v.item_name || '').trim().toLowerCase();
         return vName === nombreInput || vName.includes(nombreInput) || nombreInput.includes(vName);
       });
 
-      // Si no hay coincidencia exacta, usamos la variante por defecto de forma segura
       const finalVar = matched || defaultVariant;
 
-      line_items.push({
+      return {
         item_id: finalVar.item_id,
-        variant_id: finalVar.id, // ¡ID real y obligatorio de Loyverse!
+        variant_id: finalVar.id, // ID real y verificado por Loyverse
         quantity: quantity,
         price: price,
         total_money: price * quantity
-      });
+      };
+    });
+
+    if (line_items.length === 0) {
+      throw new Error("El ticket no contiene artículos válidos para enviar.");
     }
 
     // 4. Construir paquete final para la API de recibos de Loyverse
