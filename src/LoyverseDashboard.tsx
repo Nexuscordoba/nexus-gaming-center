@@ -115,7 +115,6 @@ export default function LoyverseDashboard() {
     setSincronizando(true);
     setMensaje(null);
     try {
-      // 1. Descargamos el catálogo completo de Loyverse mediante la API unificada
       const res = await fetch('/api/loyverse');
       if (!res.ok) throw new Error('Fallo al conectar con Loyverse al sincronizar.');
       const json = await res.json();
@@ -126,45 +125,50 @@ export default function LoyverseDashboard() {
         let actualizados = 0;
 
         for (const item of itemsRemotos) {
+          const nombreItem = item.item_name || item.name;
+          if (!nombreItem) continue;
+
           const catNombre = item.category_name ? item.category_name.toLowerCase() : 'bebidas';
           const destinoAsignado = catNombre.includes('cocina') ? 'cocina' : 'barra';
           const categoriaLocal = catNombre.includes('cocina') ? 'tapeo' : 'bebidas';
           
-          // Extraemos el SKU / REF principal de la variante de Loyverse
           const mainVariant = item.variants && item.variants.length > 0 ? item.variants[0] : {};
-        
           const skuRef = mainVariant.sku || '';
-          const nombreItem = item.item_name || item.name;
-          const precioItem = mainVariant.price || item.price || 3.00;
+          const precioItem = Number(mainVariant.price || item.price || 3.00);
 
-          // Comprobamos si ya existe en Supabase por su variante o por nombre
+          // Comprobamos si el producto ya existe exactamente por su nombre en Supabase
           const { data: existente } = await supabase
             .from('productos_carta')
-            .select('*')
-            .or(`loyverse_variant_id.eq.${skuRef},nombre.eq.${nombreItem}`)
+            .select('id')
+            .eq('nombre', nombreItem)
             .maybeSingle();
 
           if (existente) {
-            // Actualizamos precio y aseguramos que tenga su REF vinculada
-            await supabase
+            // Si ya existe, actualizamos su precio y su REF
+            const { error: errUpdate } = await supabase
               .from('productos_carta')
               .update({
                 precio: precioItem,
-                loyverse_variant_id: skuRef || existente.loyverse_variant_id
+                loyverse_variant_id: skuRef
               })
               .eq('id', existente.id);
-            actualizados++;
+
+            if (!errUpdate) actualizados++;
           } else {
-            // Insertamos nuevo plato
-            await supabase.from('productos_carta').insert([{
-              nombre: nombreItem,
-              precio: precioItem,
-              categoria: categoriaLocal,
-              destino: destinoAsignado,
-              activo: true,
-              loyverse_variant_id: skuRef
-            }]);
-            agregados++;
+            // Si no existe, lo insertamos nuevo asegurando todos los campos
+            const { error: errInsert } = await supabase
+              .from('productos_carta')
+              .insert([{
+                nombre: nombreItem,
+                precio: precioItem,
+                categoria: categoriaLocal,
+                destino: destinoAsignado,
+                activo: true,
+                loyverse_variant_id: skuRef
+              }]);
+
+            if (!errInsert) agregados++;
+            else console.error("Error insertando:", errInsert.message);
           }
         }
 
