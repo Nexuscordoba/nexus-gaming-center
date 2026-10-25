@@ -33,7 +33,8 @@ import {
   RotateCcw,
   FileText,
   Settings,
-  Barcode
+  Barcode,
+  Search // Añadimos el icono de lupa para la barra de búsqueda
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -118,6 +119,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas']);
   const [categoriaActiva, setCategoriaActiva] = useState<string>('Cafetería');
   const [busquedaCodigoBarras, setBusquedaCodigoBarras] = useState('');
+  const [busquedaNombre, setBusquedaNombre] = useState(''); // Nuevo estado para la búsqueda por texto
   const [loadingCarta, setLoadingCarta] = useState(true);
   const [cocinaAbierta, setCocinaAbierta] = useState(true);
 
@@ -627,7 +629,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       await Promise.all(promesas);
 
       mostrarAlerta(`¡Comanda enviada a Cocina/Barra correctamente! Actualizando...`, 'exito');
-      setCarritoActualchno: [];
+      setCarritoActual([]);
       cargarMesasAbiertas();
 
       // Recarga automática a los 4 segundos para refrescar el total y las mesas abiertas
@@ -1506,18 +1508,34 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </button>
             </div>
 
-            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
-              {categoriasDisponibles.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setCategoriaActiva(cat)}
-                  className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-                    categoriaActiva === cat ? 'bg-amber-500 text-slate-950' : 'bg-white/5 text-slate-400'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
+            {/* SECCIÓN DE BÚSQUEDA Y CATEGORÍAS */}
+            <div className="flex flex-col sm:flex-row gap-3 items-center">
+              <div className="relative w-full sm:w-64 shrink-0">
+                <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Buscar producto por nombre..."
+                  value={busquedaNombre}
+                  onChange={(e) => setBusquedaNombre(e.target.value)}
+                  className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none focus:border-amber-400"
+                />
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none w-full">
+                {categoriasDisponibles.map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => {
+                      setCategoriaActiva(cat);
+                      setBusquedaNombre(''); // Limpiar búsqueda al cambiar de categoría
+                    }}
+                    className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
+                      categoriaActiva === cat && !busquedaNombre.trim() ? 'bg-amber-500 text-slate-950' : 'bg-white/5 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {loadingCarta ? (
@@ -1526,6 +1544,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {productosCarta
                   .filter((p) => {
+                    // Si hay texto de búsqueda, buscamos en TODOS los productos ignorando la pestaña activa
+                    if (busquedaNombre.trim()) {
+                      return p.nombre.toLowerCase().includes(busquedaNombre.trim().toLowerCase());
+                    }
+                    // Si no hay búsqueda de texto, filtramos por la pestaña activa
                     const catProd = (p.categoria || '').trim().toLowerCase();
                     const catActiva = categoriaActiva.trim().toLowerCase();
                     if (!catProd) return true;
