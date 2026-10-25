@@ -35,7 +35,10 @@ import {
   Settings,
   Barcode,
   Search,
-  CornerDownRight
+  CornerDownRight,
+  PenLine,
+  ArrowRightLeft,
+  Split
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -64,6 +67,7 @@ interface Producto {
   unidad_medida?: string;
   tipo_iva?: number;
   articulo_inventario_id?: string;
+  notaExtra?: string; // Nuevo campo para notas libres
 }
 
 interface ItemPedido {
@@ -122,6 +126,9 @@ const agruparFacturas = (lista: any[]) => {
   return raices;
 };
 
+// Función de ayuda para formatear el nombre de la mesa o barra
+const getNombreMesa = (val: string) => val === 'BARRA' ? 'BARRA' : `MESA ${val}`;
+
 export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [camareroActivo, setCamareroActivo] = useState<{ id: string; nombre: string; rol: string } | null>(null);
   const [pinInput, setPinInput] = useState('');
@@ -129,7 +136,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mostrarBackoffice, setMostrarBackoffice] = useState(false);
 
   const [configFiscal, setConfigFiscal] = useState<ConfiguracionFiscal | null>(null);
-  const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
+  const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('BARRA');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas']);
   const [categoriaActiva, setCategoriaActiva] = useState<string>('Cafetería');
@@ -138,7 +145,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [loadingCarta, setLoadingCarta] = useState(true);
   const [cocinaAbierta, setCocinaAbierta] = useState(true);
 
-  const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number }>>([]);
+  // carritoActual ahora tiene idCarritoUnico para poder añadir notas a elementos repetidos
+  const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number; idCarritoUnico: number }>>([]);
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
 
@@ -173,6 +181,15 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [comboActivo, setComboActivo] = useState<Producto | null>(null);
   const [pasoComboActual, setPasoComboActual] = useState(0);
   const [seleccionesCombo, setSeleccionesCombo] = useState<Record<number, OpcionCombo>>({});
+
+  // ESTADOS NUEVOS (Notas Libres, Traspaso y Cobro Parcial)
+  const [modalNotaItem, setModalNotaItem] = useState<{ idCarritoUnico: number; nombre: string; notaActual: string } | null>(null);
+  const [modalTraspaso, setModalTraspaso] = useState<{ origen: string; destino: string; procesando: boolean } | null>(null);
+  const [modalCobroParcial, setModalCobroParcial] = useState<{
+    mesaNombre: string;
+    itemsDisponibles: (ItemPedido & { maxCantidad: number; cantidadSeleccionada: number })[];
+    procesando: boolean;
+  } | null>(null);
 
   const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
   const [cajaAtrasada, setCajaAtrasada] = useState<CajaDiaria | null>(null);
@@ -264,7 +281,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   }, [camareroActivo]);
 
   useEffect(() => {
-    const encontrada = mesasAbiertas.find((m) => m.mesa === `MESA ${mesaSeleccionada}`);
+    const encontrada = mesasAbiertas.find((m) => m.mesa === getNombreMesa(mesaSeleccionada));
     if (encontrada && encontrada.items) {
       setCuentaMesaActual(encontrada.items);
     } else {
@@ -491,6 +508,137 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     setModalAuthDescuento(null);
   };
 
+  // --- TRASPASO DE MESAS ---
+  const confirmarTraspasoMesa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalTraspaso) return;
+    setModalTraspaso({ ...modalTraspaso, procesando: true });
+    try {
+      const destinoFormateado = getNombreMesa(modalTraspaso.destino);
+      await supabase.from('comandas_cocina').update({ mesa: destinoFormateado }).eq('mesa', modalTraspaso.origen).eq('pagado', false);
+      mostrarAlerta(`Mesa traspasada con éxito a ${destinoFormateado}.`, 'exito');
+      setModalTraspaso(null);
+      cargarMesasAbiertas();
+    } catch (err: any) {
+      mostrarAlerta('Error al traspasar mesa: ' + err.message, 'error');
+      setModalTraspaso({ ...modalTraspaso, procesando: false });
+    }
+  };
+
+  // --- DIVIDIR CUENTA / COBRO PARCIAL ---
+  const initCobroParcial = (m: MesaAbierta) => {
+    const disponibles = m.items.map(it => ({
+      ...it,
+      maxCantidad: it.cantidad,
+      cantidadSeleccionada: 0
+    }));
+    setModalCobroParcial({ mesaNombre: m.mesa, itemsDisponibles: disponibles, procesando: false });
+  };
+
+  const actualizarCantidadParcial = (idx: number, delta: number) => {
+    if (!modalCobroParcial) return;
+    const nuevos = [...modalCobroParcial.itemsDisponibles];
+    const nuevaCant = nuevos[idx].cantidadSeleccionada + delta;
+    if (nuevaCant >= 0 && nuevaCant <= nuevos[idx].maxCantidad) {
+      nuevos[idx].cantidadSeleccionada = nuevaCant;
+      setModalCobroParcial({ ...modalCobroParcial, itemsDisponibles: nuevos });
+    }
+  };
+
+  const confirmarCobroParcial = async (metodo: 'efectivo' | 'tarjeta') => {
+    if (!modalCobroParcial || !camareroActivo) return;
+    const itemsA_Cobrar = modalCobroParcial.itemsDisponibles.filter(i => i.cantidadSeleccionada > 0);
+    if (itemsA_Cobrar.length === 0) {
+      mostrarAlerta('Debes seleccionar al menos un artículo para cobrar.', 'aviso');
+      return;
+    }
+
+    if (cajaAtrasada) { mostrarAlerta('¡ATENCIÓN! Cierra primero la caja del día anterior.', 'aviso'); return; }
+    if (!cajaHoy || cajaHoy.estado === 'cerrada') { mostrarAlerta('Abre la caja de hoy primero.', 'aviso'); return; }
+
+    setModalCobroParcial({ ...modalCobroParcial, procesando: true });
+    
+    const itemsProcesados: ItemPedido[] = itemsA_Cobrar.map(i => ({
+      ...i,
+      cantidad: i.cantidadSeleccionada
+    }));
+
+    const desglose = calcularDesgloseMesa(modalCobroParcial.mesaNombre, itemsProcesados);
+    const cfg = configFiscal || (await obtenerConfiguracionFiscal());
+
+    try {
+      const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
+        p_serie: 'T', p_tipo_documento: 'SIMPLIFICADA', p_mesa: modalCobroParcial.mesaNombre, p_vendedor: camareroActivo.nombre,
+        p_metodo_pago: metodo, p_importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0, p_importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
+        p_subtotal_bruto: desglose.subtotalBruto, p_descuento_general_porc: desglose.dtoGeneralPorc, p_descuento_total_imp: desglose.descuentoTotalImporte,
+        p_autorizado_por: autorizadorDescuentoMesa[modalCobroParcial.mesaNombre] || null, p_tipo_iva: cfg.iva_defecto || 10, p_total_final: desglose.totalFinal, p_lineas: desglose.lineasCalculadas
+      });
+      if (rpcError) throw rpcError;
+
+      const { data: comandasPendientes } = await supabase.from('comandas_cocina').select('*').eq('mesa', modalCobroParcial.mesaNombre).eq('pagado', false);
+      
+      let itemsRestantesA_Descontar = itemsA_Cobrar.map(i => ({ nombre: i.nombre, pendienteDescontar: i.cantidadSeleccionada }));
+      
+      if (comandasPendientes) {
+        for (const comanda of comandasPendientes) {
+          let itemsModificados = [];
+          let comandaCambiada = false;
+
+          for (const it of comanda.items) {
+            let qty = it.cantidad;
+            const matchDescuento = itemsRestantesA_Descontar.find(r => r.nombre === it.nombre && r.pendienteDescontar > 0);
+            
+            if (matchDescuento) {
+              const aDescontarAqui = Math.min(qty, matchDescuento.pendienteDescontar);
+              qty -= aDescontarAqui;
+              matchDescuento.pendienteDescontar -= aDescontarAqui;
+              comandaCambiada = true;
+            }
+            if (qty > 0) {
+              itemsModificados.push({ ...it, cantidad: qty });
+            }
+          }
+
+          if (comandaCambiada) {
+            if (itemsModificados.length === 0) {
+              await supabase.from('comandas_cocina').delete().eq('id', comanda.id);
+            } else {
+              await supabase.from('comandas_cocina').update({ items: itemsModificados }).eq('id', comanda.id);
+            }
+          }
+        }
+      }
+
+      await supabase.from('comandas_cocina').insert([{
+        ticket_number: 'PARC-' + Math.floor(1000 + Math.random() * 9000),
+        mesa: modalCobroParcial.mesaNombre,
+        tipo_destino: 'cuenta',
+        camarero_nombre: camareroActivo.nombre,
+        items: itemsProcesados,
+        pagado: true,
+        metodo_pago: metodo,
+        total_ticket: desglose.totalFinal,
+        factura_fiscal_id: docEmitido.id,
+        numero_factura_legal: docEmitido.numero_completo
+      }]);
+
+      const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0);
+      const nuevaTarjeta = Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? desglose.totalFinal : 0);
+      await supabase.from('caja_diaria').update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta }).eq('id', cajaHoy.id);
+
+      const { data: facturaCompleta } = await supabase.from('facturas_tickets').select('*').eq('id', docEmitido.id).single();
+      if (facturaCompleta) { imprimirDocumentoFiscalHTML(facturaCompleta, cfg); }
+
+      mostrarAlerta(`Cobro parcial de ${desglose.totalFinal.toFixed(2)} € registrado y descontado.`, 'exito');
+      setModalCobroParcial(null);
+      cargarMesasAbiertas(); cargarCaja();
+    } catch (err: any) {
+      mostrarAlerta('Error en cobro parcial: ' + err.message, 'error');
+      setModalCobroParcial({ ...modalCobroParcial, procesando: false });
+    }
+  };
+
+
   const clickAgregarAlCarrito = (prod: Producto) => {
     if (prod.controla_stock && Number(prod.stock_actual) <= 0) {
       mostrarAlerta(`Atención: "${prod.nombre}" figura con stock agotado (${prod.stock_actual}).`, 'aviso');
@@ -502,11 +650,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setSeleccionesCombo({});
     } else {
       setCarritoActual((prev) => {
-        const existe = prev.find((p) => p.id === prod.id);
+        const existe = prev.find((p) => p.id === prod.id && !p.notaExtra);
         if (existe) {
-          return prev.map((p) => (p.id === prod.id ? { ...p, cantidad: p.cantidad + 1 } : p));
+          return prev.map((p) => (p.id === prod.id && !p.notaExtra ? { ...p, cantidad: p.cantidad + 1 } : p));
         }
-        return [...prev, { ...prod, cantidad: 1 }];
+        return [...prev, { ...prod, cantidad: 1, idCarritoUnico: Date.now() + Math.random() }];
       });
     }
   };
@@ -530,11 +678,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (!comboActivo) return;
 
     const baseId = Date.now();
-    const itemsNuevos: Array<Producto & { cantidad: number }> = [];
+    const itemsNuevos: Array<Producto & { cantidad: number; idCarritoUnico: number }> = [];
 
     itemsNuevos.push({
       ...comboActivo,
       id: baseId,
+      idCarritoUnico: baseId,
       cantidad: 1
     });
 
@@ -543,6 +692,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       if (seleccion) {
         itemsNuevos.push({
           id: baseId + idx + 1,
+          idCarritoUnico: baseId + idx + 1,
           nombre: ` ├─ ${seleccion.nombre}`,
           precio: 0,
           categoria: comboActivo.categoria,
@@ -558,11 +708,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     setPasoComboActual(0);
   };
 
-  const cambiarCantidadCarrito = (id: number, delta: number) => {
+  const cambiarCantidadCarrito = (idCarritoUnico: number, delta: number) => {
     setCarritoActual((prev) =>
       prev
         .map((p) => {
-          if (p.id === id) {
+          if (p.idCarritoUnico === idCarritoUnico) {
             const nuevaCant = p.cantidad + delta;
             return nuevaCant > 0 ? { ...p, cantidad: nuevaCant } : null;
           }
@@ -574,7 +724,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const totalCarritoActual = carritoActual.reduce((acc, item) => acc + Number(item.precio) * item.cantidad, 0);
   const desgloseMesaSeleccionada = calcularDesgloseMesa(
-    `MESA ${mesaSeleccionada}`,
+    getNombreMesa(mesaSeleccionada),
     cuentaMesaActual.concat(
       carritoActual.map((c) => ({
         producto_id: c.id,
@@ -595,6 +745,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const itemsCocina = carritoActual.filter((i) => i.destino === 'cocina');
       const itemsBarra = carritoActual.filter((i) => i.destino === 'barra');
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
+      const mesaDestinoFormat = getNombreMesa(mesaSeleccionada);
 
       const promesas = [];
 
@@ -603,7 +754,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           supabase.from('comandas_cocina').insert([
             {
               ticket_number: ticketNum,
-              mesa: `MESA ${mesaSeleccionada}`,
+              mesa: mesaDestinoFormat,
               tipo_destino: 'cocina',
               camarero_nombre: camareroActivo.nombre,
               items: itemsCocina.map((i) => ({
@@ -612,7 +763,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 nombre: i.nombre,
                 precio: Number(i.precio),
                 cantidad: i.cantidad,
-                comentarios: `Anotado por ${camareroActivo.nombre}`,
+                comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
                 es_menu: (i.categoria || '').toLowerCase().includes('menu')
               }))
             }
@@ -625,7 +776,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           supabase.from('comandas_cocina').insert([
             {
               ticket_number: ticketNum,
-              mesa: `MESA ${mesaSeleccionada}`,
+              mesa: mesaDestinoFormat,
               tipo_destino: 'barra',
               camarero_nombre: camareroActivo.nombre,
               items: itemsBarra.map((i) => ({
@@ -634,7 +785,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 nombre: i.nombre,
                 precio: Number(i.precio),
                 cantidad: i.cantidad,
-                comentarios: `Anotado por ${camareroActivo.nombre}`
+                comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
               }))
             }
           ])
@@ -911,7 +1062,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           tipo_documento: 'PRE-TICKET / CUENTA MESA (PENDIENTE DE COBRO)',
           numero_completo: `CUENTA-MESA-${mesaSeleccionada}`,
           fecha_expedicion: new Date().toISOString(),
-          mesa: `MESA ${mesaSeleccionada}`,
+          mesa: getNombreMesa(mesaSeleccionada),
           vendedor_nombre: camareroActivo?.nombre || 'Camarero',
           metodo_pago: 'PENDIENTE',
           subtotal_bruto: desgloseMesaSeleccionada.subtotalBruto,
@@ -1116,6 +1267,121 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             >
               <X className="h-4 w-4 opacity-70 hover:opacity-100" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL NOTAS LIBRES */}
+      {modalNotaItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setCarritoActual((prev) => prev.map((p) => p.idCarritoUnico === modalNotaItem.idCarritoUnico ? { ...p, notaExtra: modalNotaItem.notaActual } : p));
+              setModalNotaItem(null);
+            }}
+            className="w-full max-w-md bg-[#0d0f17] border border-cyan-500/40 rounded-3xl p-6 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-cyan-400">
+                <PenLine className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Añadir Nota para Cocina/Barra</h3>
+              </div>
+              <button type="button" onClick={() => setModalNotaItem(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-300">Nota para: <strong className="text-white">{modalNotaItem.nombre}</strong></label>
+              <input
+                type="text"
+                autoFocus
+                placeholder="Ej: Sin hielo, muy hecho, descafeinado..."
+                value={modalNotaItem.notaActual}
+                onChange={(e) => setModalNotaItem({ ...modalNotaItem, notaActual: e.target.value })}
+                className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-white focus:border-cyan-400"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button type="button" onClick={() => setModalNotaItem(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
+              <button type="submit" className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer">Guardar Nota</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* MODAL TRASPASO DE MESA */}
+      {modalTraspaso && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form onSubmit={confirmarTraspasoMesa} className="w-full max-w-md bg-[#0d0f17] border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-amber-400">
+                <ArrowRightLeft className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Traspasar Pedido</h3>
+              </div>
+              <button type="button" onClick={() => setModalTraspaso(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="space-y-2">
+              <p className="text-xs text-slate-300">Mover cuenta desde <strong>{modalTraspaso.origen}</strong> a:</p>
+              <select
+                value={modalTraspaso.destino}
+                onChange={(e) => setModalTraspaso({ ...modalTraspaso, destino: e.target.value })}
+                className="w-full bg-black/60 border border-amber-500/50 rounded-xl px-3 py-3 text-sm font-black text-amber-400 outline-none cursor-pointer"
+              >
+                <option value="BARRA">Servicio en Barra</option>
+                {Array.from({ length: 20 }, (_, i) => String(i + 1)).map((m) => (
+                  getNombreMesa(m) !== modalTraspaso.origen && <option key={m} value={m}>Mesa {m}</option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button type="button" onClick={() => setModalTraspaso(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
+              <button type="submit" disabled={modalTraspaso.procesando} className="py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50">{modalTraspaso.procesando ? 'Traspasando...' : 'Confirmar Traspaso'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* MODAL COBRO PARCIAL */}
+      {modalCobroParcial && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <div className="w-full max-w-md bg-[#0d0f17] border border-cyan-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-cyan-400">
+                <Split className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Dividir Cuenta: {modalCobroParcial.mesaNombre}</h3>
+              </div>
+              <button type="button" onClick={() => setModalCobroParcial(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+            <p className="text-xs text-slate-400">Selecciona cuántas unidades de cada artículo vas a cobrar ahora mismo.</p>
+            
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {modalCobroParcial.itemsDisponibles.map((it, idx) => (
+                <div key={idx} className={`flex items-center justify-between p-3 rounded-xl border ${it.cantidadSeleccionada > 0 ? 'bg-cyan-950/30 border-cyan-500/30' : 'bg-black/40 border-white/10'}`}>
+                  <div className="flex-1">
+                    <span className="text-white text-xs font-bold">{it.nombre}</span>
+                    <div className="text-[10px] text-slate-400">{it.precio.toFixed(2)} €/ud</div>
+                  </div>
+                  <div className="flex gap-2 items-center bg-white/5 rounded-lg p-1 border border-white/10">
+                    <button type="button" onClick={() => actualizarCantidadParcial(idx, -1)} className="px-2 py-1 text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
+                    <span className="text-xs font-mono font-bold w-6 text-center text-cyan-400">{it.cantidadSeleccionada}</span>
+                    <button type="button" onClick={() => actualizarCantidadParcial(idx, 1)} className="px-2 py-1 text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
+                    <span className="text-xs font-mono w-6 text-center text-slate-500">/ {it.maxCantidad}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-3 border-t border-white/10">
+              <div className="flex justify-between items-center mb-3">
+                <span className="text-xs font-bold text-slate-400 uppercase">Subtotal Seleccionado:</span>
+                <span className="text-lg font-black text-white font-mono">
+                  {modalCobroParcial.itemsDisponibles.reduce((acc, i) => acc + (i.precio * i.cantidadSeleccionada), 0).toFixed(2)} €
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => confirmarCobroParcial('efectivo')} disabled={modalCobroParcial.procesando} className="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"><DollarSign className="h-4 w-4" /> Efectivo</button>
+                <button onClick={() => confirmarCobroParcial('tarjeta')} disabled={modalCobroParcial.procesando} className="py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"><CreditCard className="h-4 w-4" /> Tarjeta</button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1527,13 +1793,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             <div className="flex flex-wrap items-center justify-between gap-3 bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
               <div className="flex items-center gap-2">
                 <MapPin className="h-5 w-5 text-amber-400" />
-                <span className="text-xs font-bold uppercase text-slate-300">Mesa:</span>
+                <span className="text-xs font-bold uppercase text-slate-300">Origen:</span>
                 <select
                   value={mesaSeleccionada}
                   onChange={(e) => setMesaSeleccionada(e.target.value)}
                   className="bg-black/80 border border-amber-500/50 rounded-xl px-3 py-1.5 text-sm font-black text-amber-400 outline-none cursor-pointer"
                 >
-                  {Array.from({ length: 20 }, (_, i) => i + 1).map((m) => (
+                  <option value="BARRA">Servicio en Barra</option>
+                  {Array.from({ length: 20 }, (_, i) => String(i + 1)).map((m) => (
                     <option key={m} value={m}>
                       Mesa {m}
                     </option>
@@ -1659,7 +1926,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <div className="flex items-center justify-between pb-3 border-b border-white/10">
                 <div>
                   <span className="text-[10px] uppercase font-bold text-slate-400 block">Resumen Mesa</span>
-                  <h3 className="text-lg font-black text-white">MESA {mesaSeleccionada}</h3>
+                  <h3 className="text-lg font-black text-white">{getNombreMesa(mesaSeleccionada)}</h3>
                 </div>
                 <div className="text-right">
                   {desgloseMesaSeleccionada.descuentoTotalImporte > 0 && (
@@ -1683,8 +1950,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         setModalAuthDescuento({
                           abierto: true,
                           tipo: 'general',
-                          mesaKey: `MESA ${mesaSeleccionada}`,
-                          porcentajePropuesto: String(descuentoGeneralMesa[`MESA ${mesaSeleccionada}`] || 10),
+                          mesaKey: getNombreMesa(mesaSeleccionada),
+                          porcentajePropuesto: String(descuentoGeneralMesa[getNombreMesa(mesaSeleccionada)] || 10),
                           pinAdmin: ''
                         })
                       }
@@ -1700,7 +1967,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 ) : (
                   <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                     {cuentaMesaActual.map((item, idx) => {
-                      const claveLinea = `MESA ${mesaSeleccionada}__${item.nombre}`;
+                      const claveLinea = `${getNombreMesa(mesaSeleccionada)}__${item.nombre}`;
                       const dto = descuentosLineas[claveLinea] || 0;
                       const importeBruto = item.precio * item.cantidad;
                       const importeNeto = importeBruto * (1 - dto / 100);
@@ -1731,7 +1998,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                                   setModalAuthDescuento({
                                     abierto: true,
                                     tipo: 'linea',
-                                    mesaKey: `MESA ${mesaSeleccionada}`,
+                                    mesaKey: getNombreMesa(mesaSeleccionada),
                                     itemNombre: item.nombre,
                                     porcentajePropuesto: String(dto || 10),
                                     pinAdmin: ''
@@ -1759,32 +2026,47 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
                     {carritoActual.map((item) => (
                       <div
-                        key={item.id}
-                        className="flex justify-between text-xs bg-cyan-950/20 p-2.5 rounded-xl border border-cyan-500/20"
+                        key={item.idCarritoUnico}
+                        className="flex flex-col gap-2 text-xs bg-cyan-950/20 p-2.5 rounded-xl border border-cyan-500/20"
                       >
-                        <span className="font-bold text-white truncate max-w-[140px]">{item.nombre}</span>
-
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-cyan-400 font-bold">
-                            {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
-                          </span>
-
-                          <div className="flex gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg">
-                            <button
-                              onClick={() => cambiarCantidadCarrito(item.id, -1)}
-                              className="text-slate-400 hover:text-white cursor-pointer"
-                            >
-                              <Minus className="h-3 w-3" />
-                            </button>
-                            <span className="font-mono font-bold text-white w-3 text-center">{item.cantidad}</span>
-                            <button
-                              onClick={() => cambiarCantidadCarrito(item.id, 1)}
-                              className="text-slate-400 hover:text-white cursor-pointer"
-                            >
-                              <Plus className="h-3 w-3" />
-                            </button>
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-white truncate max-w-[140px]">{item.nombre}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-cyan-400 font-bold">
+                              {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
+                            </span>
+                            
+                            <div className="flex gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg items-center">
+                              {!item.nombre.includes('├─') && (
+                                <button
+                                  type="button"
+                                  onClick={() => setModalNotaItem({ idCarritoUnico: item.idCarritoUnico, nombre: item.nombre, notaActual: item.notaExtra || '' })}
+                                  className="text-cyan-400 hover:text-cyan-300 mr-1 p-0.5"
+                                >
+                                  <PenLine className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                              <button
+                                onClick={() => cambiarCantidadCarrito(item.idCarritoUnico, -1)}
+                                className="text-slate-400 hover:text-white cursor-pointer"
+                              >
+                                <Minus className="h-3 w-3" />
+                              </button>
+                              <span className="font-mono font-bold text-white w-3 text-center">{item.cantidad}</span>
+                              <button
+                                onClick={() => cambiarCantidadCarrito(item.idCarritoUnico, 1)}
+                                className="text-slate-400 hover:text-white cursor-pointer"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </div>
                           </div>
                         </div>
+                        {item.notaExtra && (
+                          <div className="text-[10px] text-cyan-200 bg-cyan-900/40 p-1.5 rounded-lg border border-cyan-500/20">
+                            ✏️ Nota: {item.notaExtra}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1804,7 +2086,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       )}
 
       {vistaSeccion === 'mesas_abiertas' && (
-        <main className="flex-1 max-w-4xl w-full mx-auto space-y-6 pb-24">
+        <main className="flex-1 max-w-5xl w-full mx-auto space-y-6 pb-24">
           <h2 className="text-xl font-bold text-white">📋 Mesas Activas sin cobrar</h2>
 
           {mesasAbiertas.length === 0 ? (
@@ -1812,7 +2094,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <p className="font-semibold">No hay mesas abiertas por cobrar.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {mesasAbiertas.map((m) => {
                 const desglose = calcularDesgloseMesa(m.mesa, m.items);
                 return (
@@ -1822,6 +2104,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         {m.mesa}
                       </span>
                       <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setModalTraspaso({ origen: m.mesa, destino: '1', procesando: false })}
+                          className="px-2.5 py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <ArrowRightLeft className="h-3 w-3" />
+                        </button>
                         <button
                           type="button"
                           onClick={() =>
@@ -1835,9 +2124,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                           }
                           className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold flex items-center gap-1 cursor-pointer"
                         >
-                          <Percent className="h-3 w-3" /> Dto.
+                          <Percent className="h-3 w-3" />
                         </button>
-                        <div className="text-right">
+                        <div className="text-right ml-2">
                           {desglose.descuentoTotalImporte > 0 && (
                             <span className="text-[11px] line-through text-slate-500 font-mono block">
                               {desglose.subtotalBruto.toFixed(2)} €
@@ -1893,18 +2182,24 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       })}
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/10">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-3 border-t border-white/10">
                       <button
                         onClick={() => cobrarMesaLegal(m.mesa, 'efectivo')}
-                        className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                        className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-[11px] uppercase flex items-center justify-center gap-1.5 cursor-pointer"
                       >
-                        <DollarSign className="h-4 w-4" /> Cobrar Efectivo
+                        <DollarSign className="h-4 w-4" /> Efectivo
                       </button>
                       <button
                         onClick={() => cobrarMesaLegal(m.mesa, 'tarjeta')}
-                        className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                        className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-[11px] uppercase flex items-center justify-center gap-1.5 cursor-pointer"
                       >
-                        <CreditCard className="h-4 w-4" /> Cobrar Tarjeta
+                        <CreditCard className="h-4 w-4" /> Tarjeta
+                      </button>
+                      <button
+                        onClick={() => initCobroParcial(m)}
+                        className="py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-slate-950 font-black text-[11px] uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Split className="h-4 w-4" /> Dividir
                       </button>
                     </div>
                   </div>
