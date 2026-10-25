@@ -34,7 +34,7 @@ import {
   FileText,
   Settings,
   Barcode,
-  Search // Añadimos el icono de lupa para la barra de búsqueda
+  Search
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -119,7 +119,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas']);
   const [categoriaActiva, setCategoriaActiva] = useState<string>('Cafetería');
   const [busquedaCodigoBarras, setBusquedaCodigoBarras] = useState('');
-  const [busquedaNombre, setBusquedaNombre] = useState(''); // Nuevo estado para la búsqueda por texto
+  const [busquedaNombre, setBusquedaNombre] = useState('');
   const [loadingCarta, setLoadingCarta] = useState(true);
   const [cocinaAbierta, setCocinaAbierta] = useState(true);
 
@@ -1508,28 +1508,28 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </button>
             </div>
 
-            {/* SECCIÓN DE BÚSQUEDA Y CATEGORÍAS */}
-            <div className="flex flex-col sm:flex-row gap-3 items-center">
-              <div className="relative w-full sm:w-64 shrink-0">
+            {/* SECCIÓN DE BÚSQUEDA Y CATEGORÍAS (MULTILÍNEA - SIN SCROLL) */}
+            <div className="flex flex-col gap-3">
+              <div className="relative w-full">
                 <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
                 <input
                   type="text"
-                  placeholder="Buscar producto por nombre..."
+                  placeholder="Buscar producto por nombre (Ignora la categoría)..."
                   value={busquedaNombre}
                   onChange={(e) => setBusquedaNombre(e.target.value)}
                   className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none focus:border-amber-400"
                 />
               </div>
-              <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none w-full">
+              <div className="flex gap-2 flex-wrap w-full">
                 {categoriasDisponibles.map((cat) => (
                   <button
                     key={cat}
                     onClick={() => {
                       setCategoriaActiva(cat);
-                      setBusquedaNombre(''); // Limpiar búsqueda al cambiar de categoría
+                      setBusquedaNombre('');
                     }}
-                    className={`px-4 py-2 rounded-2xl text-xs font-bold shrink-0 transition-all cursor-pointer ${
-                      categoriaActiva === cat && !busquedaNombre.trim() ? 'bg-amber-500 text-slate-950' : 'bg-white/5 text-slate-400 hover:text-white'
+                    className={`px-4 py-2 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
+                      categoriaActiva === cat && !busquedaNombre.trim() ? 'bg-amber-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
                     }`}
                   >
                     {cat}
@@ -1544,11 +1544,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {productosCarta
                   .filter((p) => {
-                    // Si hay texto de búsqueda, buscamos en TODOS los productos ignorando la pestaña activa
                     if (busquedaNombre.trim()) {
                       return p.nombre.toLowerCase().includes(busquedaNombre.trim().toLowerCase());
                     }
-                    // Si no hay búsqueda de texto, filtramos por la pestaña activa
                     const catProd = (p.categoria || '').trim().toLowerCase();
                     const catActiva = categoriaActiva.trim().toLowerCase();
                     if (!catProd) return true;
