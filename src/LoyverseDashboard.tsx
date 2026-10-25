@@ -44,6 +44,20 @@ interface PasoComboUI {
   opciones: OpcionComboUI[];
 }
 
+const agruparFacturas = (lista: any[]) => {
+  const mapa = new Map();
+  lista.forEach(f => mapa.set(f.id, { ...f, hijos: [] }));
+  const raices: any[] = [];
+  mapa.forEach(f => {
+    if (f.ticket_origen_id && mapa.has(f.ticket_origen_id)) {
+      mapa.get(f.ticket_origen_id).hijos.push(f);
+    } else {
+      raices.push(f);
+    }
+  });
+  return raices;
+};
+
 export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
   const [pinAdminLogin, setPinAdminLogin] = useState('');
@@ -95,7 +109,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [artEsCompuesto, setArtEsCompuesto] = useState(false);
   const [lineasEscandallo, setLineasEscandallo] = useState<IngredienteEscandalloUI[]>([]);
 
-  // NUEVOS ESTADOS PARA COMBOS / OPCIONES
   const [artEsCombo, setArtEsCombo] = useState(false);
   const [pasosCombo, setPasosCombo] = useState<PasoComboUI[]>([]);
 
@@ -107,6 +120,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [movimientosStock, setMovimientosStock] = useState<any[]>([]);
   const [pageMovimientos, setPageMovimientos] = useState(0); 
   const ITEMS_PER_PAGE = 40;
+
   const [compraArticuloId, setCompraArticuloId] = useState('');
   const [compraCantidad, setCompraCantidad] = useState('');
   const [compraCosteUnitario, setCompraCosteUnitario] = useState('');
@@ -114,8 +128,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [compraAlbaran, setCompraAlbaran] = useState('');
 
   const [isImportingCSV, setIsImportingCSV] = useState(false);
-  
-  // ESTADOS PARA EMPLEADOS (CRUD)
+
   const [empleados, setEmpleados] = useState<any[]>([]);
   const [modalEmpleado, setModalEmpleado] = useState<{ id?: string, nombre: string, apellidos: string, pin: string, rol: string, activo: boolean } | null>(null);
 
@@ -129,7 +142,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     procesando: boolean;
   } | null>(null);
 
-  // ESTADO PARA AJUSTE RÁPIDO DE STOCK
   const [modalAjusteStock, setModalAjusteStock] = useState<{
     articuloId: string;
     nombre: string;
@@ -140,7 +152,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     procesando: boolean;
   } | null>(null);
 
-  // ESTADOS PARA MODALES DE FACTURACIÓN
   const [modalRectificativa, setModalRectificativa] = useState<{
     factura: any;
     motivo: string;
@@ -325,8 +336,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-  // ---------------- LÓGICA DE FACTURACIÓN (BACKOFFICE) ----------------
-
   const confirmarFacturaRectificativa = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!modalRectificativa || !adminVerificado) return;
@@ -473,7 +482,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   }, [artEsCompuesto, lineasEscandallo]);
 
-  // FUNCIONES PARA GESTIONAR PASOS DE COMBOS
   const agregarPasoCombo = () => {
     setPasosCombo([...pasosCombo, { titulo: `Paso ${pasosCombo.length + 1}`, opciones: [] }]);
   };
@@ -560,10 +568,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setArtStockInicial('0');
     setArtStockMinimo('5');
     setArtVendibleTpv(true);
-    
     setArtEsCompuesto(false);
     setLineasEscandallo([]);
-
     setArtEsCombo(false);
     setPasosCombo([]);
   };
@@ -583,10 +589,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setArtStockInicial(String(art.stock_actual || 0));
     setArtStockMinimo(String(art.stock_minimo || 0));
     setArtVendibleTpv(Boolean(art.vendible_tpv));
-    
     setArtEsCombo(Boolean(art.es_combo));
     setPasosCombo(art.opciones_combo || []);
-
     setArtEsCompuesto(Boolean(art.es_compuesto));
 
     if (art.es_compuesto) {
@@ -1686,17 +1690,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 </thead>
                 <tbody className="divide-y divide-white/5">
                   {(() => {
-                    const mapa = new Map();
-                    ticketsFiltrados.forEach(t => mapa.set(t.id, { ...t, hijos: [] }));
-                    const raices: any[] = [];
-                    mapa.forEach(t => {
-                      if (t.ticket_origen_id && mapa.has(t.ticket_origen_id)) {
-                        mapa.get(t.ticket_origen_id).hijos.push(t);
-                      } else {
-                        raices.push(t);
-                      }
-                    });
-
+                    const raices = agruparFacturas(ticketsFiltrados);
                     if (raices.length === 0) { return <tr><td colSpan={9} className="p-8 text-center text-slate-500">No hay documentos en el rango seleccionado.</td></tr>; }
 
                     const renderFila = (f: any, nivel: number) => (
@@ -2099,7 +2093,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                         return (
                           <tr key={a.id} className="hover:bg-white/[0.02]">
                             <td className="p-2.5"><div className="font-bold text-white">{a.nombre}</div><div className="text-[10px] text-slate-500">{a.categoria}</div></td>
-                            <td className="p-2.5 text-right"><span className={`font-mono font-black text-sm ${bajoMinimo ? 'text-rose-400' : 'text-cyan-400'}`}>{Number(a.stock_actual).toFixed(2)} {a.unidad_medida}</span></td>
+                            <td className="p-2.5 text-right"><span className={`font-mono font-black text-sm ${bajoMinimo ? 'text-rose-400' : 'text-cyan-400'}`}>{Number(a.stock_actual).toFixed(Number.isInteger(Number(a.stock_actual)) ? 0 : 2)} {a.unidad_medida}</span></td>
                             <td className="p-2.5 text-right font-mono text-slate-400">{Number(a.coste_unitario).toFixed(3)} €</td>
                             <td className="p-2.5 text-center">
                               <button type="button" title="Ajuste rápido de stock" onClick={() => setModalAjusteStock({ articuloId: a.id, nombre: a.nombre, stockActual: Number(a.stock_actual), nuevoStock: String(Number(a.stock_actual)), unidad: a.unidad_medida, motivo: '', procesando: false })} className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-cyan-500 hover:text-slate-950 text-cyan-400 transition-colors cursor-pointer">
@@ -2135,7 +2129,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                         <td className="p-2.5">{new Date(m.created_at).toLocaleString('es-ES')}</td>
                         <td className="p-2.5 font-bold text-white">{m.articulos_cafeteria?.nombre || '-'}</td>
                         <td className="p-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${Number(m.cantidad) >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>{m.tipo_movimiento}</span></td>
-                        <td className="p-2.5 text-right font-mono font-bold">{Number(m.cantidad) > 0 ? `+${Number(m.cantidad).toFixed(3)}` : Number(m.cantidad).toFixed(3)} {m.articulos_cafeteria?.unidad_medida || ''}</td>
+                        <td className="p-2.5 text-right font-mono font-bold">{Number(m.cantidad) > 0 ? `+${Number(m.cantidad).toFixed(Number.isInteger(Number(m.cantidad)) ? 0 : 2)}` : Number(m.cantidad).toFixed(Number.isInteger(Number(m.cantidad)) ? 0 : 2)} {m.articulos_cafeteria?.unidad_medida || ''}</td>
                         <td className="p-2.5 text-slate-400">{m.proveedor ? `${m.proveedor} (${m.numero_albaran_factura || ''}) ` : ''}{m.observaciones}</td>
                         <td className="p-2.5 text-slate-300">{m.usuario_nombre}</td>
                       </tr>
