@@ -40,7 +40,9 @@ import {
   Upload,
   Download,
   UtensilsCrossed,
-  X
+  X,
+  Target,
+  ListPlus
 } from 'lucide-react';
 
 interface BackofficeProps {
@@ -56,6 +58,16 @@ interface IngredienteEscandalloUI {
   coste_base: number;
   merma_porcentaje: number;
   coste_calculado: number;
+}
+
+interface OpcionComboUI {
+  nombre: string;
+  destino: 'barra' | 'cocina';
+}
+
+interface PasoComboUI {
+  titulo: string;
+  opciones: OpcionComboUI[];
 }
 
 export default function LoyverseDashboard({ onBack }: BackofficeProps) {
@@ -109,6 +121,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [artEsCompuesto, setArtEsCompuesto] = useState(false);
   const [lineasEscandallo, setLineasEscandallo] = useState<IngredienteEscandalloUI[]>([]);
 
+  // NUEVOS ESTADOS PARA COMBOS / OPCIONES
+  const [artEsCombo, setArtEsCombo] = useState(false);
+  const [pasosCombo, setPasosCombo] = useState<PasoComboUI[]>([]);
+
   const [ingredienteSelId, setIngredienteSelId] = useState('');
   const [ingredienteCantidad, setIngredienteCantidad] = useState('1');
   const [ingredienteUnidadUso, setIngredienteUnidadUso] = useState<UnidadMedida>('g');
@@ -123,7 +139,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const [isImportingCSV, setIsImportingCSV] = useState(false);
 
-  // ESTADO PARA LA HERRAMIENTA DE ELABORACIÓN DE LOTES (MENÚS/PLATOS)
   const [modalElaboracion, setModalElaboracion] = useState<{
     abierto: boolean;
     articuloDestinoId: string;
@@ -131,6 +146,17 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     ingredientes: Array<{ id: string; articulo_id: string; nombre: string; cantidad: number; costeBase: number; unidad: string }>;
     ingSelId: string;
     ingSelCant: string;
+    procesando: boolean;
+  } | null>(null);
+
+  // ESTADO PARA AJUSTE RÁPIDO DE STOCK
+  const [modalAjusteStock, setModalAjusteStock] = useState<{
+    articuloId: string;
+    nombre: string;
+    stockActual: number;
+    nuevoStock: string;
+    unidad: string;
+    motivo: string;
     procesando: boolean;
   } | null>(null);
 
@@ -270,6 +296,39 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   }, [artEsCompuesto, lineasEscandallo]);
 
+  // FUNCIONES PARA GESTIONAR PASOS DE COMBOS
+  const agregarPasoCombo = () => {
+    setPasosCombo([...pasosCombo, { titulo: `Paso ${pasosCombo.length + 1}`, opciones: [] }]);
+  };
+
+  const eliminarPasoCombo = (index: number) => {
+    setPasosCombo(pasosCombo.filter((_, i) => i !== index));
+  };
+
+  const actualizarTituloPaso = (index: number, titulo: string) => {
+    const nuevos = [...pasosCombo];
+    nuevos[index].titulo = titulo;
+    setPasosCombo(nuevos);
+  };
+
+  const agregarOpcionAPaso = (indexPaso: number) => {
+    const nuevos = [...pasosCombo];
+    nuevos[indexPaso].opciones.push({ nombre: 'Nueva opción', destino: 'barra' });
+    setPasosCombo(nuevos);
+  };
+
+  const eliminarOpcionDePaso = (indexPaso: number, indexOpcion: number) => {
+    const nuevos = [...pasosCombo];
+    nuevos[indexPaso].opciones = nuevos[indexPaso].opciones.filter((_, i) => i !== indexOpcion);
+    setPasosCombo(nuevos);
+  };
+
+  const actualizarOpcion = (indexPaso: number, indexOpcion: number, campo: 'nombre' | 'destino', valor: string) => {
+    const nuevos = [...pasosCombo];
+    nuevos[indexPaso].opciones[indexOpcion] = { ...nuevos[indexPaso].opciones[indexOpcion], [campo]: valor };
+    setPasosCombo(nuevos);
+  };
+
   const agregarIngredienteAEscandallo = () => {
     if (!ingredienteSelId) return;
     const ingObj = articulosMaestro.find((a) => a.id === ingredienteSelId);
@@ -324,8 +383,12 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setArtStockInicial('0');
     setArtStockMinimo('5');
     setArtVendibleTpv(true);
+    
     setArtEsCompuesto(false);
     setLineasEscandallo([]);
+
+    setArtEsCombo(false);
+    setPasosCombo([]);
   };
 
   const seleccionarArticuloParaEditar = async (art: any) => {
@@ -343,6 +406,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setArtStockInicial(String(art.stock_actual || 0));
     setArtStockMinimo(String(art.stock_minimo || 0));
     setArtVendibleTpv(Boolean(art.vendible_tpv));
+    
+    setArtEsCombo(Boolean(art.es_combo));
+    setPasosCombo(art.opciones_combo || []);
+
     setArtEsCompuesto(Boolean(art.es_compuesto));
 
     if (art.es_compuesto) {
@@ -432,6 +499,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         stock_minimo: minNum,
         es_compuesto: artEsCompuesto,
         vendible_tpv: artVendibleTpv,
+        es_combo: artEsCombo,
+        opciones_combo: artEsCombo ? pasosCombo : [],
         activo: true,
         updated_at: new Date().toISOString()
       };
@@ -494,6 +563,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           stock_actual: stockNum,
           stock_minimo: minNum,
           es_compuesto: artEsCompuesto,
+          es_combo: artEsCombo,
+          opciones_combo: artEsCombo ? pasosCombo : [],
           escandallo_json: lineasEscandallo,
           articulo_inventario_id: articuloIdFinal
         };
@@ -607,10 +678,11 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             stock_minimo: parseFloat(stockMin) || 0,
             vendible_tpv: visible.trim().toUpperCase() === 'SI',
             es_compuesto: false,
+            es_combo: false,
+            opciones_combo: [],
             activo: true
           };
 
-          // Evitar duplicados por nombre
           const { data: existe } = await supabase
             .from('articulos_cafeteria')
             .select('id')
@@ -654,7 +726,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 controla_stock: payloadMaestro.controla_stock,
                 stock_actual: payloadMaestro.stock_actual,
                 stock_minimo: payloadMaestro.stock_minimo,
-                es_compuesto: false
+                es_compuesto: false,
+                es_combo: false,
+                opciones_combo: []
               }]);
             }
             importados++;
@@ -737,17 +811,44 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-  const guardarConfiguracionFiscal = async (e: React.FormEvent) => {
+  const procesarAjusteStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (configFiscal.id) {
-      await supabase.from('configuracion_fiscal').update(configFiscal).eq('id', configFiscal.id);
-    } else {
-      await supabase.from('configuracion_fiscal').insert([configFiscal]);
+    if (!modalAjusteStock) return;
+
+    const nuevoFisico = parseFloat(modalAjusteStock.nuevoStock) || 0;
+    const diferencia = nuevoFisico - modalAjusteStock.stockActual;
+    
+    if (diferencia === 0) {
+      notificar('El stock introducido es igual al actual. No hay cambios.', 'info');
+      setModalAjusteStock(null);
+      return;
     }
-    notificar('Datos fiscales y PIN de autorización actualizados correctamente.');
+
+    setModalAjusteStock({ ...modalAjusteStock, procesando: true });
+
+    try {
+      await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoFisico }).eq('id', modalAjusteStock.articuloId);
+      await supabase.from('productos_carta').update({ stock_actual: nuevoFisico }).eq('articulo_inventario_id', modalAjusteStock.articuloId);
+
+      await supabase.from('movimientos_stock').insert([{
+        articulo_id: modalAjusteStock.articuloId,
+        tipo_movimiento: 'AJUSTE_MANUAL',
+        cantidad: diferencia,
+        coste_compra_unitario: 0,
+        usuario_nombre: adminVerificado?.nombre || 'Admin',
+        observaciones: modalAjusteStock.motivo.trim() || 'Regularización manual de stock'
+      }]);
+
+      notificar(`Stock de "${modalAjusteStock.nombre}" ajustado a ${nuevoFisico} ${modalAjusteStock.unidad}.`, 'ok');
+      setModalAjusteStock(null);
+      cargarArticulosYCategorias();
+      cargarMovimientosInventario();
+    } catch (err: any) {
+      notificar('Error al realizar el ajuste: ' + err.message, 'error');
+      setModalAjusteStock({ ...modalAjusteStock, procesando: false });
+    }
   };
 
-  // LÓGICA DE ELABORACIÓN DE LOTES Y MENÚS
   const agregarIngredienteAElaboracion = () => {
     if (!modalElaboracion || !modalElaboracion.ingSelId) return;
     const ingObj = articulosMaestro.find((a) => a.id === modalElaboracion.ingSelId);
@@ -781,7 +882,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     });
   };
 
-const confirmarElaboracionLote = async (e: React.FormEvent) => {
+  const confirmarElaboracionLote = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!modalElaboracion) return;
 
@@ -794,16 +895,13 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
     setModalElaboracion({ ...modalElaboracion, procesando: true });
 
     try {
-      // 1. Calcular coste total de los ingredientes consumidos
       let costeTotalIngredientes = 0;
       const promesasIngredientes = modalElaboracion.ingredientes.map(async (ing) => {
         costeTotalIngredientes += (ing.cantidad * ing.costeBase);
         
-        // 2. Restar stock real de cada ingrediente
         const refObj = articulosMaestro.find(a => a.id === ing.articulo_id);
         const nuevoStockIng = (Number(refObj?.stock_actual) || 0) - ing.cantidad;
 
-        // AQUÍ ESTABA EL ERROR: Cambiado nuevoStockReal por nuevoStockIng
         await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoStockIng }).eq('id', ing.articulo_id);
         await supabase.from('productos_carta').update({ stock_actual: nuevoStockIng }).eq('articulo_inventario_id', ing.articulo_id);
 
@@ -819,7 +917,6 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
 
       await Promise.all(promesasIngredientes);
 
-      // 3. Sumar el stock generado al plato final y actualizar su coste
       const costeProporcionalUnitario = costeTotalIngredientes / racionesGeneradas;
       const platoDestino = articulosMaestro.find(a => a.id === modalElaboracion.articuloDestinoId);
       const nuevoStockPlato = (Number(platoDestino?.stock_actual) || 0) + racionesGeneradas;
@@ -851,6 +948,16 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
       notificar('Error al procesar la elaboración del lote: ' + err.message, 'error');
       setModalElaboracion({ ...modalElaboracion, procesando: false });
     }
+  };
+
+  const guardarConfiguracionFiscal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (configFiscal.id) {
+      await supabase.from('configuracion_fiscal').update(configFiscal).eq('id', configFiscal.id);
+    } else {
+      await supabase.from('configuracion_fiscal').insert([configFiscal]);
+    }
+    notificar('Datos fiscales y PIN de autorización actualizados correctamente.');
   };
 
   if (!adminVerificado) {
@@ -945,6 +1052,83 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between font-sans">
       
+      {/* MODAL DE AJUSTE RÁPIDO DE STOCK */}
+      {modalAjusteStock && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form
+            onSubmit={procesarAjusteStock}
+            className="w-full max-w-sm bg-[#0d0f17] border border-cyan-500/40 rounded-3xl p-6 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-cyan-400">
+                <Target className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Ajuste / Regularización</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalAjusteStock(null)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-300 bg-black/40 p-3 rounded-xl border border-white/10">
+              Ajustando inventario de:<br/>
+              <strong className="text-white text-sm block mt-1">{modalAjusteStock.nombre}</strong>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 items-end">
+              <div>
+                <label className="text-xs font-bold text-slate-400 block mb-1">Stock Actual</label>
+                <div className="w-full bg-black/60 border border-white/10 rounded-xl px-3.5 py-2.5 text-slate-400 font-mono">
+                  {modalAjusteStock.stockActual} {modalAjusteStock.unidad}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-cyan-400 block mb-1">Nuevo Stock Físico *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={modalAjusteStock.nuevoStock}
+                  onChange={(e) => setModalAjusteStock({ ...modalAjusteStock, nuevoStock: e.target.value })}
+                  className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-cyan-400 font-mono font-bold"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">Motivo (Opcional)</label>
+              <input
+                type="text"
+                placeholder="Ej: Stock Inicial, Merma por rotura, Cuadre mensual..."
+                value={modalAjusteStock.motivo}
+                onChange={(e) => setModalAjusteStock({ ...modalAjusteStock, motivo: e.target.value })}
+                className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setModalAjusteStock(null)}
+                className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={modalAjusteStock.procesando}
+                className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50"
+              >
+                {modalAjusteStock.procesando ? 'Guardando...' : 'Confirmar Ajuste'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* MODAL ELABORACIÓN LOTE */}
       {modalElaboracion && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
@@ -1697,7 +1881,8 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-2xl bg-black/40 border border-white/10 text-xs">
+              {/* SECCIÓN CONFIGURACIÓN TIPO DE ARTÍCULO */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-black/40 border border-white/10 text-xs">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1711,21 +1896,37 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={artEsCompuesto}
-                    onChange={(e) => setArtEsCompuesto(e.target.checked)}
-                    className="h-4 w-4 accent-amber-400"
-                  />
-                  <span className="font-bold text-amber-300">Compuesto (Con Escandallo)</span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
                     checked={artVendibleTpv}
                     onChange={(e) => setArtVendibleTpv(e.target.checked)}
                     className="h-4 w-4 accent-emerald-400"
                   />
                   <span className="font-bold text-emerald-300">Visible en TPV / Carta</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={artEsCompuesto}
+                    onChange={(e) => {
+                      setArtEsCompuesto(e.target.checked);
+                      if (e.target.checked) setArtEsCombo(false);
+                    }}
+                    className="h-4 w-4 accent-amber-400"
+                  />
+                  <span className="font-bold text-amber-300">Es Elaboración (Escandallo)</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={artEsCombo}
+                    onChange={(e) => {
+                      setArtEsCombo(e.target.checked);
+                      if (e.target.checked) setArtEsCompuesto(false);
+                    }}
+                    className="h-4 w-4 accent-purple-400"
+                  />
+                  <span className="font-bold text-purple-300">Combo / Opciones (Menús, Combinados)</span>
                 </label>
               </div>
 
@@ -1756,6 +1957,89 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                 </div>
               )}
 
+              {/* CONSTRUCTOR DE COMBOS / OPCIONES */}
+              {artEsCombo && (
+                <div className="p-4 rounded-2xl bg-purple-950/20 border border-purple-500/40 space-y-4 text-xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-purple-400 font-bold">
+                      <ListPlus className="h-4 w-4" />
+                      <span>Opciones del Menú, Tostada o Combinado</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={agregarPasoCombo}
+                      className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="h-3 w-3" /> Añadir Paso
+                    </button>
+                  </div>
+
+                  <div className="space-y-4">
+                    {pasosCombo.map((paso, pIdx) => (
+                      <div key={pIdx} className="p-3 bg-black/40 border border-white/10 rounded-xl space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="font-black text-slate-400">{pIdx + 1}.</span>
+                          <input
+                            type="text"
+                            placeholder="Ej: Elige el refresco / Elige el tipo de pan"
+                            value={paso.titulo}
+                            onChange={(e) => actualizarTituloPaso(pIdx, e.target.value)}
+                            className="flex-1 bg-black/60 border border-white/20 rounded-lg px-3 py-1.5 text-white font-bold"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => eliminarPasoCombo(pIdx)}
+                            className="text-rose-400 hover:text-rose-300 p-1"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+
+                        <div className="pl-6 space-y-2">
+                          {paso.opciones.map((opc, oIdx) => (
+                            <div key={oIdx} className="flex gap-2 items-center">
+                              <input
+                                type="text"
+                                placeholder="Nombre de la opción"
+                                value={opc.nombre}
+                                onChange={(e) => actualizarOpcion(pIdx, oIdx, 'nombre', e.target.value)}
+                                className="flex-1 bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-white text-xs"
+                              />
+                              <select
+                                value={opc.destino}
+                                onChange={(e) => actualizarOpcion(pIdx, oIdx, 'destino', e.target.value)}
+                                className="bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-white text-xs"
+                              >
+                                <option value="barra">Barra</option>
+                                <option value="cocina">Cocina</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => eliminarOpcionDePaso(pIdx, oIdx)}
+                                className="text-slate-500 hover:text-rose-400"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => agregarOpcionAPaso(pIdx)}
+                            className="text-purple-400 hover:text-purple-300 font-bold flex items-center gap-1 mt-1 text-[10px] uppercase"
+                          >
+                            <Plus className="h-3 w-3" /> Añadir Opción a este paso
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {pasosCombo.length === 0 && (
+                      <p className="text-slate-500 italic text-center py-2">No hay pasos configurados.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* CONSTRUCTOR DE ESCANDALLOS */}
               {artEsCompuesto && (
                 <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/40 space-y-4 text-xs">
                   <div className="flex items-center justify-between">
@@ -1778,7 +2062,7 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                       >
                         <option value="">-- Seleccionar ingrediente --</option>
                         {articulosMaestro
-                          .filter((a) => a.id !== editandoArticuloId)
+                          .filter((a) => a.id !== editandoArticuloId && !a.es_combo)
                           .map((a) => (
                             <option key={a.id} value={a.id}>
                               {a.nombre} ({Number(a.coste_unitario).toFixed(2)}€/{a.unidad_medida})
@@ -1924,6 +2208,11 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                             {art.es_compuesto && (
                               <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded">
                                 Escandallo
+                              </span>
+                            )}
+                            {art.es_combo && (
+                              <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">
+                                Opciones
                               </span>
                             )}
                           </div>
@@ -2080,10 +2369,9 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                     <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
                       <tr>
                         <th className="p-2.5">Artículo</th>
-                        <th className="p-2.5">Pestaña TPV</th>
-                        <th className="p-2.5 text-right">Coste Unit.</th>
                         <th className="p-2.5 text-right">Stock Real Actual</th>
-                        <th className="p-2.5 text-right">Estado</th>
+                        <th className="p-2.5 text-right">Coste Unit.</th>
+                        <th className="p-2.5 text-center">Acciones</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
@@ -2091,24 +2379,35 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                         const bajoMinimo = a.controla_stock && Number(a.stock_actual) <= Number(a.stock_minimo);
                         return (
                           <tr key={a.id} className="hover:bg-white/[0.02]">
-                            <td className="p-2.5 font-bold text-white">{a.nombre}</td>
-                            <td className="p-2.5 text-slate-400">{a.categoria}</td>
-                            <td className="p-2.5 text-right font-mono">
-                              {Number(a.coste_unitario).toFixed(3)} € / {a.unidad_medida}
-                            </td>
-                            <td className="p-2.5 text-right font-mono font-black text-sm text-cyan-400">
-                              {Number(a.stock_actual).toFixed(2)} {a.unidad_medida}
+                            <td className="p-2.5">
+                              <div className="font-bold text-white">{a.nombre}</div>
+                              <div className="text-[10px] text-slate-500">{a.categoria}</div>
                             </td>
                             <td className="p-2.5 text-right">
-                              {bajoMinimo ? (
-                                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 text-[10px] font-bold">
-                                  ⚠️ Reponer
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[10px] font-bold">
-                                  OK
-                                </span>
-                              )}
+                              <span className={`font-mono font-black text-sm ${bajoMinimo ? 'text-rose-400' : 'text-cyan-400'}`}>
+                                {Number(a.stock_actual).toFixed(2)} {a.unidad_medida}
+                              </span>
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-400">
+                              {Number(a.coste_unitario).toFixed(3)} €
+                            </td>
+                            <td className="p-2.5 text-center">
+                              <button
+                                type="button"
+                                title="Ajuste rápido de stock"
+                                onClick={() => setModalAjusteStock({
+                                  articuloId: a.id,
+                                  nombre: a.nombre,
+                                  stockActual: Number(a.stock_actual),
+                                  nuevoStock: String(Number(a.stock_actual)),
+                                  unidad: a.unidad_medida,
+                                  motivo: '',
+                                  procesando: false
+                                })}
+                                className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-cyan-500 hover:text-slate-950 text-cyan-400 transition-colors cursor-pointer"
+                              >
+                                <Target className="h-4 w-4 mx-auto" />
+                              </button>
                             </td>
                           </tr>
                         );
@@ -2120,7 +2419,7 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
             </div>
 
             <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-3">
-              <h3 className="font-bold text-white text-sm">Últimos Movimientos de Inventario (Compras, Ventas y Elaboraciones)</h3>
+              <h3 className="font-bold text-white text-sm">Últimos Movimientos de Inventario (Compras, Ajustes y Elaboraciones)</h3>
               <div className="overflow-x-auto max-h-60">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-white/5 text-slate-400 uppercase">
@@ -2129,7 +2428,7 @@ const confirmarElaboracionLote = async (e: React.FormEvent) => {
                       <th className="p-2.5">Artículo</th>
                       <th className="p-2.5">Tipo</th>
                       <th className="p-2.5 text-right">Cantidad</th>
-                      <th className="p-2.5">Proveedor / Albarán / Detalle</th>
+                      <th className="p-2.5">Observaciones / Albarán</th>
                       <th className="p-2.5">Usuario</th>
                     </tr>
                   </thead>
