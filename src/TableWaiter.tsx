@@ -34,7 +34,8 @@ import {
   FileText,
   Settings,
   Barcode,
-  Search
+  Search,
+  CornerDownRight
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -106,6 +107,20 @@ interface AlertaPersonalizada {
   mensaje: string;
   tipo: 'exito' | 'error' | 'aviso';
 }
+
+const agruparFacturas = (lista: any[]) => {
+  const mapa = new Map();
+  lista.forEach(f => mapa.set(f.id, { ...f, hijos: [] }));
+  const raices: any[] = [];
+  mapa.forEach(f => {
+    if (f.ticket_origen_id && mapa.has(f.ticket_origen_id)) {
+      mapa.get(f.ticket_origen_id).hijos.push(f);
+    } else {
+      raices.push(f);
+    }
+  });
+  return raices;
+};
 
 export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [camareroActivo, setCamareroActivo] = useState<{ id: string; nombre: string; rol: string } | null>(null);
@@ -632,7 +647,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setCarritoActual([]);
       cargarMesasAbiertas();
 
-      // Recarga automática a los 4 segundos para refrescar el total y las mesas abiertas
       setTimeout(() => {
         window.location.reload();
       }, 4000);
@@ -979,6 +993,47 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     sessionStorage.removeItem('nexus_camarero_sesion');
   };
 
+  const renderTicket = (f: any, nivel: number = 0) => (
+    <div key={f.id} className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl bg-black/40 border border-white/10 text-xs shadow-sm`}>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          {nivel > 0 && <CornerDownRight className="h-4 w-4 text-slate-500" />}
+          <span className="font-mono font-black text-cyan-400 text-sm">{f.numero_completo}</span>
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${f.serie === 'R' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : f.serie === 'F' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'}`}>
+            {f.tipo_documento}
+          </span>
+          <span className="text-slate-300 font-bold">{f.mesa}</span>
+          {f.estado_fiscal !== 'EMITIDO' && (
+            <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">{f.estado_fiscal}</span>
+          )}
+        </div>
+        <p className="text-[11px] text-slate-400">
+          {new Date(f.fecha_expedicion).toLocaleTimeString('es-ES')} · Atendido por: <strong>{f.vendedor_nombre}</strong> · Pago: <strong>{f.metodo_pago.toUpperCase()}</strong>
+          {f.cliente_nif && ` · Cliente: ${f.cliente_nombre_razon} (${f.cliente_nif})`}
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 self-end sm:self-center">
+        <span className={`font-mono font-black text-sm mr-2 ${Number(f.total_final) < 0 ? 'text-rose-400' : 'text-white'}`}>
+          {Number(f.total_final).toFixed(2)} €
+        </span>
+        <button type="button" title="Reimprimir documento fiscal" onClick={async () => { const cfg = configFiscal || (await obtenerConfiguracionFiscal()); imprimirDocumentoFiscalHTML(f, cfg); }} className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold flex items-center gap-1 cursor-pointer">
+          <Printer className="h-3.5 w-3.5" /> Ticket
+        </button>
+        {f.serie === 'T' && f.estado_fiscal === 'EMITIDO' && (
+          <button type="button" title="Convertir en Factura Nominativa para cliente" onClick={() => setModalFacturaNominativa({ factura: f, razonSocial: '', nifCif: '', direccion: '', procesando: false })} className="px-2.5 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 text-cyan-300 border border-cyan-500/30 font-bold flex items-center gap-1 cursor-pointer transition-all">
+            <FileText className="h-3.5 w-3.5" /> Factura
+          </button>
+        )}
+        {(f.serie === 'T' || f.serie === 'F') && f.estado_fiscal === 'EMITIDO' && (
+          <button type="button" title="Anular / Devolver (Factura Rectificativa Simplificada)" onClick={() => setModalRectificativa({ factura: f, motivo: '', pinAdmin: '', procesando: false })} className="px-2.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/30 font-bold flex items-center gap-1 cursor-pointer transition-all">
+            <RotateCcw className="h-3.5 w-3.5" /> Devolver
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
   if (mostrarBackoffice && camareroActivo?.rol === 'admin') {
     return (
       <LoyverseDashboard
@@ -1035,6 +1090,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       </div>
     );
   }
+
+  const facturasAgrupadas = agruparFacturas(facturasHoy);
 
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
@@ -1957,103 +2014,29 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   </div>
                 </div>
 
-                {facturasHoy.length === 0 ? (
+                {facturasAgrupadas.length === 0 ? (
                   <p className="text-xs text-slate-500 italic text-center py-6 bg-black/20 rounded-xl">
                     Aún no se han emitido tickets fiscales hoy.
                   </p>
                 ) : (
-                  <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
-                    {facturasHoy.map((f) => (
-                      <div
-                        key={f.id}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl bg-black/40 border border-white/10 text-xs"
-                      >
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono font-black text-cyan-400 text-sm">{f.numero_completo}</span>
-                            <span
-                              className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
-                                f.serie === 'R'
-                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                                  : f.serie === 'F'
-                                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                                  : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                              }`}
-                            >
-                              {f.tipo_documento}
-                            </span>
-                            <span className="text-slate-300 font-bold">{f.mesa}</span>
-                            {f.estado_fiscal !== 'EMITIDO' && (
-                              <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">
-                                {f.estado_fiscal}
-                              </span>
-                            )}
+                  <div className="max-h-96 overflow-y-auto space-y-3 pr-1">
+                    {facturasAgrupadas.map((fRaiz) => (
+                      <div key={fRaiz.id} className="bg-white/[0.02] p-2 rounded-2xl border border-white/5 shadow-sm">
+                        {renderTicket(fRaiz, 0)}
+                        {fRaiz.hijos && fRaiz.hijos.length > 0 && (
+                          <div className="pl-4 sm:pl-8 border-l-2 border-white/10 ml-4 sm:ml-6 relative mt-2 space-y-2">
+                            {fRaiz.hijos.map((hijo1: any) => (
+                              <React.Fragment key={hijo1.id}>
+                                {renderTicket(hijo1, 1)}
+                                {hijo1.hijos && hijo1.hijos.length > 0 && (
+                                  <div className="pl-4 sm:pl-8 border-l-2 border-white/10 ml-4 sm:ml-6 relative mt-2 space-y-2">
+                                    {hijo1.hijos.map((hijo2: any) => renderTicket(hijo2, 2))}
+                                  </div>
+                                )}
+                              </React.Fragment>
+                            ))}
                           </div>
-                          <p className="text-[11px] text-slate-400">
-                            {new Date(f.fecha_expedicion).toLocaleTimeString('es-ES')} · Atendido por:{' '}
-                            <strong>{f.vendedor_nombre}</strong> · Pago: <strong>{f.metodo_pago.toUpperCase()}</strong>
-                            {f.cliente_nif && ` · Cliente: ${f.cliente_nombre_razon} (${f.cliente_nif})`}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-2 self-end sm:self-center">
-                          <span
-                            className={`font-mono font-black text-sm mr-2 ${
-                              Number(f.total_final) < 0 ? 'text-rose-400' : 'text-white'
-                            }`}
-                          >
-                            {Number(f.total_final).toFixed(2)} €
-                          </span>
-
-                          <button
-                            type="button"
-                            title="Reimprimir documento fiscal"
-                            onClick={async () => {
-                              const cfg = configFiscal || (await obtenerConfiguracionFiscal());
-                              imprimirDocumentoFiscalHTML(f, cfg);
-                            }}
-                            className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold flex items-center gap-1 cursor-pointer"
-                          >
-                            <Printer className="h-3.5 w-3.5" /> Ticket
-                          </button>
-
-                          {f.serie === 'T' && f.estado_fiscal === 'EMITIDO' && (
-                            <>
-                              <button
-                                type="button"
-                                title="Convertir en Factura Nominativa para cliente"
-                                onClick={() =>
-                                  setModalFacturaNominativa({
-                                    factura: f,
-                                    razonSocial: '',
-                                    nifCif: '',
-                                    direccion: '',
-                                    procesando: false
-                                  })
-                                }
-                                className="px-2.5 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 text-cyan-300 border border-cyan-500/30 font-bold flex items-center gap-1 cursor-pointer transition-all"
-                              >
-                                <FileText className="h-3.5 w-3.5" /> Factura
-                              </button>
-
-                              <button
-                                type="button"
-                                title="Anular / Devolver (Factura Rectificativa Simplificada)"
-                                onClick={() =>
-                                  setModalRectificativa({
-                                    factura: f,
-                                    motivo: '',
-                                    pinAdmin: '',
-                                    procesando: false
-                                  })
-                                }
-                                className="px-2.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/30 font-bold flex items-center gap-1 cursor-pointer transition-all"
-                              >
-                                <RotateCcw className="h-3.5 w-3.5" /> Devolver
-                              </button>
-                            </>
-                          )}
-                        </div>
+                        )}
                       </div>
                     ))}
                   </div>

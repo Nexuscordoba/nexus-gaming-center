@@ -42,7 +42,8 @@ import {
   UtensilsCrossed,
   X,
   Target,
-  ListPlus
+  ListPlus,
+  RotateCcw
 } from 'lucide-react';
 
 interface BackofficeProps {
@@ -157,6 +158,21 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     nuevoStock: string;
     unidad: string;
     motivo: string;
+    procesando: boolean;
+  } | null>(null);
+
+  // ESTADOS PARA MODALES DE FACTURACIÓN
+  const [modalRectificativa, setModalRectificativa] = useState<{
+    factura: any;
+    motivo: string;
+    procesando: boolean;
+  } | null>(null);
+
+  const [modalFacturaNominativa, setModalFacturaNominativa] = useState<{
+    factura: any;
+    razonSocial: string;
+    nifCif: string;
+    direccion: string;
     procesando: boolean;
   } | null>(null);
 
@@ -286,6 +302,148 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
     if (data) {
       setMovimientosStock(data);
+    }
+  };
+
+  // ---------------- LÓGICA DE FACTURACIÓN (BACKOFFICE) ----------------
+
+  const confirmarFacturaRectificativa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalRectificativa || !adminVerificado) return;
+
+    if (!modalRectificativa.motivo.trim()) {
+      notificar('Debes indicar obligatoriamente el motivo de la rectificación/devolución.', 'info');
+      return;
+    }
+
+    setModalRectificativa({ ...modalRectificativa, procesando: true });
+
+    try {
+      const orig = modalRectificativa.factura;
+      const cfg = configFiscal;
+      const importeNegativo = -Math.abs(Number(orig.total_final));
+      const brutoNegativo = -Math.abs(Number(orig.subtotal_bruto));
+
+      const lineasNegativas = (orig.lineas || []).map((l: any) => ({
+        ...l,
+        cantidad: -Math.abs(Number(l.cantidad)),
+        subtotal_linea: -Math.abs(Number(l.subtotal_linea))
+      }));
+
+      const { data: docRect, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
+        p_serie: 'R',
+        p_tipo_documento: 'RECTIFICATIVA',
+        p_mesa: orig.mesa,
+        p_vendedor: adminVerificado.nombre,
+        p_metodo_pago: orig.metodo_pago,
+        p_importe_efectivo: orig.metodo_pago === 'efectivo' ? importeNegativo : 0,
+        p_importe_tarjeta: orig.metodo_pago === 'tarjeta' ? importeNegativo : 0,
+        p_subtotal_bruto: brutoNegativo,
+        p_descuento_general_porc: orig.descuento_general_porcentaje || 0,
+        p_descuento_total_imp: 0,
+        p_autorizado_por: adminVerificado.nombre,
+        p_tipo_iva: orig.tipo_iva_aplicado || cfg.iva_defecto || 10,
+        p_total_final: importeNegativo,
+        p_lineas: lineasNegativas,
+        p_ticket_origen_id: orig.id,
+        p_ticket_origen_numero: orig.numero_completo,
+        p_motivo_rectificacion: modalRectificativa.motivo.trim()
+      });
+
+      if (rpcError) throw rpcError;
+
+      // Restar importe si la caja actual coincide en fecha
+      const fechaHoy = new Date().toISOString().split('T')[0];
+      if (cajaHoy && cajaHoy.estado === 'abierta' && orig.fecha_expedicion.startsWith(fechaHoy)) {
+        const nuevoEfectivo =
+          Number(cajaHoy.total_efectivo) + (orig.metodo_pago === 'efectivo' ? importeNegativo : 0);
+        const nuevaTarjeta =
+          Number(cajaHoy.total_tarjeta) + (orig.metodo_pago === 'tarjeta' ? importeNegativo : 0);
+
+        await supabase
+          .from('caja_diaria')
+          .update({
+            total_efectivo: nuevoEfectivo,
+            total_tarjeta: nuevaTarjeta
+          })
+          .eq('id', cajaHoy.id);
+      }
+
+      const { data: rectCompleta } = await supabase
+        .from('facturas_tickets')
+        .select('*')
+        .eq('id', docRect.id)
+        .single();
+
+      if (rectCompleta) {
+        imprimirDocumentoFiscalHTML(rectCompleta, cfg);
+      }
+
+      notificar(`Factura Rectificativa ${docRect.numero_completo} emitida e impresa.`, 'ok');
+      setModalRectificativa(null);
+      cargarTicketsYVentas();
+    } catch (err: any) {
+      notificar('Error al emitir factura rectificativa: ' + err.message, 'error');
+      setModalRectificativa({ ...modalRectificativa, procesando: false });
+    }
+  };
+
+  const confirmarFacturaNominativa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalFacturaNominativa || !adminVerificado) return;
+
+    if (!modalFacturaNominativa.razonSocial.trim() || !modalFacturaNominativa.nifCif.trim()) {
+      notificar('Nombre/Razón Social y NIF/CIF del cliente son obligatorios por ley.', 'info');
+      return;
+    }
+
+    setModalFacturaNominativa({ ...modalFacturaNominativa, procesando: true });
+
+    try {
+      const orig = modalFacturaNominativa.factura;
+      const cfg = configFiscal;
+
+      const { data: docNom, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
+        p_serie: 'F',
+        p_tipo_documento: 'NOMINATIVA',
+        p_mesa: orig.mesa,
+        p_vendedor: adminVerificado.nombre,
+        p_metodo_pago: orig.metodo_pago,
+        p_importe_efectivo: orig.importe_efectivo,
+        p_importe_tarjeta: orig.importe_tarjeta,
+        p_subtotal_bruto: orig.subtotal_bruto,
+        p_descuento_general_porc: orig.descuento_general_porcentaje || 0,
+        p_descuento_total_imp: orig.descuento_total_importe || 0,
+        p_autorizado_por: orig.autorizado_por || adminVerificado.nombre,
+        p_tipo_iva: orig.tipo_iva_aplicado || cfg.iva_defecto || 10,
+        p_total_final: orig.total_final,
+        p_lineas: orig.lineas,
+        p_ticket_origen_id: orig.id,
+        p_ticket_origen_numero: orig.numero_completo,
+        p_motivo_rectificacion: null,
+        p_cliente_nombre: modalFacturaNominativa.razonSocial.trim(),
+        p_cliente_nif: modalFacturaNominativa.nifCif.trim().toUpperCase(),
+        p_cliente_direccion: modalFacturaNominativa.direccion.trim()
+      });
+
+      if (rpcError) throw rpcError;
+
+      const { data: nomCompleta } = await supabase
+        .from('facturas_tickets')
+        .select('*')
+        .eq('id', docNom.id)
+        .single();
+
+      if (nomCompleta) {
+        imprimirDocumentoFiscalHTML(nomCompleta, cfg);
+      }
+
+      notificar(`Factura Nominativa ${docNom.numero_completo} generada e impresa correctamente.`, 'ok');
+      setModalFacturaNominativa(null);
+      cargarTicketsYVentas();
+    } catch (err: any) {
+      notificar('Error al generar factura nominativa: ' + err.message, 'error');
+      setModalFacturaNominativa({ ...modalFacturaNominativa, procesando: false });
     }
   };
 
@@ -1250,6 +1408,53 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         </div>
       )}
 
+      {/* MODALES BACKOFFICE PARA FACTURACIÓN */}
+      {modalRectificativa && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form onSubmit={confirmarFacturaRectificativa} className="w-full max-w-md bg-[#0d0f17] border border-rose-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-rose-400"><RotateCcw className="h-5 w-5" /><h3 className="font-black text-white text-base">Emitir Factura Rectificativa</h3></div>
+              <button type="button" onClick={() => setModalRectificativa(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="text-xs text-slate-300 bg-black/40 p-3 rounded-xl border border-white/10 space-y-1">
+              <div><strong>Ticket a rectificar:</strong> {modalRectificativa.factura.numero_completo}</div>
+              <div><strong>Importe a devolver:</strong> <span className="text-rose-400 font-mono font-bold">-{Number(modalRectificativa.factura.total_final).toFixed(2)} € ({modalRectificativa.factura.metodo_pago})</span></div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300 uppercase">Motivo legal de la rectificación *</label>
+              <input type="text" required placeholder="Ej: Devolución de producto / Error en cobro" value={modalRectificativa.motivo} onChange={(e) => setModalRectificativa({ ...modalRectificativa, motivo: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white" />
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button type="button" onClick={() => setModalRectificativa(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
+              <button type="submit" disabled={modalRectificativa.procesando} className="py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase cursor-pointer disabled:opacity-50">{modalRectificativa.procesando ? 'Emitiendo...' : 'Emitir y Devolver'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {modalFacturaNominativa && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form onSubmit={confirmarFacturaNominativa} className="w-full max-w-md bg-[#0d0f17] border border-cyan-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-cyan-400"><FileText className="h-5 w-5" /><h3 className="font-black text-white text-base">Convertir en Factura Nominativa</h3></div>
+              <button type="button" onClick={() => setModalFacturaNominativa(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="text-xs text-slate-300 bg-black/40 p-3 rounded-xl border border-white/10">
+              Canje del Ticket <strong>{modalFacturaNominativa.factura.numero_completo}</strong> por importe de <strong>{Number(modalFacturaNominativa.factura.total_final).toFixed(2)} €</strong>
+            </div>
+            <div className="space-y-3">
+              <div><label className="text-xs font-bold text-slate-300 block mb-1">Nombre Completo o Razón Social *</label><input type="text" required placeholder="Ej: Empresa Cliente S.L." value={modalFacturaNominativa.razonSocial} onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, razonSocial: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white" /></div>
+              <div><label className="text-xs font-bold text-slate-300 block mb-1">NIF / CIF / NIE *</label><input type="text" required placeholder="Ej: B14000000" value={modalFacturaNominativa.nifCif} onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, nifCif: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white uppercase font-mono" /></div>
+              <div><label className="text-xs font-bold text-slate-300 block mb-1">Dirección Fiscal Completa *</label><input type="text" required placeholder="Calle, Número, CP, Ciudad, Provincia" value={modalFacturaNominativa.direccion} onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, direccion: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button type="button" onClick={() => setModalFacturaNominativa(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
+              <button type="submit" disabled={modalFacturaNominativa.procesando} className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50">{modalFacturaNominativa.procesando ? 'Generando...' : 'Emitir e Imprimir'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/95 backdrop-blur-md z-30">
         <div className="flex items-center gap-3">
           <div className="h-12 w-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center">
@@ -1599,82 +1804,84 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
             </div>
 
-            <div className="overflow-x-auto max-h-[520px]">
+            <div className="overflow-x-auto max-h-[600px] border border-white/10 rounded-2xl bg-black/20">
               <table className="w-full text-left text-xs">
-                <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
+                <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md z-10 shadow-md">
                   <tr>
                     <th className="p-3">Nº Oficial</th>
                     <th className="p-3">Tipo</th>
                     <th className="p-3">Fecha y Hora</th>
                     <th className="p-3">Mesa / Vendedor</th>
                     <th className="p-3">Pago</th>
-                    <th className="p-3 text-right">Dto.</th>
                     <th className="p-3 text-right">Base Imp.</th>
                     <th className="p-3 text-right">IVA</th>
                     <th className="p-3 text-right">Total</th>
-                    <th className="p-3">Huella SHA-256</th>
                     <th className="p-3 text-right">Acción</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {ticketsFiltrados.length === 0 ? (
-                    <tr>
-                      <td colSpan={11} className="p-8 text-center text-slate-500">
-                        No hay documentos fiscales en el rango seleccionado.
-                      </td>
-                    </tr>
-                  ) : (
-                    ticketsFiltrados.map((t) => (
-                      <tr key={t.id} className="hover:bg-white/[0.02]">
-                        <td className="p-3 font-mono font-bold text-cyan-400">{t.numero_completo}</td>
-                        <td className="p-3">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              t.serie === 'R'
-                                ? 'bg-rose-500/20 text-rose-300'
-                                : t.serie === 'F'
-                                ? 'bg-purple-500/20 text-purple-300'
-                                : 'bg-emerald-500/20 text-emerald-300'
-                            }`}
-                          >
-                            {t.tipo_documento}
-                          </span>
-                        </td>
-                        <td className="p-3">{new Date(t.fecha_expedicion).toLocaleString('es-ES')}</td>
-                        <td className="p-3">
-                          {t.mesa} · <strong>{t.vendedor_nombre}</strong>
-                          {t.cliente_nif && (
-                            <span className="block text-[10px] text-cyan-300">
-                              Cliente: {t.cliente_nombre_razon} ({t.cliente_nif})
+                  {(() => {
+                    const mapa = new Map();
+                    ticketsFiltrados.forEach(t => mapa.set(t.id, { ...t, hijos: [] }));
+                    const raices: any[] = [];
+                    mapa.forEach(t => {
+                      if (t.ticket_origen_id && mapa.has(t.ticket_origen_id)) {
+                        mapa.get(t.ticket_origen_id).hijos.push(t);
+                      } else {
+                        raices.push(t);
+                      }
+                    });
+
+                    if (raices.length === 0) {
+                      return <tr><td colSpan={9} className="p-8 text-center text-slate-500">No hay documentos en el rango seleccionado.</td></tr>;
+                    }
+
+                    const renderFila = (f: any, nivel: number) => (
+                      <React.Fragment key={f.id}>
+                        <tr className={`hover:bg-white/[0.05] transition-colors ${nivel > 0 ? 'bg-white/[0.02]' : ''}`}>
+                          <td className="p-3 font-mono font-bold text-cyan-400 flex items-center gap-2" style={{ paddingLeft: `${nivel * 1.5 + 0.75}rem` }}>
+                            {nivel > 0 && <span className="text-slate-600">↳</span>}
+                            {f.numero_completo}
+                          </td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${f.serie === 'R' ? 'bg-rose-500/20 text-rose-300' : f.serie === 'F' ? 'bg-purple-500/20 text-purple-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                              {f.tipo_documento}
                             </span>
-                          )}
-                        </td>
-                        <td className="p-3 uppercase font-bold">{t.metodo_pago}</td>
-                        <td className="p-3 text-right font-mono text-amber-400">
-                          {Number(t.descuento_total_importe || 0) > 0
-                            ? `-${Number(t.descuento_total_importe).toFixed(2)} €`
-                            : '-'}
-                        </td>
-                        <td className="p-3 text-right font-mono">{Number(t.base_imponible).toFixed(2)} €</td>
-                        <td className="p-3 text-right font-mono">{Number(t.cuota_iva).toFixed(2)} €</td>
-                        <td className="p-3 text-right font-mono font-black text-white">
-                          {Number(t.total_final).toFixed(2)} €
-                        </td>
-                        <td className="p-3 font-mono text-[10px] text-slate-500">
-                          {t.hash_actual ? `${t.hash_actual.slice(0, 12)}...` : ''}
-                        </td>
-                        <td className="p-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => imprimirDocumentoFiscalHTML(t, configFiscal)}
-                            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs inline-flex items-center gap-1 cursor-pointer"
-                          >
-                            <Printer className="h-3.5 w-3.5" /> Imprimir
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
+                            {f.estado_fiscal !== 'EMITIDO' && <span className="ml-2 text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">{f.estado_fiscal}</span>}
+                          </td>
+                          <td className="p-3 text-slate-400">{new Date(f.fecha_expedicion).toLocaleString('es-ES')}</td>
+                          <td className="p-3">
+                            {f.mesa} · <strong>{f.vendedor_nombre}</strong>
+                            {f.cliente_nif && <span className="block text-[10px] text-cyan-300">Cliente: {f.cliente_nombre_razon} ({f.cliente_nif})</span>}
+                          </td>
+                          <td className="p-3 uppercase font-bold text-slate-300">{f.metodo_pago}</td>
+                          <td className="p-3 text-right font-mono text-slate-400">{Number(f.base_imponible).toFixed(2)} €</td>
+                          <td className="p-3 text-right font-mono text-slate-400">{Number(f.cuota_iva).toFixed(2)} €</td>
+                          <td className={`p-3 text-right font-mono font-black ${Number(f.total_final) < 0 ? 'text-rose-400' : 'text-white'}`}>
+                            {Number(f.total_final).toFixed(2)} €
+                          </td>
+                          <td className="p-3 text-right flex justify-end gap-1.5">
+                            <button type="button" title="Imprimir" onClick={() => imprimirDocumentoFiscalHTML(f, configFiscal)} className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center cursor-pointer">
+                              <Printer className="h-3.5 w-3.5" />
+                            </button>
+                            {f.serie === 'T' && f.estado_fiscal === 'EMITIDO' && (
+                              <button type="button" title="Convertir en Factura Nominativa" onClick={() => setModalFacturaNominativa({ factura: f, razonSocial: '', nifCif: '', direccion: '', procesando: false })} className="px-2.5 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 text-cyan-300 flex items-center cursor-pointer transition-all">
+                                <FileText className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            {(f.serie === 'T' || f.serie === 'F') && f.estado_fiscal === 'EMITIDO' && (
+                              <button type="button" title="Anular / Devolver" onClick={() => setModalRectificativa({ factura: f, motivo: '', procesando: false })} className="px-2.5 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-600 hover:text-white text-rose-300 flex items-center cursor-pointer transition-all">
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                        {f.hijos?.map((h: any) => renderFila(h, nivel + 1))}
+                      </React.Fragment>
+                    );
+
+                    return raices.map(r => renderFila(r, 0));
+                  })()}
                 </tbody>
               </table>
             </div>
