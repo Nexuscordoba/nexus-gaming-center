@@ -36,7 +36,11 @@ import {
   Barcode,
   Image as ImageIcon,
   Save,
-  Building2
+  Building2,
+  Upload,
+  Download,
+  UtensilsCrossed,
+  X
 } from 'lucide-react';
 
 interface BackofficeProps {
@@ -73,7 +77,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     pin_administrador: '1234'
   });
 
-  const [mensajeAlerta, setMensajeAlerta] = useState<{ texto: string; tipo: 'ok' | 'error' } | null>(null);
+  const [mensajeAlerta, setMensajeAlerta] = useState<{ texto: string; tipo: 'ok' | 'error' | 'info' } | null>(null);
 
   const [ticketsHistorico, setTicketsHistorico] = useState<any[]>([]);
   const [fechaFiltroInicio, setFechaFiltroInicio] = useState<string>(new Date().toISOString().split('T')[0]);
@@ -117,7 +121,20 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [compraProveedor, setCompraProveedor] = useState('');
   const [compraAlbaran, setCompraAlbaran] = useState('');
 
-  const notificar = (texto: string, tipo: 'ok' | 'error' = 'ok') => {
+  const [isImportingCSV, setIsImportingCSV] = useState(false);
+
+  // ESTADO PARA LA HERRAMIENTA DE ELABORACIÓN DE LOTES (MENÚS/PLATOS)
+  const [modalElaboracion, setModalElaboracion] = useState<{
+    abierto: boolean;
+    articuloDestinoId: string;
+    cantidadGenerada: string;
+    ingredientes: Array<{ id: string; articulo_id: string; nombre: string; cantidad: number; costeBase: number; unidad: string }>;
+    ingSelId: string;
+    ingSelCant: string;
+    procesando: boolean;
+  } | null>(null);
+
+  const notificar = (texto: string, tipo: 'ok' | 'error' | 'info' = 'ok') => {
     setMensajeAlerta({ texto, tipo });
     setTimeout(() => setMensajeAlerta(null), 4500);
   };
@@ -532,6 +549,130 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
+  const descargarPlantillaCSV = () => {
+    const cabeceras = "Nombre;Categoria;Destino(barra/cocina);PrecioVenta;CosteUnitario;TipoIVA;UnidadMedida;ControlaStock(SI/NO);StockInicial;StockMinimo;VisibleTPV(SI/NO)\n";
+    const ejemplo1 = "Café Solo;Cafetería;barra;1.20;0.15;10;ud;SI;100;10;SI\n";
+    const ejemplo2 = "Ensalada César;Cocina / Tapas;cocina;6.50;2.10;10;ud;SI;20;5;SI\n";
+    const blob = new Blob([cabeceras + ejemplo1 + ejemplo2], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "plantilla_importacion_articulos.csv";
+    link.click();
+  };
+
+  const manejarImportacionCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImportingCSV(true);
+    notificar('Procesando archivo CSV...', 'info');
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const lineas = text.split('\n').map(l => l.trim()).filter(l => l);
+        
+        let importados = 0;
+        let ignorados = 0;
+
+        for (let i = 1; i < lineas.length; i++) {
+          const columnas = lineas[i].split(';');
+          if (columnas.length < 11) {
+            ignorados++;
+            continue;
+          }
+
+          const [
+            nombre, categoria, destino, precio, coste, iva, 
+            unidad, controlaStock, stockIni, stockMin, visible
+          ] = columnas;
+
+          if (!nombre) {
+            ignorados++;
+            continue;
+          }
+
+          const payloadMaestro = {
+            nombre: nombre.trim(),
+            categoria: categoria.trim() || 'Cafetería',
+            destino: destino.trim().toLowerCase() === 'cocina' ? 'cocina' : 'barra',
+            precio_venta: parseFloat(precio) || 0,
+            coste_unitario: parseFloat(coste) || 0,
+            tipo_iva: parseFloat(iva) || 10,
+            unidad_medida: unidad.trim().toLowerCase() || 'ud',
+            controla_stock: controlaStock.trim().toUpperCase() === 'SI',
+            stock_actual: parseFloat(stockIni) || 0,
+            stock_minimo: parseFloat(stockMin) || 0,
+            vendible_tpv: visible.trim().toUpperCase() === 'SI',
+            es_compuesto: false,
+            activo: true
+          };
+
+          // Evitar duplicados por nombre
+          const { data: existe } = await supabase
+            .from('articulos_cafeteria')
+            .select('id')
+            .eq('nombre', payloadMaestro.nombre)
+            .maybeSingle();
+
+          if (existe) {
+            ignorados++;
+            continue;
+          }
+
+          const { data: nuevoArt } = await supabase
+            .from('articulos_cafeteria')
+            .insert([payloadMaestro])
+            .select()
+            .single();
+
+          if (nuevoArt) {
+            if (payloadMaestro.controla_stock && payloadMaestro.stock_actual > 0) {
+              await supabase.from('movimientos_stock').insert([{
+                articulo_id: nuevoArt.id,
+                tipo_movimiento: 'AJUSTE_INICIAL',
+                cantidad: payloadMaestro.stock_actual,
+                coste_compra_unitario: payloadMaestro.coste_unitario,
+                usuario_nombre: adminVerificado?.nombre || 'Admin Importación',
+                observaciones: 'Stock inicial por CSV'
+              }]);
+            }
+
+            if (payloadMaestro.vendible_tpv) {
+              await supabase.from('productos_carta').insert([{
+                articulo_inventario_id: nuevoArt.id,
+                nombre: payloadMaestro.nombre,
+                precio: payloadMaestro.precio_venta,
+                categoria: payloadMaestro.categoria,
+                destino: payloadMaestro.destino,
+                activo: true,
+                coste_unitario: payloadMaestro.coste_unitario,
+                tipo_iva: payloadMaestro.tipo_iva,
+                unidad_medida: payloadMaestro.unidad_medida,
+                controla_stock: payloadMaestro.controla_stock,
+                stock_actual: payloadMaestro.stock_actual,
+                stock_minimo: payloadMaestro.stock_minimo,
+                es_compuesto: false
+              }]);
+            }
+            importados++;
+          }
+        }
+        
+        cargarArticulosYCategorias();
+        notificar(`Importación completada: ${importados} artículos nuevos añadidos. (${ignorados} ignorados o duplicados).`, 'ok');
+      } catch (err: any) {
+        notificar('Error procesando CSV: ' + err.message, 'error');
+      } finally {
+        setIsImportingCSV(false);
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const registrarCompraMercancia = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!compraArticuloId) return;
@@ -604,6 +745,112 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       await supabase.from('configuracion_fiscal').insert([configFiscal]);
     }
     notificar('Datos fiscales y PIN de autorización actualizados correctamente.');
+  };
+
+  // LÓGICA DE ELABORACIÓN DE LOTES Y MENÚS
+  const agregarIngredienteAElaboracion = () => {
+    if (!modalElaboracion || !modalElaboracion.ingSelId) return;
+    const ingObj = articulosMaestro.find((a) => a.id === modalElaboracion.ingSelId);
+    if (!ingObj) return;
+
+    const cant = parseFloat(modalElaboracion.ingSelCant) || 0;
+    if (cant <= 0) return;
+
+    const nuevoIng = {
+      id: Date.now().toString(),
+      articulo_id: ingObj.id,
+      nombre: ingObj.nombre,
+      cantidad: cant,
+      unidad: ingObj.unidad_medida,
+      costeBase: Number(ingObj.coste_unitario || 0)
+    };
+
+    setModalElaboracion({
+      ...modalElaboracion,
+      ingredientes: [...modalElaboracion.ingredientes, nuevoIng],
+      ingSelId: '',
+      ingSelCant: '1'
+    });
+  };
+
+  const eliminarIngredienteElaboracion = (idToRemove: string) => {
+    if (!modalElaboracion) return;
+    setModalElaboracion({
+      ...modalElaboracion,
+      ingredientes: modalElaboracion.ingredientes.filter(i => i.id !== idToRemove)
+    });
+  };
+
+const confirmarElaboracionLote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalElaboracion) return;
+
+    const racionesGeneradas = parseFloat(modalElaboracion.cantidadGenerada) || 0;
+    if (racionesGeneradas <= 0 || modalElaboracion.ingredientes.length === 0) {
+      notificar('Debes indicar las raciones generadas y añadir al menos un ingrediente.', 'error');
+      return;
+    }
+
+    setModalElaboracion({ ...modalElaboracion, procesando: true });
+
+    try {
+      // 1. Calcular coste total de los ingredientes consumidos
+      let costeTotalIngredientes = 0;
+      const promesasIngredientes = modalElaboracion.ingredientes.map(async (ing) => {
+        costeTotalIngredientes += (ing.cantidad * ing.costeBase);
+        
+        // 2. Restar stock real de cada ingrediente
+        const refObj = articulosMaestro.find(a => a.id === ing.articulo_id);
+        const nuevoStockIng = (Number(refObj?.stock_actual) || 0) - ing.cantidad;
+
+        // AQUÍ ESTABA EL ERROR: Cambiado nuevoStockReal por nuevoStockIng
+        await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoStockIng }).eq('id', ing.articulo_id);
+        await supabase.from('productos_carta').update({ stock_actual: nuevoStockIng }).eq('articulo_inventario_id', ing.articulo_id);
+
+        await supabase.from('movimientos_stock').insert([{
+          articulo_id: ing.articulo_id,
+          tipo_movimiento: 'ELABORACION_SALIDA',
+          cantidad: -Math.abs(ing.cantidad),
+          coste_compra_unitario: ing.costeBase,
+          usuario_nombre: adminVerificado?.nombre || 'Admin',
+          observaciones: `Consumo para elaboración de lote de ${racionesGeneradas} uds`
+        }]);
+      });
+
+      await Promise.all(promesasIngredientes);
+
+      // 3. Sumar el stock generado al plato final y actualizar su coste
+      const costeProporcionalUnitario = costeTotalIngredientes / racionesGeneradas;
+      const platoDestino = articulosMaestro.find(a => a.id === modalElaboracion.articuloDestinoId);
+      const nuevoStockPlato = (Number(platoDestino?.stock_actual) || 0) + racionesGeneradas;
+
+      await supabase.from('articulos_cafeteria').update({ 
+        stock_actual: nuevoStockPlato,
+        coste_unitario: costeProporcionalUnitario 
+      }).eq('id', modalElaboracion.articuloDestinoId);
+
+      await supabase.from('productos_carta').update({ 
+        stock_actual: nuevoStockPlato,
+        coste_unitario: costeProporcionalUnitario 
+      }).eq('articulo_inventario_id', modalElaboracion.articuloDestinoId);
+
+      await supabase.from('movimientos_stock').insert([{
+        articulo_id: modalElaboracion.articuloDestinoId,
+        tipo_movimiento: 'ELABORACION_ENTRADA',
+        cantidad: racionesGeneradas,
+        coste_compra_unitario: costeProporcionalUnitario,
+        usuario_nombre: adminVerificado?.nombre || 'Admin',
+        observaciones: `Producción de lote interno. Coste total materia prima: ${costeTotalIngredientes.toFixed(2)}€`
+      }]);
+
+      notificar(`Lote elaborado con éxito: +${racionesGeneradas} raciones con un coste unitario de ${costeProporcionalUnitario.toFixed(2)}€`, 'ok');
+      setModalElaboracion(null);
+      cargarArticulosYCategorias();
+      cargarMovimientosInventario();
+    } catch (err: any) {
+      notificar('Error al procesar la elaboración del lote: ' + err.message, 'error');
+      setModalElaboracion({ ...modalElaboracion, procesando: false });
+    }
   };
 
   if (!adminVerificado) {
@@ -697,6 +944,128 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between font-sans">
+      
+      {/* MODAL ELABORACIÓN LOTE */}
+      {modalElaboracion && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form
+            onSubmit={confirmarElaboracionLote}
+            className="w-full max-w-2xl bg-[#0d0f17] border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-emerald-400">
+                <UtensilsCrossed className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Herramienta de Elaboración de Lotes (Producción)</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalElaboracion(null)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">Plato Destino a Generar (Suma Stock)</label>
+                <select
+                  required
+                  value={modalElaboracion.articuloDestinoId}
+                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, articuloDestinoId: e.target.value })}
+                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-white"
+                >
+                  <option value="">-- Selecciona el plato elaborado --</option>
+                  {articulosMaestro.map(a => (
+                    <option key={a.id} value={a.id}>{a.nombre} (Stock actual: {a.stock_actual} {a.unidad_medida})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">Raciones Generadas del Plato *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  placeholder="Ej: 20 tapas / 5 tartas"
+                  value={modalElaboracion.cantidadGenerada}
+                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, cantidadGenerada: e.target.value })}
+                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-emerald-400 font-mono font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+              <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Añadir Ingredientes Consumidos</h4>
+              <div className="flex gap-2">
+                <select
+                  value={modalElaboracion.ingSelId}
+                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, ingSelId: e.target.value })}
+                  className="flex-1 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs"
+                >
+                  <option value="">-- Ingrediente --</option>
+                  {articulosMaestro
+                    .filter(a => a.id !== modalElaboracion.articuloDestinoId)
+                    .map(a => (
+                      <option key={a.id} value={a.id}>{a.nombre} ({a.unidad_medida})</option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="Cantidad usada"
+                  value={modalElaboracion.ingSelCant}
+                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, ingSelCant: e.target.value })}
+                  className="w-28 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={agregarIngredienteAElaboracion}
+                  className="px-3 rounded-xl bg-amber-500 text-slate-950 font-bold"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+
+              {modalElaboracion.ingredientes.length > 0 && (
+                <div className="space-y-1.5 mt-3 max-h-40 overflow-y-auto pr-1">
+                  {modalElaboracion.ingredientes.map((ing) => (
+                    <div key={ing.id} className="flex justify-between items-center bg-black/40 px-3 py-2 rounded-lg text-xs">
+                      <span className="text-white"><strong>{ing.nombre}</strong>: {ing.cantidad} {ing.unidad}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-slate-400">{(ing.cantidad * ing.costeBase).toFixed(2)} €</span>
+                        <button
+                          type="button"
+                          onClick={() => eliminarIngredienteElaboracion(ing.id)}
+                          className="text-rose-400"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-between items-center pt-2">
+              <div className="text-xs text-slate-400">
+                Coste total materia prima: <strong className="text-white">
+                  {modalElaboracion.ingredientes.reduce((acc, i) => acc + (i.cantidad * i.costeBase), 0).toFixed(2)} €
+                </strong>
+              </div>
+              <button
+                type="submit"
+                disabled={modalElaboracion.procesando}
+                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50"
+              >
+                {modalElaboracion.procesando ? 'Procesando Lote...' : 'Finalizar Elaboración'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/95 backdrop-blur-md z-30">
         <div className="flex items-center gap-3">
           <div className="h-12 w-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center">
@@ -777,6 +1146,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             className={`p-4 rounded-2xl border text-xs font-bold flex items-center gap-2 ${
               mensajeAlerta.tipo === 'ok'
                 ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                : mensajeAlerta.tipo === 'info'
+                ? 'bg-sky-950/60 border-sky-500/40 text-sky-300'
                 : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
             }`}
           >
@@ -1132,19 +1503,45 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               onSubmit={guardarYSincronizarArticulo}
               className="lg:col-span-7 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-5"
             >
-              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3 flex-wrap gap-3">
                 <h3 className="font-black text-white text-base">
                   {editandoArticuloId ? '✏️ Editando Artículo' : '➕ Crear Nuevo Artículo / Receta'}
                 </h3>
-                {editandoArticuloId && (
-                  <button
-                    type="button"
-                    onClick={limpiarFormularioArticulo}
-                    className="text-xs text-amber-400 hover:underline cursor-pointer"
-                  >
-                    Cancelar edición y crear nuevo
-                  </button>
-                )}
+                
+                <div className="flex items-center gap-2">
+                  {!editandoArticuloId && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={descargarPlantillaCSV}
+                        className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Download className="h-3.5 w-3.5" /> Plantilla CSV
+                      </button>
+                      
+                      <label className="px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 border border-cyan-500/30 text-cyan-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors">
+                        <Upload className="h-3.5 w-3.5" />
+                        {isImportingCSV ? 'Importando...' : 'Importar CSV'}
+                        <input
+                          type="file"
+                          accept=".csv"
+                          className="hidden"
+                          onChange={manejarImportacionCSV}
+                          disabled={isImportingCSV}
+                        />
+                      </label>
+                    </>
+                  )}
+                  {editandoArticuloId && (
+                    <button
+                      type="button"
+                      onClick={limpiarFormularioArticulo}
+                      className="text-xs text-amber-400 hover:underline cursor-pointer"
+                    >
+                      Cancelar edición y crear nuevo
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 space-y-2 text-xs">
@@ -1554,14 +1951,36 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
         {pestanaActiva === 'inventario_compras' && (
           <div className="space-y-6">
+            <div className="flex justify-between items-center bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
+              <h2 className="text-sm font-black text-white flex items-center gap-2">
+                <Layers className="h-5 w-5 text-emerald-400" />
+                Gestión Centralizada de Stock y Elaboraciones
+              </h2>
+              <button
+                type="button"
+                onClick={() => setModalElaboracion({
+                  abierto: true,
+                  articuloDestinoId: '',
+                  cantidadGenerada: '',
+                  ingredientes: [],
+                  ingSelId: '',
+                  ingSelCant: '1',
+                  procesando: false
+                })}
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all shadow-lg"
+              >
+                <UtensilsCrossed className="h-4 w-4" /> Elaborar Lote / Receta
+              </button>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               <form
                 onSubmit={registrarCompraMercancia}
-                className="lg:col-span-5 p-6 rounded-3xl bg-[#0d0f17] border border-emerald-500/30 space-y-4 text-xs"
+                className="lg:col-span-5 p-6 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-4 text-xs"
               >
-                <div className="flex items-center gap-2 text-emerald-400 border-b border-white/10 pb-3">
+                <div className="flex items-center gap-2 text-cyan-400 border-b border-white/10 pb-3">
                   <ShoppingCart className="h-5 w-5" />
-                  <h3 className="font-black text-white text-sm">Registrar Compra y Sumar al Stock Real</h3>
+                  <h3 className="font-black text-white text-sm">Registrar Compra Proveedor (Entrada Stock)</h3>
                 </div>
 
                 <div>
@@ -1587,7 +2006,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="font-bold text-emerald-400 block mb-1">Cantidad Comprada a Sumar *</label>
+                    <label className="font-bold text-cyan-400 block mb-1">Cantidad Comprada a Sumar *</label>
                     <input
                       type="number"
                       step="0.001"
@@ -1595,7 +2014,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                       placeholder="Ej: 10 o 2.500"
                       value={compraCantidad}
                       onChange={(e) => setCompraCantidad(e.target.value)}
-                      className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-white font-mono font-bold"
+                      className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-white font-mono font-bold"
                     />
                   </div>
                   <div>
@@ -1636,7 +2055,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
                 <button
                   type="submit"
-                  className="w-full py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black uppercase tracking-wider cursor-pointer shadow-lg"
+                  className="w-full py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black uppercase tracking-wider cursor-pointer shadow-lg"
                 >
                   Añadir Compra y Sumar al Inventario
                 </button>
@@ -1678,16 +2097,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                               {Number(a.coste_unitario).toFixed(3)} € / {a.unidad_medida}
                             </td>
                             <td className="p-2.5 text-right font-mono font-black text-sm text-cyan-400">
-                              {a.es_compuesto
-                                ? 'Por Escandallo'
-                                : `${Number(a.stock_actual).toFixed(2)} ${a.unidad_medida}`}
+                              {Number(a.stock_actual).toFixed(2)} {a.unidad_medida}
                             </td>
                             <td className="p-2.5 text-right">
-                              {a.es_compuesto ? (
-                                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">
-                                  Receta
-                                </span>
-                              ) : bajoMinimo ? (
+                              {bajoMinimo ? (
                                 <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 text-[10px] font-bold">
                                   ⚠️ Reponer
                                 </span>
@@ -1707,7 +2120,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             </div>
 
             <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-3">
-              <h3 className="font-bold text-white text-sm">Últimos Movimientos de Inventario (Compras, Ventas y Escandallos)</h3>
+              <h3 className="font-bold text-white text-sm">Últimos Movimientos de Inventario (Compras, Ventas y Elaboraciones)</h3>
               <div className="overflow-x-auto max-h-60">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-white/5 text-slate-400 uppercase">
