@@ -139,6 +139,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     ingredientes: Array<{ id: string; articulo_id: string; nombre: string; cantidad: number; costeBase: number; unidad: string }>;
     ingSelId: string;
     ingSelCant: string;
+    ingSelCoste: string;
     procesando: boolean;
   } | null>(null);
 
@@ -381,6 +382,20 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       if (rpcError) throw rpcError;
 
+      // Devolver stock al anular / rectificar factura
+      for (const linea of (orig.lineas || [])) {
+        if (linea.articulo_id || linea.producto_id) {
+          const artId = linea.articulo_id || linea.producto_id;
+          const cantVendida = Number(linea.cantidad || 0);
+          const artRef = articulosMaestro.find(a => a.id === artId);
+          if (artRef && artRef.controla_stock) {
+            const nuevoStock = Number(artRef.stock_actual || 0) + cantVendida;
+            await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoStock }).eq('id', artId);
+            await supabase.from('productos_carta').update({ stock_actual: nuevoStock }).eq('articulo_inventario_id', artId);
+          }
+        }
+      }
+
       const fechaHoy = new Date().toISOString().split('T')[0];
       if (cajaHoy && cajaHoy.estado === 'abierta' && orig.fecha_expedicion.startsWith(fechaHoy)) {
         const nuevoEfectivo =
@@ -410,6 +425,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       notificar(`Factura Rectificativa ${docRect.numero_completo} emitida e impresa.`, 'ok');
       setModalRectificativa(null);
       cargarTicketsYVentas();
+      cargarArticulosYCategorias();
     } catch (err: any) {
       notificar('Error al emitir factura rectificativa: ' + err.message, 'error');
       setModalRectificativa({ ...modalRectificativa, procesando: false });
@@ -1036,6 +1052,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     if (!ingObj) return;
 
     const cant = parseFloat(modalElaboracion.ingSelCant) || 0;
+    const costeManual = modalElaboracion.ingSelCoste.trim() !== '' ? parseFloat(modalElaboracion.ingSelCoste) : Number(ingObj.coste_unitario || 0);
     if (cant <= 0) return;
 
     const nuevoIng = {
@@ -1044,14 +1061,15 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       nombre: ingObj.nombre,
       cantidad: cant,
       unidad: ingObj.unidad_medida,
-      costeBase: Number(ingObj.coste_unitario || 0)
+      costeBase: costeManual
     };
 
     setModalElaboracion({
       ...modalElaboracion,
       ingredientes: [...modalElaboracion.ingredientes, nuevoIng],
       ingSelId: '',
-      ingSelCant: '1'
+      ingSelCant: '1',
+      ingSelCoste: ''
     });
   };
 
@@ -1092,7 +1110,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           cantidad: -Math.abs(ing.cantidad),
           coste_compra_unitario: ing.costeBase,
           usuario_nombre: adminVerificado?.nombre || 'Admin',
-          observaciones: `Consumo para elaboración de lote de ${racionesGeneradas} uds`
+          observaciones: `Consumo para elaboración de lote de ${racionesGeneradas} raciones`
         }]);
       });
 
@@ -1118,7 +1136,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         cantidad: racionesGeneradas,
         coste_compra_unitario: costeProporcionalUnitario,
         usuario_nombre: adminVerificado?.nombre || 'Admin',
-        observaciones: `Producción de lote interno. Coste total materia prima: ${costeTotalIngredientes.toFixed(2)}€`
+        observaciones: `Producción de lote interno (${racionesGeneradas} raciones). Coste total: ${costeTotalIngredientes.toFixed(2)}€`
       }]);
 
       notificar(`Lote elaborado con éxito: +${racionesGeneradas} raciones con un coste unitario de ${costeProporcionalUnitario.toFixed(2)}€`, 'ok');
@@ -1225,7 +1243,19 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     mapaHoras[h].total += Number(t.total_final || 0);
   });
   const ventasPorHora = Object.values(mapaHoras).sort((a, b) => a.hora.localeCompare(b.hora));
-  const maxVentaHora = ventasPorHora.reduce((max, h) => (h.total > max ? h.total : max), 1); 
+   
+
+  // Generar array continuo de 08:00 a 23:00 para el gráfico de líneas
+  const horasContinuas = Array.from({ length: 16 }, (_, i) => {
+    const horaStr = String(i + 8).padStart(2, '0') + ':00';
+    const encontrado = ventasPorHora.find(v => v.hora === horaStr);
+    return {
+      hora: horaStr,
+      total: encontrado ? encontrado.total : 0,
+      operaciones: encontrado ? encontrado.operaciones : 0
+    };
+  });
+  const maxVentaLinea = Math.max(...horasContinuas.map(h => h.total), 1);
 
   const margenBeneficioArticulo =
     parseFloat(artPrecioVenta) > 0
@@ -1340,7 +1370,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   required
                   value={modalElaboracion.articuloDestinoId}
                   onChange={(e) => setModalElaboracion({ ...modalElaboracion, articuloDestinoId: e.target.value })}
-                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-white"
+                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-white text-xs"
                 >
                   <option value="">-- Selecciona el plato elaborado --</option>
                   {articulosMaestro.map(a => (
@@ -1357,38 +1387,55 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   placeholder="Ej: 20 tapas / 5 tartas"
                   value={modalElaboracion.cantidadGenerada}
                   onChange={(e) => setModalElaboracion({ ...modalElaboracion, cantidadGenerada: e.target.value })}
-                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-emerald-400 font-mono font-bold"
+                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-emerald-400 font-mono font-bold text-xs"
                 />
               </div>
             </div>
 
             <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
               <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Añadir Ingredientes Consumidos</h4>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                 <select
                   value={modalElaboracion.ingSelId}
-                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, ingSelId: e.target.value })}
-                  className="flex-1 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs"
+                  onChange={(e) => {
+                    const selId = e.target.value;
+                    const ingFound = articulosMaestro.find(a => a.id === selId);
+                    setModalElaboracion({
+                      ...modalElaboracion,
+                      ingSelId: selId,
+                      ingSelCoste: ingFound ? String(ingFound.coste_unitario || 0) : ''
+                    });
+                  }}
+                  className="sm:col-span-5 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs"
                 >
-                  <option value="">-- Ingrediente --</option>
+                  <option value="">-- Seleccionar ingrediente --</option>
                   {articulosMaestro
                     .filter(a => a.id !== modalElaboracion.articuloDestinoId)
                     .map(a => (
-                      <option key={a.id} value={a.id}>{a.nombre} ({a.unidad_medida})</option>
+                      <option key={a.id} value={a.id}>{a.nombre} ({Number(a.coste_unitario || 0).toFixed(2)}€/{a.unidad_medida})</option>
                   ))}
                 </select>
                 <input
                   type="number"
                   step="0.01"
-                  placeholder="Cantidad usada"
+                  placeholder="Cantidad"
                   value={modalElaboracion.ingSelCant}
                   onChange={(e) => setModalElaboracion({ ...modalElaboracion, ingSelCant: e.target.value })}
-                  className="w-28 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs font-mono"
+                  className="sm:col-span-3 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs font-mono"
+                />
+                <input
+                  type="number"
+                  step="0.0001"
+                  placeholder="Coste unitario (€)"
+                  value={modalElaboracion.ingSelCoste}
+                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, ingSelCoste: e.target.value })}
+                  className="sm:col-span-3 bg-black/60 border border-amber-500/40 rounded-xl px-2.5 py-2 text-amber-400 text-xs font-mono font-bold"
+                  title="Puedes modificar el coste a mano si se compró específicamente para este lote"
                 />
                 <button
                   type="button"
                   onClick={agregarIngredienteAElaboracion}
-                  className="px-3 rounded-xl bg-amber-500 text-slate-950 font-bold"
+                  className="sm:col-span-1 rounded-xl bg-amber-500 text-slate-950 font-bold flex items-center justify-center cursor-pointer"
                 >
                   <Plus className="h-4 w-4" />
                 </button>
@@ -1398,13 +1445,13 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 <div className="space-y-1.5 mt-3 max-h-40 overflow-y-auto pr-1">
                   {modalElaboracion.ingredientes.map((ing: any) => (
                     <div key={ing.id} className="flex justify-between items-center bg-black/40 px-3 py-2 rounded-lg text-xs">
-                      <span className="text-white"><strong>{ing.nombre}</strong>: {ing.cantidad} {ing.unidad}</span>
+                      <span className="text-white"><strong>{ing.nombre}</strong>: {ing.cantidad} {ing.unidad} <span className="text-amber-400 font-mono">({ing.costeBase.toFixed(4)}€/ud)</span></span>
                       <div className="flex items-center gap-3">
-                        <span className="font-mono text-slate-400">{(ing.cantidad * ing.costeBase).toFixed(2)} €</span>
+                        <span className="font-mono text-emerald-400 font-bold">{(ing.cantidad * ing.costeBase).toFixed(2)} €</span>
                         <button
                           type="button"
                           onClick={() => eliminarIngredienteElaboracion(ing.id)}
-                          className="text-rose-400"
+                          className="text-rose-400 hover:text-rose-300 cursor-pointer"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -1601,23 +1648,63 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 )}
               </div>
 
+              {/* GRÁFICO DE LÍNEAS CONTINUAS POR HORAS (08:00 A 23:00) */}
               <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
-                <div className="flex items-center gap-2 text-cyan-400 border-b border-white/10 pb-3"><Clock className="h-5 w-5" /><h3 className="font-bold text-white text-sm">Distribución de Ventas por Horas</h3></div>
-                {ventasPorHora.length === 0 ? ( <p className="text-xs text-slate-500 py-6 text-center">Sin actividad horaria registrada.</p> ) : (
-                  <div className="space-y-4 pt-2 max-h-72 overflow-y-auto pr-2">
-                    {ventasPorHora.map((h, i) => (
-                      <div key={i} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
-                          <div><span className="font-mono font-bold text-slate-300">{h.hora}</span><span className="text-slate-500 ml-2">({h.operaciones} ops)</span></div>
-                          <span className="font-mono font-bold text-emerald-400">{h.total.toFixed(2)} €</span>
-                        </div>
-                        <div className="w-full bg-black/60 rounded-full h-1.5 border border-white/5 overflow-hidden mt-2">
-                          <div className="bg-emerald-400 h-1.5 rounded-full" style={{ width: `${Math.max(1, (h.total / maxVentaHora) * 100)}%` }}></div>
-                        </div>
-                      </div>
+                <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                  <div className="flex items-center gap-2 text-cyan-400">
+                    <Clock className="h-5 w-5" />
+                    <h3 className="font-bold text-white text-sm">Evolución de Ventas por Horas (Apertura a Cierre)</h3>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono">08:00 - 23:00</span>
+                </div>
+
+                <div className="pt-2 pb-2">
+                  <div className="h-44 w-full relative">
+                    <svg className="w-full h-full overflow-visible" viewBox="0 0 600 120" preserveAspectRatio="none">
+                      {/* Líneas guía horizontales */}
+                      <line x1="0" y1="0" x2="600" y2="0" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
+                      <line x1="0" y1="60" x2="600" y2="60" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
+                      <line x1="0" y1="120" x2="600" y2="120" stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
+
+                      {/* Línea de tendencia SVG */}
+                      <path
+                        d={horasContinuas.reduce((acc, h, idx) => {
+                          const x = (idx / (horasContinuas.length - 1)) * 600;
+                          const y = 120 - (h.total / maxVentaLinea) * 100;
+                          return idx === 0 ? `M ${x} ${y}` : `${acc} L ${x} ${y}`;
+                        }, '')}
+                        fill="none"
+                        stroke="#22d3ee"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+
+                      {/* Puntos interactivos en cada hora */}
+                      {horasContinuas.map((h, idx) => {
+                        const x = (idx / (horasContinuas.length - 1)) * 600;
+                        const y = 120 - (h.total / maxVentaLinea) * 100;
+                        return (
+                          <g key={idx} className="group cursor-pointer">
+                            <circle cx={x} cy={y} r="4" className="fill-cyan-400 stroke-[#0d0f17] stroke-2 transition-all group-hover:r-7" />
+                            {h.total > 0 && (
+                              <text x={x} y={y - 10} textAnchor="middle" className="text-[9px] font-mono fill-cyan-300 opacity-0 group-hover:opacity-100 transition-opacity">
+                                {h.total.toFixed(0)}€
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+
+                  {/* Eje X de Horas */}
+                  <div className="flex justify-between text-[9px] font-mono text-slate-500 pt-3 border-t border-white/5">
+                    {horasContinuas.map((h, idx) => (
+                      <span key={idx} className={h.total > 0 ? 'text-cyan-400 font-bold' : ''}>{h.hora.substring(0, 2)}h</span>
                     ))}
                   </div>
-                )}
+                </div>
               </div>
             </div>
 
@@ -2032,7 +2119,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 <Layers className="h-5 w-5 text-emerald-400" />
                 Gestión Centralizada de Stock y Elaboraciones
               </h2>
-              <button type="button" onClick={() => setModalElaboracion({ abierto: true, articuloDestinoId: '', cantidadGenerada: '', ingredientes: [], ingSelId: '', ingSelCant: '1', procesando: false })} className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all shadow-lg">
+              <button type="button" onClick={() => setModalElaboracion({ abierto: true, articuloDestinoId: '', cantidadGenerada: '', ingredientes: [], ingSelId: '', ingSelCant: '1', ingSelCoste: '', procesando: false })} className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all shadow-lg">
                 <UtensilsCrossed className="h-4 w-4" /> Elaborar Lote / Receta
               </button>
             </div>
