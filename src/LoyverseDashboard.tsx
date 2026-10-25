@@ -16,7 +16,7 @@ import {
   FileSpreadsheet, FileText, Printer, ShieldAlert, ShoppingCart, Layers,
   Scale, Barcode, Image as ImageIcon, Save, Building2, Upload, Download,
   UtensilsCrossed, X, Target, ListPlus, RotateCcw, CornerDownRight,
-  UserCog, Check, Ban
+  UserCog, Check, Ban, Truck
 } from 'lucide-react';
 
 interface BackofficeProps {
@@ -64,7 +64,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [errorLoginAdmin, setErrorLoginAdmin] = useState('');
 
   const [pestanaActiva, setPestanaActiva] = useState<
-    'ventas_dia' | 'historico_tickets' | 'articulos_escandallos' | 'inventario_compras' | 'datos_fiscales' | 'empleados'
+    'ventas_dia' | 'historico_tickets' | 'articulos_escandallos' | 'inventario_compras' | 'proveedores' | 'datos_fiscales' | 'empleados'
   >('ventas_dia');
 
   const [configFiscal, setConfigFiscal] = useState<ConfiguracionFiscal>({
@@ -127,6 +127,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [compraProveedor, setCompraProveedor] = useState('');
   const [compraAlbaran, setCompraAlbaran] = useState('');
 
+  // Estados para Proveedores
+  const [listaProveedores, setListaProveedores] = useState<any[]>([]);
+  const [filtroArticuloProveedor, setFiltroArticuloProveedor] = useState('');
+
   const [isImportingCSV, setIsImportingCSV] = useState(false);
 
   const [empleados, setEmpleados] = useState<any[]>([]);
@@ -177,6 +181,20 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     if (data) setEmpleados(data);
   };
 
+  const cargarProveedores = async () => {
+    const { data } = await supabase.from('proveedores').select('*').order('nombre', { ascending: true });
+    if (data) {
+      setListaProveedores(data);
+    } else {
+      // Si la tabla no existe o está vacía, extraemos los proveedores únicos de los movimientos de compra
+      const { data: movs } = await supabase.from('movimientos_stock').select('proveedor').not('proveedor', 'is', null);
+      if (movs) {
+        const unicos = Array.from(new Set(movs.map(m => m.proveedor))).filter(Boolean).map(p => ({ id: p, nombre: p }));
+        setListaProveedores(unicos);
+      }
+    }
+  };
+
   const guardarEmpleado = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!modalEmpleado) return;
@@ -205,6 +223,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   useEffect(() => {
     if (adminVerificado && pestanaActiva === 'empleados') cargarEmpleados();
+    if (adminVerificado && pestanaActiva === 'proveedores') cargarProveedores();
   }, [pestanaActiva, adminVerificado]);
 
   useEffect(() => {
@@ -263,7 +282,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     await Promise.all([
       cargarTicketsYVentas(),
       cargarArticulosYCategorias(),
-      cargarMovimientosInventario(0)
+      cargarMovimientosInventario(0),
+      cargarProveedores()
     ]);
   };
 
@@ -963,7 +983,17 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         ? parseFloat(compraCosteUnitario)
         : Number(artActual.coste_unitario || 0);
 
+    const nombreProvLimpio = compraProveedor.trim();
+
     try {
+      // Registrar / asegurar proveedor en tabla proveedores si existe
+      if (nombreProvLimpio) {
+        const { data: provExistente } = await supabase.from('proveedores').select('id').ilike('nombre', nombreProvLimpio).maybeSingle();
+        if (!provExistente) {
+          await supabase.from('proveedores').insert([{ nombre: nombreProvLimpio }]);
+        }
+      }
+
       await supabase
         .from('articulos_cafeteria')
         .update({
@@ -987,10 +1017,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           tipo_movimiento: 'COMPRA',
           cantidad: cantComprada,
           coste_compra_unitario: nuevoCoste,
-          proveedor: compraProveedor.trim(),
+          proveedor: nombreProvLimpio,
           numero_albaran_factura: compraAlbaran.trim(),
           usuario_nombre: adminVerificado?.nombre || 'Administrador',
-          observaciones: `Entrada compra proveedor ${compraProveedor.trim()}`
+          observaciones: `Entrada compra proveedor ${nombreProvLimpio}`
         }
       ]);
 
@@ -1003,6 +1033,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       setCompraAlbaran('');
       cargarArticulosYCategorias();
       cargarMovimientosInventario(pageMovimientos);
+      cargarProveedores();
     } catch (err: any) {
       notificar('Error al registrar la compra: ' + err.message, 'error');
     }
@@ -1243,7 +1274,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     mapaHoras[h].total += Number(t.total_final || 0);
   });
   const ventasPorHora = Object.values(mapaHoras).sort((a, b) => a.hora.localeCompare(b.hora));
-   
 
   // Generar array continuo de 08:00 a 23:00 para el gráfico de líneas
   const horasContinuas = Array.from({ length: 16 }, (_, i) => {
@@ -1567,6 +1597,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         <button onClick={() => setPestanaActiva('historico_tickets')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'historico_tickets' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Receipt className="h-4 w-4" /> Histórico Tickets</button>
         <button onClick={() => setPestanaActiva('articulos_escandallos')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'articulos_escandallos' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Layers className="h-4 w-4" /> Artículos y Escandallos</button>
         <button onClick={() => setPestanaActiva('inventario_compras')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'inventario_compras' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Package className="h-4 w-4" /> Inventario y Compras</button>
+        <button onClick={() => setPestanaActiva('proveedores')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'proveedores' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Truck className="h-4 w-4" /> Proveedores y Precios</button>
         <button onClick={() => setPestanaActiva('empleados')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'empleados' ? 'bg-purple-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><UserCog className="h-4 w-4" /> Empleados</button>
         <button onClick={() => setPestanaActiva('datos_fiscales')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'datos_fiscales' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Building2 className="h-4 w-4" /> Configuración Fiscal</button>
       </div>
@@ -1574,6 +1605,73 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       <main className="flex-1 max-w-7xl w-full mx-auto space-y-6 pb-16">
         {mensajeAlerta && (
           <div className={`p-4 rounded-2xl border text-xs font-bold flex items-center gap-2 ${mensajeAlerta.tipo === 'ok' ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300' : mensajeAlerta.tipo === 'info' ? 'bg-sky-950/60 border-sky-500/40 text-sky-300' : 'bg-rose-950/60 border-rose-500/40 text-rose-300'}`}><CheckCircle2 className="h-4 w-4 shrink-0" /><span>{mensajeAlerta.texto}</span></div>
+        )}
+
+        {/* PESTAÑA PROVEEDORES Y PRECIOS HISTÓRICOS */}
+        {pestanaActiva === 'proveedores' && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
+              <h2 className="text-sm font-black text-white flex items-center gap-2">
+                <Truck className="h-5 w-5 text-emerald-400" /> Trazabilidad de Proveedores y Evolución de Precios por Artículo
+              </h2>
+              <div className="relative w-64">
+                <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Filtrar por artículo o proveedor..."
+                  value={filtroArticuloProveedor}
+                  onChange={(e) => setFiltroArticuloProveedor(e.target.value)}
+                  className="w-full bg-black/60 border border-white/15 rounded-xl pl-8 pr-2.5 py-1.5 text-xs text-white"
+                />
+              </div>
+            </div>
+
+            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
+              <h3 className="font-bold text-white text-sm">Histórico de Compras por Artículo y Proveedor</h3>
+              <div className="overflow-x-auto max-h-[500px]">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
+                    <tr>
+                      <th className="p-3">Fecha</th>
+                      <th className="p-3">Artículo / Materia Prima</th>
+                      <th className="p-3">Proveedor</th>
+                      <th className="p-3 text-right">Cantidad Comprada</th>
+                      <th className="p-3 text-right">Coste Unitario</th>
+                      <th className="p-3">Nº Albarán</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {movimientosStock
+                      .filter(m => m.tipo_movimiento === 'COMPRA')
+                      .filter(m => {
+                        const texto = `${m.articulos_cafeteria?.nombre || ''} ${m.proveedor || ''} ${m.numero_albaran_factura || ''}`.toLowerCase();
+                        return texto.includes(filtroArticuloProveedor.toLowerCase());
+                      })
+                      .length === 0 ? (
+                        <tr><td colSpan={6} className="p-8 text-center text-slate-500">No hay registros de compras con ese filtro.</td></tr>
+                      ) : (
+                        movimientosStock
+                          .filter(m => m.tipo_movimiento === 'COMPRA')
+                          .filter(m => {
+                            const texto = `${m.articulos_cafeteria?.nombre || ''} ${m.proveedor || ''} ${m.numero_albaran_factura || ''}`.toLowerCase();
+                            return texto.includes(filtroArticuloProveedor.toLowerCase());
+                          })
+                          .map((m) => (
+                            <tr key={m.id} className="hover:bg-white/[0.02]">
+                              <td className="p-3 text-slate-400">{new Date(m.created_at).toLocaleDateString('es-ES')}</td>
+                              <td className="p-3 font-bold text-white">{m.articulos_cafeteria?.nombre || 'Artículo eliminado'}</td>
+                              <td className="p-3 text-emerald-400 font-bold">{m.proveedor || 'Sin especificar'}</td>
+                              <td className="p-3 text-right font-mono font-bold">+{Number(m.cantidad).toFixed(Number.isInteger(Number(m.cantidad)) ? 0 : 2)} {m.articulos_cafeteria?.unidad_medida || ''}</td>
+                              <td className="p-3 text-right font-mono text-amber-400 font-bold">{Number(m.coste_compra_unitario || 0).toFixed(4)} €</td>
+                              <td className="p-3 text-slate-400 font-mono">{m.numero_albaran_factura || '-'}</td>
+                            </tr>
+                          ))
+                      )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* PESTAÑA EMPLEADOS */}
@@ -2147,10 +2245,22 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                     <input type="number" step="0.0001" placeholder="Coste por ud/kg/l" value={compraCosteUnitario} onChange={(e) => setCompraCosteUnitario(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-amber-400 font-mono font-bold" />
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-3 relative">
                   <div>
                     <label className="font-bold text-slate-300 block mb-1">Proveedor</label>
-                    <input type="text" placeholder="Ej: Distribuciones Córdoba" value={compraProveedor} onChange={(e) => setCompraProveedor(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-white" />
+                    <input
+                      type="text"
+                      list="proveedores-sugeridos"
+                      placeholder="Ej: Distribuciones Córdoba"
+                      value={compraProveedor}
+                      onChange={(e) => setCompraProveedor(e.target.value)}
+                      className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-white"
+                    />
+                    <datalist id="proveedores-sugeridos">
+                      {listaProveedores.map(p => (
+                        <option key={p.id || p.nombre} value={p.nombre} />
+                      ))}
+                    </datalist>
                   </div>
                   <div>
                     <label className="font-bold text-slate-300 block mb-1">Nº Albarán / Factura</label>
