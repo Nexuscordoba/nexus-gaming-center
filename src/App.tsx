@@ -16,7 +16,6 @@ import {
   KeyRound,
   TrendingUp,
   ChefHat,
-  Flame,
   CalendarDays,
   QrCode,
   Utensils
@@ -43,7 +42,7 @@ export default function App() {
   // Estado para controlar el submenú de Cafetería en el Dock
   const [showCafeteriaMenu, setShowCafeteriaMenu] = useState(false);
 
-  const [categoriaCarta, setCategoriaCarta] = useState<'desayunos' | 'tapeo' | 'meriendas' | 'bebidas'>('desayunos');
+  
 
   useEffect(() => {
     const handleRouting = () => {
@@ -91,7 +90,7 @@ export default function App() {
         setSubdomainRoute('qr-generator');
       } else if (hash === '#camarero' || hash === '#/camarero' || hash === '#waiter') {
         setSubdomainRoute('waiter');
-        setAdminDesbloqueado(true); // Mantiene el dock y el acceso al refrescar
+        setAdminDesbloqueado(true); 
       } else {
         setCurrentView('home');
       }
@@ -115,7 +114,7 @@ export default function App() {
       setModalAdminOpen(false);
       setPasswordInput('');
       setPasswordError(false);
-      setShowCafeteriaMenu(false); // Reiniciamos el submenú al entrar
+      setShowCafeteriaMenu(false); 
     } else {
       setPasswordError(true);
     }
@@ -188,33 +187,6 @@ export default function App() {
   if (subdomainRoute === 'waiter') {
     return <TableWaiter onBack={() => setSubdomainRoute('main')} />;
   }
-
-  const cartaItems: Record<string, Array<{ nombre: string; desc: string; precio: string; destacado?: boolean }>> = {
-    desayunos: [
-      { nombre: 'Café Especialidad + Mollete Ibérico', desc: 'Café 100% arábica + mollete tostado con AOVE, tomate y jamón ibérico de Los Pedroches.', precio: '3,50 €', destacado: true },
-      { nombre: 'Desayuno Nexus Power', desc: 'Café o infusión + tostada de aguacate, huevo poché y semillas de chía + zumo de naranja.', precio: '4,80 €' },
-      { nombre: 'Mollete Tradicional con Zurrapa o Manteca', desc: 'Tostada de pan de pueblo con zurrapa de lomo blanca/colorá o pringá casera.', precio: '2,90 €' },
-      { nombre: 'Croissant Francés de Mantequilla', desc: 'Horneado a diario, relleno de jamón york y queso fundido o Nutella.', precio: '2,40 €' },
-    ],
-    tapeo: [
-      { nombre: 'Nachos Supreme Nexus', desc: 'Totopos crujientes con doble queso cheddar fundido, guacamole casero, jalapeños y pulled pork.', precio: '7,50 €', destacado: true },
-      { nombre: 'Burger Smash Doble Bacon', desc: 'Doble disco de ternera madurada 90g, queso cheddar americano, bacon crujiente y salsa secreta en pan brioche.', precio: '8,90 €' },
-      { nombre: 'Perrito Caliente Especial Chinales', desc: 'Salchicha ahumada gigante, cebolla frita crujiente, bacon bites y salsas a elegir.', precio: '5,20 €' },
-      { nombre: 'Fingers de Pollo Crujiente Caseros', desc: 'Tiras de pechuga marinadas y empanadas en panko con salsa barbacoa y mostaza dulce.', precio: '6,20 €' },
-    ],
-    meriendas: [
-      { nombre: 'Batido Freakshake Oreo / Kinder', desc: 'Batido artesanal denso con helado, nata montada, sirope y topping de galletas Oreo o barrita Kinder.', precio: '4,80 €', destacado: true },
-      { nombre: 'Gofre Belga con Nutella y Plátano', desc: 'Gofre caliente recién hecho con virutas de chocolate blanco y bola de helado opcional.', precio: '4,20 €' },
-      { nombre: 'Cookies Gigantes Americanas', desc: 'Tres chocolates, red velvet o pepitas de chocolate con corazón fundente.', precio: '2,20 €' },
-      { nombre: 'Smoothie Fruta 100% Natural', desc: 'A elegir: Fresa-Plátano o Mango-Maracuyá batido con base de zumo de manzana.', precio: '3,80 €' },
-    ],
-    bebidas: [
-      { nombre: 'Café de Especialidad (Flat White / Latte)', desc: 'Extracción profesional con leche fresca vaporizada o bebida vegetal.', precio: '1,80 €' },
-      { nombre: 'Refrescos de Importación & Monster Energy', desc: 'Dr Pepper, Mountain Dew, variedades exclusivas de Monster y Red Bull.', precio: '2,50 €' },
-      { nombre: 'Cerveza de Grifo y Artesanal', desc: 'Caña bien tirada, tercios Alhambra Reserva 1925 y selección artesana local.', precio: '2,20 €' },
-      { nombre: 'Kombucha Orgánica & Tés Fríos', desc: 'Té verde con jengibre o frutos rojos refrescante sin azúcares añadidos.', precio: '2,80 €' }
-    ]
-  };
 
   return (
     <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans selection:bg-cyan-500 selection:text-black flex flex-col justify-between">
@@ -317,7 +289,7 @@ export default function App() {
               onClick={() => { 
                 setAdminDesbloqueado(false); 
                 setShowCafeteriaMenu(false); 
-                window.location.hash = ''; // Limpia el hash al cerrar
+                window.location.hash = '';
               }}
               className="flex items-center gap-1 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] uppercase font-bold cursor-pointer transition-colors"
             >
@@ -348,7 +320,8 @@ export default function App() {
                 className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
               >
                 <ArrowLeft className="h-4 w-4" />
-                <span>Volver a la web principal</span>
+                <span className="hidden sm:inline">Volver a la web principal</span>
+                <span className="sm:hidden">Volver</span>
               </button>
             ) : (
               <>
@@ -382,7 +355,7 @@ export default function App() {
             <div className="absolute inset-0 z-0">
               <img
                 src="https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=2000&q=80"
-                alt="Cafetería Nexus Bar"
+                alt="Café Bar Nexus"
                 className="w-full h-full object-cover object-center opacity-40"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/80 to-[#08090d]/60" />
@@ -395,20 +368,24 @@ export default function App() {
               </div>
 
               <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight uppercase">
-                Nexus <span className="text-amber-400">Bar & Coffee</span>
+                Café Bar <span className="text-amber-400 drop-shadow-[0_0_25px_rgba(245,158,11,0.5)]">Nexus</span>
               </h1>
               <p className="mt-4 text-base sm:text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
-                Desayunos tradicionales y especiales desde primera hora de la mañana y tapeo selecto para tu jornada de trabajo.
+                Desayunos completos y menú del día casero disponibles a diario en Chinales 45.
               </p>
 
               <div className="mt-8 flex justify-center">
-                <button
-                  onClick={() => setMenuModalOpen(true)}
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setMenuModalOpen(true);
+                  }}
                   className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-8 py-3.5 text-slate-950 text-sm font-bold uppercase tracking-wider shadow-[0_0_25px_rgba(245,158,11,0.35)] hover:opacity-95 transition-all flex items-center gap-2 cursor-pointer"
                 >
                   <FileText className="h-4 w-4" />
-                  Ver Información y Avisos
-                </button>
+                  Ver carta y avisos
+                </a>
               </div>
             </div>
           </section>
@@ -422,77 +399,29 @@ export default function App() {
               <h2 className="text-3xl font-black text-white">Nuestra Selección</h2>
             </div>
 
-            <div className="flex flex-wrap items-center justify-center gap-2 mb-10">
-              <button
-                onClick={() => setCategoriaCarta('desayunos')}
-                className={`px-5 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                  categoriaCarta === 'desayunos'
-                    ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                    : 'bg-white/5 border border-white/10 text-slate-400 hover:text-white'
-                }`}
-              >
-                🥐 Desayunos
-              </button>
-              <button
-                onClick={() => setCategoriaCarta('tapeo')}
-                className={`px-5 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                  categoriaCarta === 'tapeo'
-                    ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                    : 'bg-white/5 border border-white/10 text-slate-400 hover:text-white'
-                }`}
-              >
-                🍔 Tapeo & Burgers
-              </button>
-              <button
-                onClick={() => setCategoriaCarta('meriendas')}
-                className={`px-5 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                  categoriaCarta === 'meriendas'
-                    ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                    : 'bg-white/5 border border-white/10 text-slate-400 hover:text-white'
-                }`}
-              >
-                🧇 Meriendas
-              </button>
-              <button
-                onClick={() => setCategoriaCarta('bebidas')}
-                className={`px-5 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                  categoriaCarta === 'bebidas'
-                    ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                    : 'bg-white/5 border border-white/10 text-slate-400 hover:text-white'
-                }`}
-              >
-                🥤 Bebidas & Energy
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {cartaItems[categoriaCarta].map((item, index) => (
-                <div
-                  key={index}
-                  className={`p-5 rounded-2xl border transition-all ${
-                    item.destacado
-                      ? 'bg-gradient-to-r from-amber-950/30 to-[#0e111a] border-amber-500/40 shadow-md'
-                      : 'bg-[#0d0f17] border-white/10'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <h4 className="font-bold text-white text-sm sm:text-base">{item.nombre}</h4>
-                        {item.destacado && (
-                          <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-amber-400 bg-amber-950/70 border border-amber-500/30 px-2 py-0.5 rounded-full">
-                            <Flame className="h-3 w-3" /> Top
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{item.desc}</p>
-                    </div>
-                    <span className="font-mono text-amber-400 font-black text-base shrink-0">
-                      {item.precio}
-                    </span>
-                  </div>
+            {/* SECCIÓN "PRÓXIMAMENTE" REEMPLAZANDO A LOS PRODUCTOS */}
+            <div className="max-w-4xl mx-auto text-center py-20 px-6 sm:px-12 rounded-3xl border border-amber-500/20 bg-gradient-to-b from-[#131722] to-[#08090d] shadow-[0_0_50px_rgba(0,0,0,0.5)] relative overflow-hidden">
+              <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1495474472296-pe0a88a29580?auto=format&fit=crop&w=1000&q=20')] opacity-5 bg-cover bg-center"></div>
+              
+              <div className="relative z-10 space-y-6">
+                <div className="inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 mb-2">
+                  <ChefHat className="h-8 w-8" />
                 </div>
-              ))}
+                
+                <h3 className="text-2xl sm:text-3xl font-black text-white">
+                  🌟 Nueva Experiencia Gastronómica en Preparación
+                </h3>
+                
+                <p className="text-slate-400 text-base sm:text-lg max-w-2xl mx-auto leading-relaxed">
+                  Muy pronto desvelaremos nuestra nueva carta. Mantente atento a nuestras redes sociales y a esta sección para descubrir todas las novedades que estamos cocinando para ti.
+                </p>
+                
+                <div className="pt-6">
+                  <span className="inline-block px-4 py-2 rounded-full border border-white/10 bg-white/5 text-xs text-slate-300 font-semibold uppercase tracking-widest">
+                    Próximamente
+                  </span>
+                </div>
+              </div>
             </div>
           </section>
         </main>
@@ -552,7 +481,7 @@ export default function App() {
                   <div className="h-12 w-12 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
                     <Coffee className="h-6 w-6" />
                   </div>
-                  <h2 className="text-xl font-bold text-white mb-2">Nexus Bar & Coffee</h2>
+                  <h2 className="text-xl font-bold text-white mb-2">Café Bar Nexus</h2>
                   <p className="text-sm text-slate-400 leading-relaxed">
                     Lunes a viernes de 7:00 a 17:00 h. Desayunos variados, menú casero del día y promociones semanales.
                   </p>
@@ -664,7 +593,7 @@ export default function App() {
             <div className="flex items-center justify-between pb-4 border-b border-white/10">
               <div className="flex items-center gap-2.5 text-amber-400">
                 <FileText className="h-5 w-5" />
-                <h3 className="font-bold text-white text-lg">Carta Nexus Bar & Coffee</h3>
+                <h3 className="font-bold text-white text-lg">Información y Avisos</h3>
               </div>
               <button 
                 onClick={() => setMenuModalOpen(false)}
@@ -675,7 +604,7 @@ export default function App() {
             </div>
 
             <div className="mt-5 space-y-4 text-sm text-slate-300 leading-relaxed">
-              <p>Desayunos completos, menú del día casero y bollería recién horneada disponibles a diario en Chinales 45.</p>
+              <p>Desayunos completos y menú del día casero disponibles a diario en Chinales 45.</p>
             </div>
 
             <div className="mt-6 pt-4 border-t border-white/10 flex justify-end">
