@@ -38,7 +38,11 @@ import {
   CornerDownRight,
   PenLine,
   ArrowRightLeft,
-  Split
+  Split,
+  FolderOpen,
+  TrendingUp,
+  TrendingDown,
+  Save
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -67,7 +71,7 @@ interface Producto {
   unidad_medida?: string;
   tipo_iva?: number;
   articulo_inventario_id?: string;
-  notaExtra?: string; // Nuevo campo para notas libres
+  notaExtra?: string; 
 }
 
 interface ItemPedido {
@@ -126,7 +130,6 @@ const agruparFacturas = (lista: any[]) => {
   return raices;
 };
 
-// Función de ayuda para formatear el nombre de la mesa o barra
 const getNombreMesa = (val: string) => val === 'BARRA' ? 'BARRA' : `MESA ${val}`;
 
 export default function TableWaiter({ onBack }: TableWaiterProps) {
@@ -145,7 +148,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [loadingCarta, setLoadingCarta] = useState(true);
   const [cocinaAbierta, setCocinaAbierta] = useState(true);
 
-  // carritoActual ahora tiene idCarritoUnico para poder añadir notas a elementos repetidos
   const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number; idCarritoUnico: number }>>([]);
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
@@ -182,7 +184,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [pasoComboActual, setPasoComboActual] = useState(0);
   const [seleccionesCombo, setSeleccionesCombo] = useState<Record<number, OpcionCombo>>({});
 
-  // ESTADOS NUEVOS (Notas Libres, Traspaso y Cobro Parcial)
   const [modalNotaItem, setModalNotaItem] = useState<{ idCarritoUnico: number; nombre: string; notaActual: string } | null>(null);
   const [modalTraspaso, setModalTraspaso] = useState<{ origen: string; destino: string; procesando: boolean } | null>(null);
   const [modalCobroParcial, setModalCobroParcial] = useState<{
@@ -190,6 +191,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     itemsDisponibles: (ItemPedido & { maxCantidad: number; cantidadSeleccionada: number })[];
     procesando: boolean;
   } | null>(null);
+
+  // NUEVOS ESTADOS: Caja Manual y Cuentas Aparcadas
+  const [modalCajaManual, setModalCajaManual] = useState<{ abierto: boolean; tipo: 'ENTRADA' | 'SALIDA' } | null>(null);
+  const [cajaImporte, setCajaImporte] = useState('');
+  const [cajaConcepto, setCajaConcepto] = useState('');
+  const [modalCuentasAparcadas, setModalCuentasAparcadas] = useState(false);
+  const [cuentasAparcadas, setCuentasAparcadas] = useState<any[]>([]);
+  const [nombreCuentaAparcada, setNombreCuentaAparcada] = useState('');
 
   const [cajaHoy, setCajaHoy] = useState<CajaDiaria | null>(null);
   const [cajaAtrasada, setCajaAtrasada] = useState<CajaDiaria | null>(null);
@@ -638,6 +647,73 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
+  // --- REGISTRAR MOVIMIENTO MANUAL CAJA ---
+  const registrarMovimientoCaja = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalCajaManual || !cajaHoy) return;
+    
+    const importe = parseFloat(cajaImporte);
+    if (importe <= 0 || !cajaConcepto.trim()) return;
+
+    try {
+      await supabase.from('movimientos_caja_manual').insert([{
+        tipo: modalCajaManual.tipo,
+        importe: importe,
+        concepto: cajaConcepto.trim(),
+        empleado: camareroActivo?.nombre || 'Desconocido'
+      }]);
+
+      // Si es salida de caja, restamos del total efectivo. Si es entrada, sumamos.
+      const factor = modalCajaManual.tipo === 'ENTRADA' ? 1 : -1;
+      const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (importe * factor);
+      
+      await supabase.from('caja_diaria').update({ total_efectivo: nuevoEfectivo }).eq('id', cajaHoy.id);
+      
+      mostrarAlerta(`Registrada ${modalCajaManual.tipo} de caja por ${importe.toFixed(2)}€`, 'exito');
+      setModalCajaManual(null);
+      setCajaImporte('');
+      setCajaConcepto('');
+      cargarCaja();
+    } catch (error: any) {
+      mostrarAlerta('Error: ' + error.message, 'error');
+    }
+  };
+
+  // --- APARCAR Y RECUPERAR CUENTAS ---
+  const aparcarCuenta = async () => {
+    if (carritoActual.length === 0 || !nombreCuentaAparcada.trim()) return;
+
+    try {
+      await supabase.from('cuentas_abiertas').insert([{
+        nombre_mesa: nombreCuentaAparcada.trim(),
+        lineas: carritoActual,
+        total: totalCarritoActual,
+        empleado: camareroActivo?.nombre || 'Desconocido'
+      }]);
+      
+      mostrarAlerta(`Cuenta aparcada como: ${nombreCuentaAparcada}`, 'exito');
+      setCarritoActual([]);
+      setNombreCuentaAparcada('');
+      setModalCuentasAparcadas(false);
+    } catch (error: any) {
+      mostrarAlerta('Error al aparcar: ' + error.message, 'error');
+    }
+  };
+
+  const cargarCuentaAparcada = async (cuenta: any) => {
+    setCarritoActual(cuenta.lineas);
+    await supabase.from('cuentas_abiertas').update({ estado: 'COBRADA' }).eq('id', cuenta.id);
+    setModalCuentasAparcadas(false);
+    mostrarAlerta(`Cuenta cargada: ${cuenta.nombre_mesa}`, 'exito');
+  };
+
+  useEffect(() => {
+    if (modalCuentasAparcadas) {
+      supabase.from('cuentas_abiertas').select('*').eq('estado', 'ABIERTA').then(({ data }) => {
+        if (data) setCuentasAparcadas(data);
+      });
+    }
+  }, [modalCuentasAparcadas]);
 
   const clickAgregarAlCarrito = (prod: Producto) => {
     if (prod.controla_stock && Number(prod.stock_actual) <= 0) {
@@ -1271,6 +1347,76 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
+      {/* MODAL ENTRADAS Y SALIDAS MANUALES DE CAJA */}
+      {modalCajaManual && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form onSubmit={registrarMovimientoCaja} className="w-full max-w-sm bg-[#0d0f17] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className={`flex items-center gap-2 ${modalCajaManual.tipo === 'ENTRADA' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {modalCajaManual.tipo === 'ENTRADA' ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}
+                <h3 className="font-black text-white text-base">Registrar {modalCajaManual.tipo}</h3>
+              </div>
+              <button type="button" onClick={() => setModalCajaManual(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">Importe (€) *</label>
+              <input type="number" step="0.01" required value={cajaImporte} onChange={(e) => setCajaImporte(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-white font-mono text-lg font-bold" />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">Concepto / Motivo *</label>
+              <input type="text" required placeholder="Ej: Pago a proveedor, cambio, hielo..." value={cajaConcepto} onChange={(e) => setCajaConcepto(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-white" />
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={() => setModalCajaManual(null)} className="flex-1 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold text-slate-300 text-xs cursor-pointer">Cancelar</button>
+              <button type="submit" className={`flex-1 py-3 rounded-xl font-black text-xs uppercase text-slate-950 cursor-pointer ${modalCajaManual.tipo === 'ENTRADA' ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-rose-500 hover:bg-rose-400'}`}>Guardar</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* MODAL CUENTAS APARCADAS */}
+      {modalCuentasAparcadas && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <div className="w-full max-w-lg bg-[#0d0f17] border border-purple-500/30 rounded-3xl p-6 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-4">
+              <div className="flex items-center gap-2 text-purple-400">
+                <FolderOpen className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Cuentas Aparcadas (Libres)</h3>
+              </div>
+              <button type="button" onClick={() => setModalCuentasAparcadas(false)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+            
+            {/* Guardar carrito actual */}
+            {carritoActual.length > 0 && (
+              <div className="bg-purple-950/20 p-4 rounded-2xl border border-purple-500/30 flex gap-2 mb-4">
+                <input type="text" placeholder="Asigna un nombre a esta cuenta (Ej: Chicos del fondo)" value={nombreCuentaAparcada} onChange={(e) => setNombreCuentaAparcada(e.target.value)} className="flex-1 bg-black/60 border border-white/20 rounded-xl px-4 py-2 text-white text-xs" />
+                <button onClick={aparcarCuenta} className="px-5 py-2 bg-purple-600 hover:bg-purple-500 font-bold text-white rounded-xl text-xs whitespace-nowrap flex items-center gap-2 cursor-pointer shadow-lg"><Save className="h-4 w-4" /> Aparcar Ticket</button>
+              </div>
+            )}
+
+            {/* Lista de mesas */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {cuentasAparcadas.length === 0 ? (
+                <p className="text-slate-500 text-xs text-center py-6 italic bg-black/20 rounded-xl">No hay cuentas aparcadas actualmente.</p>
+              ) : (
+                cuentasAparcadas.map(cuenta => (
+                  <div key={cuenta.id} className="bg-black/40 border border-white/10 p-3.5 rounded-xl flex justify-between items-center shadow-sm">
+                    <div>
+                      <div className="font-bold text-white text-sm">{cuenta.nombre_mesa}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{new Date(cuenta.fecha_apertura).toLocaleTimeString()} · {cuenta.empleado}</div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <span className="font-mono font-bold text-amber-400">{Number(cuenta.total).toFixed(2)} €</span>
+                      <button onClick={() => cargarCuentaAparcada(cuenta)} className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs shadow-md cursor-pointer transition-colors">Cargar</button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL NOTAS LIBRES */}
       {modalNotaItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
@@ -1301,8 +1447,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               />
             </div>
             <div className="grid grid-cols-2 gap-3 pt-2">
-              <button type="button" onClick={() => setModalNotaItem(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
-              <button type="submit" className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer">Guardar Nota</button>
+              <button type="button" onClick={() => setModalNotaItem(null)} className="py-3 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
+              <button type="submit" className="py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer">Guardar Nota</button>
             </div>
           </form>
         </div>
@@ -1324,7 +1470,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <select
                 value={modalTraspaso.destino}
                 onChange={(e) => setModalTraspaso({ ...modalTraspaso, destino: e.target.value })}
-                className="w-full bg-black/60 border border-amber-500/50 rounded-xl px-3 py-3 text-sm font-black text-amber-400 outline-none cursor-pointer"
+                className="w-full bg-black/60 border border-amber-500/50 rounded-xl px-4 py-3 text-sm font-black text-amber-400 outline-none cursor-pointer"
               >
                 <option value="BARRA">Servicio en Barra</option>
                 {Array.from({ length: 20 }, (_, i) => String(i + 1)).map((m) => (
@@ -1333,8 +1479,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </select>
             </div>
             <div className="grid grid-cols-2 gap-3 pt-2">
-              <button type="button" onClick={() => setModalTraspaso(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
-              <button type="submit" disabled={modalTraspaso.procesando} className="py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50">{modalTraspaso.procesando ? 'Traspasando...' : 'Confirmar Traspaso'}</button>
+              <button type="button" onClick={() => setModalTraspaso(null)} className="py-3 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
+              <button type="submit" disabled={modalTraspaso.procesando} className="py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50">{modalTraspaso.procesando ? 'Traspasando...' : 'Confirmar Traspaso'}</button>
             </div>
           </form>
         </div>
@@ -1355,37 +1501,38 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             
             <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
               {modalCobroParcial.itemsDisponibles.map((it, idx) => (
-                <div key={idx} className={`flex items-center justify-between p-3 rounded-xl border ${it.cantidadSeleccionada > 0 ? 'bg-cyan-950/30 border-cyan-500/30' : 'bg-black/40 border-white/10'}`}>
+                <div key={idx} className={`flex items-center justify-between p-3.5 rounded-xl border ${it.cantidadSeleccionada > 0 ? 'bg-cyan-950/30 border-cyan-500/30' : 'bg-black/40 border-white/10'}`}>
                   <div className="flex-1">
                     <span className="text-white text-xs font-bold">{it.nombre}</span>
                     <div className="text-[10px] text-slate-400">{it.precio.toFixed(2)} €/ud</div>
                   </div>
-                  <div className="flex gap-2 items-center bg-white/5 rounded-lg p-1 border border-white/10">
-                    <button type="button" onClick={() => actualizarCantidadParcial(idx, -1)} className="px-2 py-1 text-slate-400 hover:text-white"><Minus className="h-3 w-3" /></button>
-                    <span className="text-xs font-mono font-bold w-6 text-center text-cyan-400">{it.cantidadSeleccionada}</span>
-                    <button type="button" onClick={() => actualizarCantidadParcial(idx, 1)} className="px-2 py-1 text-slate-400 hover:text-white"><Plus className="h-3 w-3" /></button>
+                  <div className="flex gap-2 items-center bg-white/5 rounded-lg p-1.5 border border-white/10">
+                    <button type="button" onClick={() => actualizarCantidadParcial(idx, -1)} className="px-2.5 py-1.5 bg-black/40 text-slate-400 hover:text-white rounded-md cursor-pointer"><Minus className="h-3 w-3" /></button>
+                    <span className="text-sm font-mono font-bold w-6 text-center text-cyan-400">{it.cantidadSeleccionada}</span>
+                    <button type="button" onClick={() => actualizarCantidadParcial(idx, 1)} className="px-2.5 py-1.5 bg-black/40 text-slate-400 hover:text-white rounded-md cursor-pointer"><Plus className="h-3 w-3" /></button>
                     <span className="text-xs font-mono w-6 text-center text-slate-500">/ {it.maxCantidad}</span>
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="pt-3 border-t border-white/10">
-              <div className="flex justify-between items-center mb-3">
+            <div className="pt-4 border-t border-white/10">
+              <div className="flex justify-between items-center mb-4">
                 <span className="text-xs font-bold text-slate-400 uppercase">Subtotal Seleccionado:</span>
-                <span className="text-lg font-black text-white font-mono">
+                <span className="text-xl font-black text-white font-mono">
                   {modalCobroParcial.itemsDisponibles.reduce((acc, i) => acc + (i.precio * i.cantidadSeleccionada), 0).toFixed(2)} €
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => confirmarCobroParcial('efectivo')} disabled={modalCobroParcial.procesando} className="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"><DollarSign className="h-4 w-4" /> Efectivo</button>
-                <button onClick={() => confirmarCobroParcial('tarjeta')} disabled={modalCobroParcial.procesando} className="py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"><CreditCard className="h-4 w-4" /> Tarjeta</button>
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => confirmarCobroParcial('efectivo')} disabled={modalCobroParcial.procesando} className="py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"><DollarSign className="h-4 w-4" /> Efectivo</button>
+                <button onClick={() => confirmarCobroParcial('tarjeta')} disabled={modalCobroParcial.procesando} className="py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"><CreditCard className="h-4 w-4" /> Tarjeta</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
+      {/* MODAL AUTORIZACION DESCUENTO */}
       {modalAuthDescuento && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
           <form
@@ -1418,7 +1565,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     key={p}
                     type="button"
                     onClick={() => setModalAuthDescuento({ ...modalAuthDescuento, porcentajePropuesto: String(p) })}
-                    className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-amber-500 hover:text-slate-950 text-xs font-bold border border-white/10 cursor-pointer"
+                    className="px-3 py-2 rounded-lg bg-white/5 hover:bg-amber-500 hover:text-slate-950 text-xs font-bold border border-white/10 cursor-pointer transition-colors"
                   >
                     {p}%
                   </button>
@@ -1434,7 +1581,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 onChange={(e) =>
                   setModalAuthDescuento({ ...modalAuthDescuento, porcentajePropuesto: e.target.value })
                 }
-                className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-2.5 text-white font-mono font-bold"
+                className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-white font-mono font-bold"
               />
             </div>
 
@@ -1449,11 +1596,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   placeholder="Introduce PIN de Administrador"
                   value={modalAuthDescuento.pinAdmin}
                   onChange={(e) => setModalAuthDescuento({ ...modalAuthDescuento, pinAdmin: e.target.value })}
-                  className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-4 py-2.5 text-white font-mono"
+                  className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-4 py-3 text-white font-mono"
                 />
               </div>
             ) : (
-              <p className="text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-500/30 p-2.5 rounded-xl">
+              <p className="text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-500/30 p-3 rounded-xl">
                 ✓ Sesión activa como Administrador ({camareroActivo.nombre}). Autorización directa.
               </p>
             )}
@@ -1462,13 +1609,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <button
                 type="button"
                 onClick={() => setModalAuthDescuento(null)}
-                className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
+                className="py-3 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
-                className="py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase cursor-pointer"
+                className="py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase cursor-pointer"
               >
                 Aplicar Descuento
               </button>
@@ -1477,6 +1624,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
+      {/* MODAL FACTURA RECTIFICATIVA */}
       {modalRectificativa && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
           <form
@@ -1487,7 +1635,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <div className="flex items-center gap-2 text-rose-400">
                 <RotateCcw className="h-5 w-5" />
                 <h3 className="font-black text-white text-base">
-                  Emitir Factura Rectificativa Simplificada
+                  Emitir Factura Rectificativa
                 </h3>
               </div>
               <button
@@ -1525,7 +1673,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               />
             </div>
 
-            {camareroActivo.rol !== 'admin' && (
+            {camareroActivo?.rol !== 'admin' && (
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-rose-400 uppercase">PIN de Administrador *</label>
                 <input
@@ -1559,6 +1707,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
+      {/* MODAL FACTURA NOMINATIVA */}
       {modalFacturaNominativa && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
           <form
@@ -1586,17 +1735,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
             <div className="space-y-3">
               <div>
-                <label className="text-xs font-bold text-slate-300 block mb-1">
-                  Nombre Completo o Razón Social *
-                </label>
+                <label className="text-xs font-bold text-slate-300 block mb-1">Nombre Completo o Razón Social *</label>
                 <input
                   type="text"
                   required
                   placeholder="Ej: Empresa Cliente S.L. o Juan Pérez"
                   value={modalFacturaNominativa.razonSocial}
-                  onChange={(e) =>
-                    setModalFacturaNominativa({ ...modalFacturaNominativa, razonSocial: e.target.value })
-                  }
+                  onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, razonSocial: e.target.value })}
                   className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white"
                 />
               </div>
@@ -1618,9 +1763,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   required
                   placeholder="Calle, Número, CP, Ciudad, Provincia"
                   value={modalFacturaNominativa.direccion}
-                  onChange={(e) =>
-                    setModalFacturaNominativa({ ...modalFacturaNominativa, direccion: e.target.value })
-                  }
+                  onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, direccion: e.target.value })}
                   className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white"
                 />
               </div>
@@ -1705,7 +1848,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <Utensils className="h-7 w-7" />
             </div>
             <div>
-              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · CAFETERÍA & TPV</h1>
+              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · TPV CAFETERÍA</h1>
               <p className="text-xs text-slate-400 flex items-center gap-1">
                 Sesión: <strong className="text-amber-400">{camareroActivo.nombre}</strong>
                 {camareroActivo.rol === 'admin' && (
@@ -1731,7 +1874,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             <button
               type="button"
               onClick={() => setMostrarBackoffice(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-sky-500 hover:from-cyan-400 hover:to-sky-400 text-slate-950 font-black text-xs shadow-lg cursor-pointer transition-all"
+              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-sky-500 hover:from-cyan-400 hover:to-sky-400 text-slate-950 font-black text-xs shadow-lg cursor-pointer transition-all"
             >
               <Settings className="h-4 w-4" />
               <span>Backoffice</span>
@@ -1740,7 +1883,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
           <button
             onClick={toggleCocina}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md border cursor-pointer ${
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md border cursor-pointer ${
               cocinaAbierta
                 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 hover:bg-emerald-500 hover:text-slate-950'
                 : 'bg-rose-500/20 text-rose-400 border-rose-500/40 hover:bg-rose-500 hover:text-slate-950'
@@ -1753,24 +1896,24 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           <div className="flex gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
             <button
               onClick={() => setVistaSeccion('tomar_nota')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                vistaSeccion === 'tomar_nota' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                vistaSeccion === 'tomar_nota' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
               📝 Toma Notas
             </button>
             <button
               onClick={() => setVistaSeccion('mesas_abiertas')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all relative cursor-pointer ${
-                vistaSeccion === 'mesas_abiertas' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all relative cursor-pointer ${
+                vistaSeccion === 'mesas_abiertas' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
               📋 Mesas ({mesasAbiertas.length})
             </button>
             <button
               onClick={() => setVistaSeccion('caja')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                vistaSeccion === 'caja' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                vistaSeccion === 'caja' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
               💰 Caja y Tickets
@@ -1780,7 +1923,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           <button
             type="button"
             onClick={salirSesion}
-            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white transition-all cursor-pointer text-xs font-bold"
+            className="hidden sm:flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white transition-all cursor-pointer text-xs font-bold"
           >
             Salir
           </button>
@@ -1797,7 +1940,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 <select
                   value={mesaSeleccionada}
                   onChange={(e) => setMesaSeleccionada(e.target.value)}
-                  className="bg-black/80 border border-amber-500/50 rounded-xl px-3 py-1.5 text-sm font-black text-amber-400 outline-none cursor-pointer"
+                  className="bg-black/80 border border-amber-500/50 rounded-xl px-3 py-2 text-sm font-black text-amber-400 outline-none cursor-pointer"
                 >
                   <option value="BARRA">Servicio en Barra</option>
                   {Array.from({ length: 20 }, (_, i) => String(i + 1)).map((m) => (
@@ -1816,32 +1959,41 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     placeholder="Código de barras..."
                     value={busquedaCodigoBarras}
                     onChange={(e) => setBusquedaCodigoBarras(e.target.value)}
-                    className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white outline-none focus:border-amber-400"
+                    className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none focus:border-amber-400"
                   />
                 </div>
               </form>
 
-              <button
-                type="button"
-                onClick={imprimirPreTicketCuenta}
-                disabled={imprimiendoPreTicket || (cuentaMesaActual.length === 0 && carritoActual.length === 0)}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
-              >
-                <Printer className="h-4 w-4" />
-                <span>Imprimir Cuenta</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModalCuentasAparcadas(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-lg transition-all cursor-pointer"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  <span className="hidden sm:inline">Aparcadas</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={imprimirPreTicketCuenta}
+                  disabled={imprimiendoPreTicket || (cuentaMesaActual.length === 0 && carritoActual.length === 0)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span className="hidden sm:inline">Pre-Ticket</span>
+                </button>
+              </div>
             </div>
 
-            {/* SECCIÓN DE BÚSQUEDA Y CATEGORÍAS (MULTILÍNEA - SIN SCROLL) */}
             <div className="flex flex-col gap-3">
               <div className="relative w-full">
-                <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
+                <Search className="h-4 w-4 text-slate-400 absolute left-3 top-3" />
                 <input
                   type="text"
                   placeholder="Buscar producto por nombre (Ignora la categoría)..."
                   value={busquedaNombre}
                   onChange={(e) => setBusquedaNombre(e.target.value)}
-                  className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none focus:border-amber-400"
+                  className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white outline-none focus:border-amber-400"
                 />
               </div>
               <div className="flex gap-2 flex-wrap w-full">
@@ -1853,7 +2005,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       setBusquedaNombre('');
                     }}
                     className={`px-4 py-2 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                      categoriaActiva === cat && !busquedaNombre.trim() ? 'bg-amber-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'
+                      categoriaActiva === cat && !busquedaNombre.trim() ? 'bg-amber-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
                     }`}
                   >
                     {cat}
@@ -1879,8 +2031,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   .map((prod) => (
                     <div
                       key={prod.id}
-                      className={`p-3.5 rounded-2xl bg-[#0d0f17] border flex items-center justify-between gap-3 shadow-md ${
-                        prod.es_combo ? 'border-amber-500/40 bg-amber-950/20' : 'border-white/10'
+                      className={`p-3 rounded-2xl bg-[#0d0f17] border flex items-center justify-between gap-3 shadow-md transition-colors hover:bg-white/[0.02] ${
+                        prod.es_combo ? 'border-amber-500/40 bg-amber-950/10' : 'border-white/10'
                       }`}
                     >
                       <div className="flex items-center gap-3">
@@ -1892,8 +2044,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                           />
                         ) : null}
                         <div>
-                          <h4 className="font-bold text-white text-sm">{prod.nombre}</h4>
-                          <div className="flex items-center gap-2 mt-0.5">
+                          <h4 className="font-bold text-white text-sm leading-tight">{prod.nombre}</h4>
+                          <div className="flex items-center gap-2 mt-1">
                             <span className="font-mono text-amber-400 font-bold text-xs">
                               {Number(prod.precio).toFixed(2)} €
                             </span>
@@ -1911,7 +2063,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       </div>
                       <button
                         onClick={() => clickAgregarAlCarrito(prod)}
-                        className="h-9 w-9 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center cursor-pointer active:scale-95 transition-transform font-bold shrink-0"
+                        className="h-10 w-10 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center cursor-pointer active:scale-95 transition-transform font-bold shrink-0 shadow-sm"
                       >
                         <Plus className="h-5 w-5" />
                       </button>
@@ -2023,7 +2175,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     Nuevos a enviar al KDS ({totalCarritoActual.toFixed(2)} €):
                   </span>
 
-                  <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
                     {carritoActual.map((item) => (
                       <div
                         key={item.idCarritoUnico}
@@ -2036,26 +2188,26 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                               {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
                             </span>
                             
-                            <div className="flex gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg items-center">
+                            <div className="flex gap-1 bg-white/5 px-1 py-0.5 rounded-lg items-center">
                               {!item.nombre.includes('├─') && (
                                 <button
                                   type="button"
                                   onClick={() => setModalNotaItem({ idCarritoUnico: item.idCarritoUnico, nombre: item.nombre, notaActual: item.notaExtra || '' })}
-                                  className="text-cyan-400 hover:text-cyan-300 mr-1 p-0.5"
+                                  className="text-cyan-400 hover:text-cyan-300 mr-1 p-1 rounded hover:bg-cyan-950/50 cursor-pointer"
                                 >
                                   <PenLine className="h-3.5 w-3.5" />
                                 </button>
                               )}
                               <button
                                 onClick={() => cambiarCantidadCarrito(item.idCarritoUnico, -1)}
-                                className="text-slate-400 hover:text-white cursor-pointer"
+                                className="text-slate-400 hover:text-white cursor-pointer px-1.5 py-1 bg-black/40 rounded-md"
                               >
                                 <Minus className="h-3 w-3" />
                               </button>
-                              <span className="font-mono font-bold text-white w-3 text-center">{item.cantidad}</span>
+                              <span className="font-mono font-bold text-white w-4 text-center">{item.cantidad}</span>
                               <button
                                 onClick={() => cambiarCantidadCarrito(item.idCarritoUnico, 1)}
-                                className="text-slate-400 hover:text-white cursor-pointer"
+                                className="text-slate-400 hover:text-white cursor-pointer px-1.5 py-1 bg-black/40 rounded-md"
                               >
                                 <Plus className="h-3 w-3" />
                               </button>
@@ -2070,14 +2222,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       </div>
                     ))}
                   </div>
-
-                  <button
-                    disabled={enviando}
-                    onClick={enviarPedidoCamarero}
-                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-95 disabled:opacity-50"
-                  >
-                    <Send className="h-4 w-4" /> Enviar Pedido
-                  </button>
+                  
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setModalCuentasAparcadas(true)}
+                      className="py-3 rounded-xl bg-purple-600/20 border border-purple-500/30 text-purple-400 hover:bg-purple-600 hover:text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-lg transition-colors"
+                    >
+                      <Save className="h-4 w-4" /> Aparcar
+                    </button>
+                    <button
+                      disabled={enviando}
+                      onClick={enviarPedidoCamarero}
+                      className="py-3 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg active:scale-95 disabled:opacity-50"
+                    >
+                      <Send className="h-4 w-4" /> Enviar
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -2107,7 +2268,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         <button
                           type="button"
                           onClick={() => setModalTraspaso({ origen: m.mesa, destino: '1', procesando: false })}
-                          className="px-2.5 py-1 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                          className="px-3 py-1.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-bold flex items-center gap-1 cursor-pointer hover:bg-sky-500 hover:text-slate-950 transition-colors"
                         >
                           <ArrowRightLeft className="h-3 w-3" />
                         </button>
@@ -2122,7 +2283,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                               pinAdmin: ''
                             })
                           }
-                          className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                          className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold flex items-center gap-1 cursor-pointer hover:bg-amber-500 hover:text-slate-950 transition-colors"
                         >
                           <Percent className="h-3 w-3" />
                         </button>
@@ -2132,14 +2293,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                               {desglose.subtotalBruto.toFixed(2)} €
                             </span>
                           )}
-                          <span className="font-mono text-lg font-black text-amber-400">
+                          <span className="font-mono text-xl font-black text-amber-400">
                             {desglose.totalFinal.toFixed(2)} €
                           </span>
                         </div>
                       </div>
                     </div>
 
-                    <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
                       {m.items.map((it, iIdx) => {
                         const claveLinea = `${m.mesa}__${it.nombre}`;
                         const dto = descuentosLineas[claveLinea] || 0;
@@ -2147,7 +2308,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         return (
                           <div
                             key={iIdx}
-                            className="flex items-center justify-between text-xs bg-black/40 px-2.5 py-1.5 rounded-lg"
+                            className="flex items-center justify-between text-xs bg-black/40 px-3 py-2 rounded-xl"
                           >
                             <span className="text-slate-200">
                               <span className="text-amber-400 font-mono font-bold mr-1.5">{it.cantidad}x</span>
@@ -2157,7 +2318,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                               )}
                             </span>
                             {!it.nombre.includes('├─') && it.precio > 0 && (
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-2">
                                 <span className="font-mono text-slate-300">{neto.toFixed(2)} €</span>
                                 <button
                                   type="button"
@@ -2171,7 +2332,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                                       pinAdmin: ''
                                     })
                                   }
-                                  className="p-1 rounded bg-white/5 hover:bg-amber-500 hover:text-slate-950 text-slate-400 cursor-pointer"
+                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-amber-500 hover:text-slate-950 text-slate-400 cursor-pointer transition-colors"
                                 >
                                   <Percent className="h-3 w-3" />
                                 </button>
@@ -2185,19 +2346,19 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-3 border-t border-white/10">
                       <button
                         onClick={() => cobrarMesaLegal(m.mesa, 'efectivo')}
-                        className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-[11px] uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                        className="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
                       >
                         <DollarSign className="h-4 w-4" /> Efectivo
                       </button>
                       <button
                         onClick={() => cobrarMesaLegal(m.mesa, 'tarjeta')}
-                        className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-[11px] uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                        className="py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
                       >
                         <CreditCard className="h-4 w-4" /> Tarjeta
                       </button>
                       <button
                         onClick={() => initCobroParcial(m)}
-                        className="py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-slate-950 font-black text-[11px] uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                        className="py-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
                       >
                         <Split className="h-4 w-4" /> Dividir
                       </button>
@@ -2224,7 +2385,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </p>
               <button
                 onClick={() => cerrarCajaEspecifica(cajaAtrasada)}
-                className="w-full py-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
               >
                 Forzar Cierre de Caja Atrasada
               </button>
@@ -2249,7 +2410,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </div>
               <button
                 onClick={abrirCaja}
-                className="w-full py-3.5 rounded-xl bg-amber-500 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-4 rounded-xl bg-amber-500 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors"
               >
                 <LockOpen className="h-5 w-5" /> Abrir Caja
               </button>
@@ -2262,7 +2423,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   <h2 className="text-xl font-bold text-white">Arqueo, Tickets Legales y Facturación (Hoy)</h2>
                 </div>
                 <span
-                  className={`px-3 py-1 rounded-xl text-xs font-bold ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
                     cajaHoy.estado === 'abierta'
                       ? 'bg-emerald-500/20 text-emerald-400'
                       : 'bg-rose-500/20 text-rose-400'
@@ -2273,30 +2434,47 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
-                  <span className="text-xs text-slate-400">Fondo Inicial:</span>
-                  <p className="font-mono text-lg font-bold text-white">
+                <div className="bg-black/40 p-4 rounded-2xl border border-white/5 space-y-1">
+                  <span className="text-xs text-slate-400 font-bold uppercase">Fondo Inicial:</span>
+                  <p className="font-mono text-lg font-black text-white">
                     {Number(cajaHoy.remanente_apertura).toFixed(2)} €
                   </p>
                 </div>
-                <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
-                  <span className="text-xs text-slate-400">Total Tarjeta:</span>
-                  <p className="font-mono text-lg font-bold text-cyan-400">
+                <div className="bg-black/40 p-4 rounded-2xl border border-white/5 space-y-1">
+                  <span className="text-xs text-slate-400 font-bold uppercase">Total Tarjeta:</span>
+                  <p className="font-mono text-lg font-black text-cyan-400">
                     {Number(cajaHoy.total_tarjeta).toFixed(2)} €
                   </p>
                 </div>
-                <div className="bg-black/40 p-3 rounded-xl border border-white/5 space-y-1">
-                  <span className="text-xs text-slate-400">Total Efectivo:</span>
-                  <p className="font-mono text-lg font-bold text-emerald-400">
+                <div className="bg-black/40 p-4 rounded-2xl border border-white/5 space-y-1">
+                  <span className="text-xs text-slate-400 font-bold uppercase">Total Efectivo:</span>
+                  <p className="font-mono text-lg font-black text-emerald-400">
                     {Number(cajaHoy.total_efectivo).toFixed(2)} €
                   </p>
                 </div>
-                <div className="bg-sky-950/20 p-3 rounded-xl border border-sky-500/30">
-                  <span className="text-xs font-bold text-sky-400">Teórico en Cajón:</span>
-                  <p className="font-mono text-xl font-black text-white mt-1">
+                <div className="bg-sky-950/20 p-4 rounded-2xl border border-sky-500/30">
+                  <span className="text-xs font-bold text-sky-400 uppercase">Teórico en Cajón:</span>
+                  <p className="font-mono text-2xl font-black text-white mt-1">
                     {(Number(cajaHoy.remanente_apertura) + Number(cajaHoy.total_efectivo)).toFixed(2)} €
                   </p>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setModalCajaManual({ abierto: true, tipo: 'ENTRADA' })}
+                  disabled={cajaHoy.estado === 'cerrada'}
+                  className="flex-1 py-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/30 font-black text-xs uppercase flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                >
+                  <TrendingUp className="h-4 w-4" /> Entrada Manual
+                </button>
+                <button
+                  onClick={() => setModalCajaManual({ abierto: true, tipo: 'SALIDA' })}
+                  disabled={cajaHoy.estado === 'cerrada'}
+                  className="flex-1 py-3 rounded-xl bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 font-black text-xs uppercase flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                >
+                  <TrendingDown className="h-4 w-4" /> Salida / Pago
+                </button>
               </div>
 
               <div className="space-y-3 pt-4 border-t border-white/10">
@@ -2310,7 +2488,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </div>
 
                 {facturasAgrupadas.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic text-center py-6 bg-black/20 rounded-xl">
+                  <p className="text-xs text-slate-500 italic text-center py-8 bg-black/20 rounded-2xl border border-white/5">
                     Aún no se han emitido tickets fiscales hoy.
                   </p>
                 ) : (
@@ -2348,7 +2526,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         step="0.01"
                         value={efectivoRealInput}
                         onChange={(e) => setEfectivoRealInput(e.target.value)}
-                        className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-4 py-3 text-lg font-mono font-bold text-amber-400 focus:border-amber-400"
+                        className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-4 py-4 text-lg font-mono font-bold text-amber-400 focus:border-amber-400"
                       />
                     </div>
                     <div className="space-y-2">
@@ -2358,14 +2536,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         step="0.01"
                         value={remanenteCierreInput}
                         onChange={(e) => setRemanenteCierreInput(e.target.value)}
-                        className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-lg font-mono font-bold text-white focus:border-cyan-400"
+                        className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-4 text-lg font-mono font-bold text-white focus:border-cyan-400"
                       />
                     </div>
                   </div>
 
                   <button
                     onClick={() => cerrarCajaEspecifica(cajaHoy)}
-                    className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
+                    className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-lg"
                   >
                     <Lock className="h-5 w-5" /> Cerrar Caja y Terminar Turno
                   </button>
