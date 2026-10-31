@@ -258,6 +258,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }
     };
     initSesion();
+    const handleSynced = (ev: Event) => {
+      const customEv = ev as CustomEvent<{ cantidad?: number }>;
+      const cant = customEv.detail?.cantidad ?? 1;
+      mostrarAlerta(`Conexión recuperada: ${cant} pedido(s) de la cola offline sincronizado(s) con éxito.`, 'exito');
+      cargarMesasAbiertas();
+      cargarCaja();
+      cargarProductosCarta();
+    };
+    window.addEventListener('pedidos-offline-sincronizados', handleSynced);
+    return () => window.removeEventListener('pedidos-offline-sincronizados', handleSynced);
   }, []);
 
   const loginCamarero = async (e: React.FormEvent) => {
@@ -503,7 +513,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       return `${empAdmin.nombre} ${empAdmin.apellidos || ''}`.trim();
     }
 
-    const cfg = configFiscal || (await obtenerConfiguracionFiscal());
+    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
     if (cfg.pin_administrador === pinLimpio) {
       return 'Administrador Maestro';
     }
@@ -595,9 +606,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }));
 
     const desglose = calcularDesgloseMesa(modalCobroParcial.mesaNombre, itemsProcesados);
-    const cfg = configFiscal || (await obtenerConfiguracionFiscal());
+    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
     try {
+      if (!navigator.onLine) {
+        throw new Error('Sin conexión a internet (offline)');
+      }
       const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'T', p_tipo_documento: 'SIMPLIFICADA', p_mesa: modalCobroParcial.mesaNombre, p_vendedor: camareroActivo.nombre,
         p_metodo_pago: metodo, p_importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0, p_importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
@@ -1004,9 +1019,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (!mesaObj || !camareroActivo) return;
 
     const desglose = calcularDesgloseMesa(mesaNombre, mesaObj.items);
-    const cfg = configFiscal || (await obtenerConfiguracionFiscal());
+    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
     try {
+      if (!navigator.onLine) {
+        throw new Error('Sin conexión a internet (offline)');
+      }
       const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'T',
         p_tipo_documento: 'SIMPLIFICADA',
@@ -1083,7 +1102,51 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       cargarCaja();
       cargarProductosCarta();
     } catch (err: any) {
-      mostrarAlerta('Error al emitir ticket legal: ' + err.message, 'error');
+      try {
+        const pedidoOffline = {
+          id_cola: `offline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          mesa: mesaNombre,
+          fecha: new Date().toISOString(),
+          metodo,
+          vendedor: camareroActivo.nombre,
+          caja_id: cajaHoy.id,
+          autorizado_por: autorizadorDescuentoMesa[mesaNombre] || null,
+          tipo_iva: cfgFallback.iva_defecto || 10,
+          items: mesaObj.items,
+          totales: {
+            subtotalBruto: desglose.subtotalBruto,
+            dtoGeneralPorc: desglose.dtoGeneralPorc,
+            descuentoTotalImporte: desglose.descuentoTotalImporte,
+            totalFinal: desglose.totalFinal,
+            importeEfectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
+            importeTarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0
+          },
+          lineas: desglose.lineasCalculadas
+        };
+
+        const rawCola = localStorage.getItem('pedidos_offline');
+        const colaActual = rawCola ? JSON.parse(rawCola) : [];
+        const listaPedidos = Array.isArray(colaActual) ? colaActual : [];
+        listaPedidos.push(pedidoOffline);
+        localStorage.setItem('pedidos_offline', JSON.stringify(listaPedidos));
+      } catch (storageErr) {
+        console.error('Error guardando en pedidos_offline de localStorage:', storageErr);
+      }
+
+      // Limpiar carrito y cerrar la mesa visualmente sin bloquear el TPV
+      setCarritoActual([]);
+      if (getNombreMesa(mesaSeleccionada) === mesaNombre) {
+        setCuentaMesaActual([]);
+      }
+      setMesasAbiertas((prev) => prev.filter((m) => m.mesa !== mesaNombre));
+      setDescuentoGeneralMesa((prev) => {
+        const copia = { ...prev };
+        delete copia[mesaNombre];
+        return copia;
+      });
+
+      mostrarAlerta('Sin conexión. Pedido guardado en cola local', 'aviso');
+      console.warn('Venta almacenada en cola offline:', err);
     }
   };
 
@@ -1106,7 +1169,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
     try {
       const orig = modalRectificativa.factura;
-      const cfg = configFiscal || (await obtenerConfiguracionFiscal());
+      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
       const importeNegativo = -Math.abs(Number(orig.total_final));
       const brutoNegativo = -Math.abs(Number(orig.subtotal_bruto));
 
@@ -1186,7 +1250,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
     try {
       const orig = modalFacturaNominativa.factura;
-      const cfg = configFiscal || (await obtenerConfiguracionFiscal());
+      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
       const { data: docNom, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'F',
@@ -1239,7 +1304,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
     setImprimiendoPreTicket(true);
     try {
-      const cfg = configFiscal || (await obtenerConfiguracionFiscal());
+      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
       const ivaPorc = cfg.iva_defecto || 10;
       const baseImp = Number((desgloseMesaSeleccionada.totalFinal / (1 + ivaPorc / 100)).toFixed(2));
       const cuotaIva = Number((desgloseMesaSeleccionada.totalFinal - baseImp).toFixed(2));

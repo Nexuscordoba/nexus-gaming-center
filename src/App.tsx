@@ -18,8 +18,10 @@ import {
   ChefHat,
   CalendarDays,
   QrCode,
-  Utensils
+  Utensils,
+  CheckCircle2
 } from 'lucide-react';
+import { supabase } from './supabase';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
@@ -41,6 +43,190 @@ export default function App() {
   
   // Estado para controlar el submenú de Cafetería en el Dock
   const [showCafeteriaMenu, setShowCafeteriaMenu] = useState(false);
+  const [toastOfflineSync, setToastOfflineSync] = useState<string | null>(null);
+
+  useEffect(() => {
+    let sincronizando = false;
+
+    const descontarStockPedidoOffline = async (itemsPedido: any[]) => {
+      try {
+        const itemsValidos = (itemsPedido || []).filter(
+          (item) => item && !String(item.nombre || '').includes('├─') && Number(item.cantidad) > 0
+        );
+
+        await Promise.all(
+          itemsValidos.map(async (item) => {
+            const prodId = item.producto_id || item.id;
+            let productoDB: { id: number; stock_actual: number | null; articulo_inventario_id?: string | null } | null = null;
+
+            if (prodId) {
+              const { data } = await supabase
+                .from('productos_carta')
+                .select('id, stock_actual, articulo_inventario_id')
+                .eq('id', prodId)
+                .maybeSingle();
+              productoDB = data;
+            }
+
+            if (!productoDB && item.nombre) {
+              const { data } = await supabase
+                .from('productos_carta')
+                .select('id, stock_actual, articulo_inventario_id')
+                .eq('nombre', String(item.nombre).trim())
+                .maybeSingle();
+              productoDB = data;
+            }
+
+            if (!productoDB) return;
+
+            const nuevoStock = Number(productoDB.stock_actual ?? 0) - Number(item.cantidad);
+            await supabase
+              .from('productos_carta')
+              .update({ stock_actual: nuevoStock })
+              .eq('id', productoDB.id);
+
+            const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
+            if (artInvId) {
+              await supabase
+                .from('articulos_cafeteria')
+                .update({ stock_actual: nuevoStock })
+                .eq('id', artInvId);
+            }
+          })
+        );
+      } catch (stockErr) {
+        console.error('Error al descontar stock de pedido offline:', stockErr);
+      }
+    };
+
+    const sincronizarPedidosOffline = async () => {
+      if (sincronizando || !navigator.onLine) return;
+
+      const raw = localStorage.getItem('pedidos_offline');
+      if (!raw) return;
+
+      let cola: any[] = [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) cola = parsed;
+      } catch (e) {
+        console.error('Error al leer pedidos_offline de localStorage:', e);
+        return;
+      }
+
+      if (cola.length === 0) return;
+
+      sincronizando = true;
+      const pendientesRestantes = [...cola];
+      let sincronizadosExito = 0;
+
+      try {
+        for (const pedido of cola) {
+          try {
+            const totalFinal = Number(pedido?.totales?.totalFinal ?? 0);
+            const subtotalBruto = Number(pedido?.totales?.subtotalBruto ?? totalFinal);
+            const dtoGeneralPorc = Number(pedido?.totales?.dtoGeneralPorc ?? 0);
+            const descuentoTotalImporte = Number(pedido?.totales?.descuentoTotalImporte ?? 0);
+            const metodo = pedido?.metodo === 'tarjeta' ? 'tarjeta' : 'efectivo';
+
+            const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
+              p_serie: 'T',
+              p_tipo_documento: 'SIMPLIFICADA',
+              p_mesa: pedido.mesa || 'BARRA',
+              p_vendedor: pedido.vendedor || 'Camarero',
+              p_metodo_pago: metodo,
+              p_importe_efectivo: metodo === 'efectivo' ? totalFinal : 0,
+              p_importe_tarjeta: metodo === 'tarjeta' ? totalFinal : 0,
+              p_subtotal_bruto: subtotalBruto,
+              p_descuento_general_porc: dtoGeneralPorc,
+              p_descuento_total_imp: descuentoTotalImporte,
+              p_autorizado_por: pedido.autorizado_por || null,
+              p_tipo_iva: Number(pedido.tipo_iva ?? 10),
+              p_total_final: totalFinal,
+              p_lineas: pedido.lineas || []
+            });
+
+            if (rpcError) throw rpcError;
+
+            if (pedido.mesa) {
+              await supabase
+                .from('comandas_cocina')
+                .update({
+                  pagado: true,
+                  metodo_pago: metodo,
+                  camarero_nombre: pedido.vendedor || 'Camarero',
+                  total_ticket: totalFinal,
+                  factura_fiscal_id: docEmitido?.id,
+                  numero_factura_legal: docEmitido?.numero_completo,
+                  descuento_aplicado: descuentoTotalImporte
+                })
+                .eq('mesa', pedido.mesa)
+                .eq('pagado', false);
+            }
+
+            // Actualizar caja_diaria activa o correspondiente al turno del pedido
+            const { data: cajaDestino } = pedido.caja_id
+              ? await supabase.from('caja_diaria').select('*').eq('id', pedido.caja_id).maybeSingle()
+              : await supabase.from('caja_diaria').select('*').eq('estado', 'abierta').order('id', { ascending: false }).limit(1).maybeSingle();
+
+            if (cajaDestino) {
+              const nuevoEfectivo = Number(cajaDestino.total_efectivo || 0) + (metodo === 'efectivo' ? totalFinal : 0);
+              const nuevaTarjeta = Number(cajaDestino.total_tarjeta || 0) + (metodo === 'tarjeta' ? totalFinal : 0);
+              await supabase
+                .from('caja_diaria')
+                .update({
+                  total_efectivo: nuevoEfectivo,
+                  total_tarjeta: nuevaTarjeta
+                })
+                .eq('id', cajaDestino.id);
+            }
+
+            // Descontar inventario en Supabase
+            await descontarStockPedidoOffline(pedido.items || []);
+
+            // Eliminar este ticket sincronizado con éxito de la cola en localStorage
+            const idx = pendientesRestantes.findIndex(
+              (p) => (p.id_cola && p.id_cola === pedido.id_cola) || p === pedido
+            );
+            if (idx !== -1) {
+              pendientesRestantes.splice(idx, 1);
+            }
+            if (pendientesRestantes.length === 0) {
+              localStorage.removeItem('pedidos_offline');
+            } else {
+              localStorage.setItem('pedidos_offline', JSON.stringify(pendientesRestantes));
+            }
+
+            sincronizadosExito++;
+          } catch (errPedido) {
+            console.error('Error sincronizando un pedido offline con Supabase:', errPedido);
+          }
+        }
+
+        if (sincronizadosExito > 0) {
+          const msgExito = `¡Conexión recuperada! Se han sincronizado ${sincronizadosExito} pedido(s) pendientes de la cola offline.`;
+          setToastOfflineSync(msgExito);
+          window.dispatchEvent(
+            new CustomEvent('pedidos-offline-sincronizados', { detail: { cantidad: sincronizadosExito } })
+          );
+          setTimeout(() => {
+            setToastOfflineSync(null);
+          }, 5500);
+        }
+      } finally {
+        sincronizando = false;
+      }
+    };
+
+    window.addEventListener('online', sincronizarPedidosOffline);
+    if (navigator.onLine) {
+      sincronizarPedidosOffline();
+    }
+
+    return () => {
+      window.removeEventListener('online', sincronizarPedidosOffline);
+    };
+  }, []);
 
   
 
@@ -185,12 +371,28 @@ export default function App() {
   }
 
   if (subdomainRoute === 'waiter') {
-    return <TableWaiter onBack={() => setSubdomainRoute('main')} />;
+    return (
+      <>
+        {toastOfflineSync && (
+          <div className="fixed top-4 right-4 z-[9999] max-w-md rounded-2xl border border-emerald-500/50 bg-emerald-950/95 px-4 py-3 text-xs font-bold text-emerald-300 shadow-2xl flex items-center gap-2.5 backdrop-blur-md">
+            <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />
+            <span>{toastOfflineSync}</span>
+          </div>
+        )}
+        <TableWaiter onBack={() => setSubdomainRoute('main')} />
+      </>
+    );
   }
 
   return (
     <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans selection:bg-cyan-500 selection:text-black flex flex-col justify-between">
       
+      {toastOfflineSync && (
+        <div className="fixed top-4 right-4 z-[9999] max-w-md rounded-2xl border border-emerald-500/50 bg-emerald-950/95 px-4 py-3 text-xs font-bold text-emerald-300 shadow-2xl flex items-center gap-2.5 backdrop-blur-md">
+          <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />
+          <span>{toastOfflineSync}</span>
+        </div>
+      )}
       {/* MENÚ FLOTANTE DOCK REORGANIZADO */}
       {adminDesbloqueado && (
         <div className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-max max-w-[95%] bg-gradient-to-r from-[#0c0d14]/95 to-[#131722]/95 backdrop-blur-xl border border-cyan-500/50 p-3 sm:p-4 rounded-2xl shadow-[0_0_40px_rgba(0,242,254,0.3)] flex flex-wrap justify-center items-center gap-2 sm:gap-4 animate-slide-up">

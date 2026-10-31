@@ -17,7 +17,7 @@ import {
   FileSpreadsheet, FileText, Printer, ShieldAlert, ShoppingCart, Layers,
   Scale, Barcode, Image as ImageIcon, Save, Building2, Upload, Download,
   UtensilsCrossed, X, Target, ListPlus, RotateCcw, CornerDownRight,
-  UserCog, Check, Ban, Truck, Lock, LockOpen, EyeOff, Calculator, AlertTriangle
+  UserCog, Check, Ban, Truck, Lock, LockOpen, EyeOff, Calculator, AlertTriangle, RefreshCw
 } from 'lucide-react';
 
 interface BackofficeProps {
@@ -168,6 +168,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [filtroArticuloProveedor, setFiltroArticuloProveedor] = useState('');
 
   const [isImportingCSV, setIsImportingCSV] = useState(false);
+  const [refrescandoStock, setRefrescandoStock] = useState<boolean>(false);
 
   const [empleados, setEmpleados] = useState<any[]>([]);
   const [modalEmpleado, setModalEmpleado] = useState<{ id?: string, nombre: string, apellidos: string, pin: string, rol: string, activo: boolean } | null>(null);
@@ -619,6 +620,26 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
     if (arts && arts.length > 0) {
       setArticulosMaestro(arts);
+    }
+  };
+
+    if (arts && arts.length > 0) {
+      setArticulosMaestro(arts);
+    }
+  };
+
+  const refrescarStockInventario = async () => {
+    setRefrescandoStock(true);
+    try {
+      await Promise.all([
+        cargarArticulosYCategorias(),
+        cargarMovimientosInventario(pageMovimientos)
+      ]);
+      notificar('Stock e inventario actualizados correctamente desde Supabase.', 'ok');
+    } catch (err: any) {
+      notificar('Error al refrescar el stock: ' + (err?.message || 'Error desconocido'), 'error');
+    } finally {
+      setRefrescandoStock(false);
     }
   };
 
@@ -2779,7 +2800,18 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
             <div className="lg:col-span-5 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
               <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                <h3 className="font-bold text-white text-sm">Catálogo Sincronizado ({articulosMaestro.length})</h3>
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <h3 className="font-bold text-white text-sm">Catálogo Sincronizado ({articulosMaestro.length})</h3>
+                  <button
+                    type="button"
+                    onClick={refrescarStockInventario}
+                    disabled={refrescandoStock}
+                    className="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${refrescandoStock ? 'animate-spin' : ''}`} />
+                    <span>{refrescandoStock ? 'Actualizando...' : 'Refrescar Stock'}</span>
+                  </button>
+                </div>
                 <div className="relative w-44">
                   <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-2.5" />
                   <input type="text" placeholder="Buscar artículo..." value={filtroArticulos} onChange={(e) => setFiltroArticulos(e.target.value)} className="w-full bg-black/60 border border-white/15 rounded-xl pl-8 pr-2.5 py-1.5 text-xs text-white" />
@@ -2823,7 +2855,21 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 <Layers className="h-5 w-5 text-emerald-400" />
                 Gestión Centralizada de Stock y Elaboraciones
               </h2>
-              <button type="button" onClick={() => setModalElaboracion({ abierto: true, articuloDestinoId: '', cantidadGenerada: '', ingredientes: [], ingSelId: '', ingSelCant: '1', ingSelCoste: '', procesando: false })} className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all shadow-lg">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={refrescarStockInventario}
+                  disabled={refrescandoStock}
+                  className="px-4 py-2.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                >
+                  <RefreshCw className={`h-4 w-4 ${refrescandoStock ? 'animate-spin' : ''}`} />
+                  <span>{refrescandoStock ? 'Actualizando...' : 'Refrescar Stock'}</span>
+                </button>
+                <button type="button" onClick={() => setModalElaboracion({ abierto: true, articuloDestinoId: '', cantidadGenerada: '', ingredientes: [], ingSelId: '', ingSelCant: '1', ingSelCoste: '', procesando: false })} className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all shadow-lg">
+                  <UtensilsCrossed className="h-4 w-4" /> Elaborar Lote / Receta
+                </button>
+              </div>
+              <button type="button" className="hidden" onClick={() => setModalElaboracion({ abierto: true, articuloDestinoId: '', cantidadGenerada: '', ingredientes: [], ingSelId: '', ingSelCant: '1', ingSelCoste: '', procesando: false })}>
                 <UtensilsCrossed className="h-4 w-4" /> Elaborar Lote / Receta
               </button>
             </div>
@@ -2880,7 +2926,18 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
               <div className="lg:col-span-7 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                  <h3 className="font-bold text-white text-sm">Estado del Stock Real por Artículo</h3>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h3 className="font-bold text-white text-sm">Estado del Stock Real por Artículo</h3>
+                    <button
+                      type="button"
+                      onClick={refrescarStockInventario}
+                      disabled={refrescandoStock}
+                      className="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${refrescandoStock ? 'animate-spin' : ''}`} />
+                      <span>{refrescandoStock ? 'Actualizando...' : 'Refrescar Stock'}</span>
+                    </button>
+                  </div>
                   <span className="text-xs text-slate-400">
                     Valoración total en almacén: <strong className="text-emerald-400 font-mono">{articulosMaestro.reduce((acc, a) => acc + Math.max(0, Number(a.stock_actual)) * Number(a.coste_unitario || 0), 0).toFixed(2)} €</strong>
                   </span>
