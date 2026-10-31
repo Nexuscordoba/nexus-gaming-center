@@ -208,6 +208,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [efectivoRealInput, setEfectivoRealInput] = useState<string>('');
   const [remanenteCierreInput, setRemanenteCierreInput] = useState<string>('50.00');
   const [showModalArqueo, setShowModalArqueo] = useState<boolean>(false);
+  const [showModalApertura, setShowModalApertura] = useState<boolean>(false);
+  const [procesandoApertura, setProcesandoApertura] = useState<boolean>(false);
   const [datosArqueoCaja, setDatosArqueoCaja] = useState<{
     id: number;
     fecha?: string;
@@ -361,10 +363,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     const { data: todasLasCajas } = await supabase
       .from('caja_diaria')
       .select('*')
-      .order('fecha', { ascending: false });
+      .order('fecha', { ascending: false })
+      .order('id', { ascending: false });
 
     if (todasLasCajas && todasLasCajas.length > 0) {
-      const cajaDeHoy = todasLasCajas.find((c) => c.fecha === fechaHoy);
+      const cajaDeHoy = todasLasCajas.find((c) => c.fecha === fechaHoy && c.estado === 'abierta') || todasLasCajas.find((c) => c.fecha === fechaHoy);
       if (cajaDeHoy) {
         setCajaHoy(cajaDeHoy as CajaDiaria);
       } else {
@@ -1267,7 +1270,54 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  const abrirCaja = async () => {
+  const abrirModalAperturaCaja = () => {
+    setRemanenteAperturaInput('50.00');
+    setShowModalApertura(true);
+  };
+
+  const confirmarAperturaCaja = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const remanenteNum = parseFloat(remanenteAperturaInput);
+    if (isNaN(remanenteNum) || remanenteNum < 0) {
+      mostrarAlerta('Por favor, introduce un fondo de caja inicial válido.', 'error');
+      return;
+    }
+
+    setProcesandoApertura(true);
+    try {
+      const fechaHoy = new Date().toISOString().split('T')[0];
+      const remanente_apertura = Number(remanenteNum.toFixed(2));
+
+      const { data: nuevaCaja, error } = await supabase
+        .from('caja_diaria')
+        .insert([
+          {
+            fecha: fechaHoy,
+            estado: 'abierta',
+            remanente_apertura,
+            total_efectivo: 0.00,
+            total_tarjeta: 0.00,
+            efectivo_real: 0.00,
+            descuadre: 0.00
+          }
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setShowModalApertura(false);
+      setCajaHoy(nuevaCaja as CajaDiaria);
+      mostrarAlerta(`¡Caja / Turno abierto con éxito! Fondo inicial: ${remanente_apertura.toFixed(2)} €.`, 'exito');
+      cargarCaja();
+    } catch (err: any) {
+      mostrarAlerta('Error al abrir la caja: ' + err.message, 'error');
+    } finally {
+      setProcesandoApertura(false);
+    }
+  };
+
+  /*
     const fechaHoy = new Date().toISOString().split('T')[0];
     const remanente = parseFloat(remanenteAperturaInput) || 0;
 
@@ -1285,6 +1335,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     cargarCaja();
   };
 
+  */
   const abrirModalCierreCaja = async () => {
     try {
       const { data, error } = await supabase
@@ -1413,12 +1464,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  const cerrarCajaEspecifica = async (_caja: CajaDiaria) => {
-    await abrirModalCierreCaja();
-    return;
-  };
-
-  const _legacyCerrarCajaEspecificaUnused = async (caja: CajaDiaria) => {
+  /*
     const efectivoReal = parseFloat(efectivoRealInput) || 0;
     const remanenteCierre = parseFloat(remanenteCierreInput) || 0;
     const teoricoEfectivo = Number(caja.remanente_apertura) + Number(caja.total_efectivo);
@@ -1457,6 +1503,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     cargarCaja();
   };
 
+  */
   const salirSesion = () => {
     setCamareroActivo(null);
     sessionStorage.removeItem('nexus_camarero_sesion');
@@ -1586,6 +1633,73 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <X className="h-4 w-4 opacity-70 hover:opacity-100" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* MODAL DE APERTURA DE CAJA / TURNO */}
+      {showModalApertura && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form
+            onSubmit={confirmarAperturaCaja}
+            className="w-full max-w-md bg-[#0d0f17] border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-5"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-emerald-400">
+                <LockOpen className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Apertura de Caja / Turno</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowModalApertura(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              Confirma el fondo de caja inicial (remanente de apertura) en efectivo con el que se inicia el turno de hoy.
+            </p>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-emerald-400 uppercase block">
+                Fondo de Caja Inicial (Remanente de Apertura) *
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  autoFocus
+                  value={remanenteAperturaInput}
+                  onChange={(e) => setRemanenteAperturaInput(e.target.value)}
+                  className="w-full bg-black/70 border-2 border-emerald-500/50 focus:border-emerald-400 rounded-2xl px-4 py-4 text-3xl font-mono font-black text-emerald-400 text-center outline-none shadow-inner"
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xl font-mono font-bold text-slate-500">
+                  €
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowModalApertura(false)}
+                className="py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={procesandoApertura}
+                className="py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg disabled:opacity-50"
+              >
+                <LockOpen className="h-4 w-4" />
+                {procesandoApertura ? 'Abriendo...' : 'Confirmar Apertura'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -2275,6 +2389,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
 
         <div className="flex items-center gap-2.5 flex-wrap justify-center">
+          {(!cajaHoy || cajaHoy.estado !== 'abierta') && !cajaAtrasada && (
+            <button
+              type="button"
+              onClick={abrirModalAperturaCaja}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(16,185,129,0.4)] cursor-pointer transition-all"
+            >
+              <LockOpen className="h-4 w-4" />
+              <span>Abrir Caja / Turno</span>
+            </button>
+          )}
           {camareroActivo.rol === 'admin' && (
             <button
               type="button"
@@ -2814,10 +2938,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 />
               </div>
               <button
-                onClick={abrirCaja}
+                type="button"
+                onClick={abrirModalAperturaCaja}
                 className="w-full py-4 rounded-xl bg-amber-500 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors"
               >
-                <LockOpen className="h-5 w-5" /> Abrir Caja
+                <LockOpen className="h-5 w-5" /> Abrir Caja / Turno
               </button>
             </div>
           ) : cajaHoy ? (
@@ -2920,6 +3045,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   </div>
                 )}
               </div>
+
+              {cajaHoy.estado !== 'abierta' && (
+                <button
+                  type="button"
+                  onClick={abrirModalAperturaCaja}
+                  className="w-full py-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-[0_0_25px_rgba(16,185,129,0.4)]"
+                >
+                  <LockOpen className="h-5 w-5" /> Abrir Caja / Turno
+                </button>
+              )}
 
               {cajaHoy.estado === 'abierta' && (
                 <>

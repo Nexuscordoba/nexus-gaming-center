@@ -16,7 +16,7 @@ import {
   FileSpreadsheet, FileText, Printer, ShieldAlert, ShoppingCart, Layers,
   Scale, Barcode, Image as ImageIcon, Save, Building2, Upload, Download,
   UtensilsCrossed, X, Target, ListPlus, RotateCcw, CornerDownRight,
-  UserCog, Check, Ban, Truck, Lock, EyeOff, Calculator, AlertTriangle
+  UserCog, Check, Ban, Truck, Lock, LockOpen, EyeOff, Calculator, AlertTriangle
 } from 'lucide-react';
 
 interface BackofficeProps {
@@ -180,6 +180,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     procesando: boolean;
   } | null>(null);
   const [showModalArqueo, setShowModalArqueo] = useState<boolean>(false);
+  const [showModalApertura, setShowModalApertura] = useState<boolean>(false);
+  const [remanenteAperturaInput, setRemanenteAperturaInput] = useState<string>('50.00');
+  const [procesandoApertura, setProcesandoApertura] = useState<boolean>(false);
   const [efectivoRealCierreInput, setEfectivoRealCierreInput] = useState<string>('');
   const [alertaResumenCierre, setAlertaResumenCierre] = useState<{
     cuadrada: boolean;
@@ -323,13 +326,33 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
 
     const fechaHoy = new Date().toISOString().split('T')[0];
+    const { data: cajaAbiertaActiva } = await supabase
+      .from('caja_diaria')
+      .select('*')
+      .eq('estado', 'abierta')
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (cajaAbiertaActiva) {
+      setCajaHoy(cajaAbiertaActiva);
+    } else {
+      const { data: ultimaCerradaHoy } = await supabase
+        .from('caja_diaria')
+        .select('*')
+        .eq('fecha', fechaHoy)
+        .order('id', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      setCajaHoy(ultimaCerradaHoy || null);
+    }
     const { data: cData } = await supabase
       .from('caja_diaria')
       .select('*')
       .eq('fecha', fechaHoy)
       .maybeSingle();
 
-    if (cData) {
+    if (!cajaAbiertaActiva && cData) {
       setCajaHoy(cData);
     } else {
       const { data: cajaAbierta } = await supabase
@@ -339,7 +362,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         .order('fecha', { ascending: false })
         .limit(1)
         .maybeSingle();
-      setCajaHoy(cajaAbierta || null);
+      if (!cajaAbiertaActiva) setCajaHoy(cajaAbierta || null);
     }
 
     const { data: cierresData } = await supabase
@@ -350,6 +373,53 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
     if (cierresData) {
       setCierresTrabajadores(cierresData);
+    }
+  };
+
+  const abrirModalAperturaCaja = () => {
+    setRemanenteAperturaInput('50.00');
+    setShowModalApertura(true);
+  };
+
+  const confirmarAperturaCajaBackoffice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const remanenteNum = parseFloat(remanenteAperturaInput);
+    if (isNaN(remanenteNum) || remanenteNum < 0) {
+      notificar('Por favor, introduce un fondo de caja inicial válido.', 'error');
+      return;
+    }
+
+    setProcesandoApertura(true);
+    try {
+      const fechaActual = new Date().toISOString().split('T')[0];
+      const remanente_apertura = Number(remanenteNum.toFixed(2));
+
+      const { data: nuevaCaja, error } = await supabase
+        .from('caja_diaria')
+        .insert([
+          {
+            fecha: fechaActual,
+            estado: 'abierta',
+            remanente_apertura,
+            total_efectivo: 0.00,
+            total_tarjeta: 0.00,
+            efectivo_real: 0.00,
+            descuadre: 0.00
+          }
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setShowModalApertura(false);
+      setCajaHoy(nuevaCaja);
+      notificar(`¡Caja / Turno abierto con éxito! Fondo inicial confirmado: ${remanente_apertura.toFixed(2)} €.`, 'ok');
+      cargarTicketsYVentas();
+    } catch (err: any) {
+      notificar('Error al abrir la caja: ' + err.message, 'error');
+    } finally {
+      setProcesandoApertura(false);
     }
   };
 
@@ -1741,6 +1811,73 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         </div>
       )}
 
+      {/* MODAL DE APERTURA DE CAJA / TURNO */}
+      {showModalApertura && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form
+            onSubmit={confirmarAperturaCajaBackoffice}
+            className="w-full max-w-md bg-[#0d0f17] border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-5"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-emerald-400">
+                <LockOpen className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Apertura de Caja / Turno</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowModalApertura(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              Confirma el fondo de caja inicial (remanente de apertura) en efectivo con el que se inicia el turno de hoy.
+            </p>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-emerald-400 uppercase block">
+                Fondo de Caja Inicial (Remanente de Apertura) *
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  autoFocus
+                  value={remanenteAperturaInput}
+                  onChange={(e) => setRemanenteAperturaInput(e.target.value)}
+                  className="w-full bg-black/70 border-2 border-emerald-500/50 focus:border-emerald-400 rounded-2xl px-4 py-4 text-3xl font-mono font-black text-emerald-400 text-center outline-none shadow-inner"
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xl font-mono font-bold text-slate-500">
+                  €
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowModalApertura(false)}
+                className="py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={procesandoApertura}
+                className="py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg disabled:opacity-50"
+              >
+                <LockOpen className="h-4 w-4" />
+                {procesandoApertura ? 'Abriendo...' : 'Confirmar Apertura'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* MODAL ARQUEO CIEGO - CIERRE DE CAJA */}
       {showModalArqueo && modalCierreCaja && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
@@ -1912,16 +2049,17 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={abrirModalCierreCaja}
-            disabled={cajaHoy?.estado === 'cerrada'}
+            onClick={!cajaHoy || cajaHoy.estado !== 'abierta' ? abrirModalAperturaCaja : abrirModalCierreCaja}
+
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer shadow-lg ${
-              cajaHoy?.estado === 'cerrada'
-                ? 'bg-rose-950/40 border border-rose-500/40 text-rose-300 cursor-not-allowed'
+              !cajaHoy || cajaHoy.estado !== 'abierta'
+                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-5 py-2.5 shadow-[0_0_20px_rgba(16,185,129,0.4)]'
                 : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
             }`}
           >
             <Lock className="h-4 w-4" />
-            <span>{cajaHoy?.estado === 'cerrada' ? 'Turno Finalizado (Caja Cerrada)' : 'Cierre de Caja'}</span>
+            {!cajaHoy || cajaHoy.estado !== 'abierta' ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+            <span>{!cajaHoy || cajaHoy.estado !== 'abierta' ? 'Abrir Caja / Turno' : 'Cierre de Caja'}</span>
           </button>
           <button type="button" onClick={() => (onBack ? onBack() : (window.location.hash = ''))} className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-xs font-bold text-white cursor-pointer"><ArrowLeft className="h-4 w-4" /><span>Volver a TPV</span></button>
         </div>
@@ -1940,6 +2078,32 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       <main className="flex-1 max-w-7xl w-full mx-auto space-y-6 pb-16">
         {mensajeAlerta && (
           <div className={`p-4 rounded-2xl border text-xs font-bold flex items-center gap-2 ${mensajeAlerta.tipo === 'ok' ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300' : mensajeAlerta.tipo === 'info' ? 'bg-sky-950/60 border-sky-500/40 text-sky-300' : 'bg-rose-950/60 border-rose-500/40 text-rose-300'}`}><CheckCircle2 className="h-4 w-4 shrink-0" /><span>{mensajeAlerta.texto}</span></div>
+        )}
+
+        {(!cajaHoy || cajaHoy.estado !== 'abierta') && (
+          <div className="p-6 rounded-3xl bg-emerald-950/30 border-2 border-emerald-500/40 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
+            <div className="flex items-center gap-4">
+              <div className="h-14 w-14 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0">
+                <LockOpen className="h-7 w-7" />
+              </div>
+              <div>
+                <h2 className="text-lg font-black text-white uppercase tracking-wide">
+                  {cajaHoy?.estado === 'cerrada' ? 'Caja Cerrada · Turno Finalizado' : 'No hay caja abierta para el día de hoy'}
+                </h2>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Abre un nuevo turno confirmando el fondo de caja inicial para habilitar las ventas y el registro en el sistema.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={abrirModalAperturaCaja}
+              className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 cursor-pointer shadow-[0_0_25px_rgba(16,185,129,0.45)] transition-all shrink-0"
+            >
+              <LockOpen className="h-5 w-5" />
+              <span>Abrir Caja / Turno</span>
+            </button>
+          </div>
         )}
 
         {/* PESTAÑA PROVEEDORES Y PRECIOS HISTÓRICOS */}
@@ -2166,12 +2330,12 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   )}
                   <button
                     type="button"
-                    onClick={abrirModalCierreCaja}
-                    disabled={cajaHoy?.estado === 'cerrada'}
-                    className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    onClick={!cajaHoy || cajaHoy.estado !== 'abierta' ? abrirModalAperturaCaja : abrirModalCierreCaja}
+        
+                    className={`px-4 py-2 rounded-xl font-black text-xs uppercase flex items-center gap-1.5 cursor-pointer shadow-md transition-colors ${!cajaHoy || cajaHoy.estado !== 'abierta' ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950' : 'bg-amber-500 hover:bg-amber-400 text-slate-950'}`}
                   >
                     <Calculator className="h-4 w-4" />
-                    <span>{cajaHoy?.estado === 'cerrada' ? 'Caja Cerrada' : 'Realizar Cierre de Caja'}</span>
+                    <span>{!cajaHoy || cajaHoy.estado !== 'abierta' ? 'Abrir Caja / Turno' : 'Realizar Cierre de Caja'}</span>
                   </button>
                 </div>
               </div>
