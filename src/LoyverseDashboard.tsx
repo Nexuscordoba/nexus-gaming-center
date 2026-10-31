@@ -2870,7 +2870,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              <form onSubmit={registrarCompraMercancia} className="lg:col-span-5 p-6 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-4 text-xs">
+              <div className="lg:col-span-12 flex flex-col gap-6 w-full">
+              <form onSubmit={registrarCompraMercancia} className="w-full max-w-2xl p-6 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-4 text-xs shadow-lg">
                 <div className="flex items-center gap-2 text-cyan-400 border-b border-white/10 pb-3">
                   <ShoppingCart className="h-5 w-5" />
                   <h3 className="font-black text-white text-sm">Registrar Compra Proveedor (Entrada Stock)</h3>
@@ -2919,7 +2920,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 </button>
               </form>
 
-              <div className="lg:col-span-7 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
+              <div className="w-full p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
                   <div className="flex items-center gap-2.5 flex-wrap">
                     <h3 className="font-bold text-white text-sm">Estado del Stock Real por Artículo</h3>
@@ -2937,19 +2938,30 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                     Valoración total en almacén: <strong className="text-emerald-400 font-mono">{articulosMaestro.reduce((acc, a) => acc + Math.max(0, Number(a.stock_actual)) * Number(a.coste_unitario || 0), 0).toFixed(2)} €</strong>
                   </span>
                 </div>
-                <div className="overflow-x-auto max-h-96">
+                <div className="overflow-x-auto max-h-[620px] overflow-y-auto rounded-2xl border border-white/5">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
-                      <tr><th className="p-2.5">Artículo</th><th className="p-2.5 text-right">Stock Real Actual</th><th className="p-2.5 text-right">Coste Unit.</th><th className="p-2.5 text-center">Acciones</th></tr>
+                      <tr><th className="px-5 py-3.5">Artículo</th><th className="px-5 py-3.5 text-right">Stock Real Actual</th><th className="px-5 py-3.5 text-right">Coste Unit.</th><th className="px-5 py-3.5 text-center">Acciones</th></tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
                       {articulosMaestro.map((a) => {
-                        const bajoMinimo = a.controla_stock && Number(a.stock_actual) <= Number(a.stock_minimo);
+                        const stockNum = Number(a.stock_actual ?? 0);
+                        const claseColorStock =
+                          stockNum <= 0
+                            ? 'text-red-500 font-bold'
+                            : stockNum <= 5
+                            ? 'text-orange-400 font-semibold'
+                            : 'text-slate-200 font-medium';
                         return (
                           <tr key={a.id} className="hover:bg-white/[0.02]">
-                            <td className="p-2.5"><div className="font-bold text-white">{a.nombre}</div><div className="text-[10px] text-slate-500">{a.categoria}</div></td>
-                            <td className="p-2.5 text-right"><span className={`font-mono font-black text-sm ${bajoMinimo ? 'text-rose-400' : 'text-cyan-400'}`}>{Number(a.stock_actual).toFixed(Number.isInteger(Number(a.stock_actual)) ? 0 : 2)} {a.unidad_medida}</span></td>
-                            <td className="p-2.5 text-right font-mono text-slate-400">{Number(a.coste_unitario).toFixed(3)} €</td>
+                            <td className="px-5 py-3.5"><div className="font-bold text-white text-sm">{a.nombre}</div><div className="text-[11px] text-slate-400">{a.categoria}</div></td>
+                            <td className="px-5 py-3.5 text-right">
+                              <span className={`font-mono text-sm inline-flex items-center justify-end gap-1.5 ${claseColorStock}`}>
+                                {stockNum <= 0 && <span title="Rotura de stock">⚠️</span>}
+                                <span>{stockNum.toFixed(Number.isInteger(stockNum) ? 0 : 2)} {a.unidad_medida}</span>
+                              </span>
+                            </td>
+                            <td className="px-5 py-3.5 text-right font-mono text-slate-300">{Number(a.coste_unitario).toFixed(3)} €</td>
                             <td className="p-2.5 text-center">
                               <button type="button" title="Ajuste rápido de stock" onClick={() => setModalAjusteStock({ articuloId: a.id, nombre: a.nombre, stockActual: Number(a.stock_actual), nuevoStock: String(Number(a.stock_actual)), unidad: a.unidad_medida, motivo: '', procesando: false })} className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-cyan-500 hover:text-slate-950 text-cyan-400 transition-colors cursor-pointer">
                                 <Target className="h-4 w-4 mx-auto" />
@@ -2964,6 +2976,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
             </div>
 
+            </div>
             <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-3">
               <div className="flex justify-between items-center mb-3">
                 <h3 className="font-bold text-white text-sm">Últimos Movimientos de Inventario</h3>
