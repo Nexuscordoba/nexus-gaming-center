@@ -1,12 +1,25 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
-import { Coffee, CheckCircle2, Clock, ArrowLeft, CheckSquare, Square, Wine, ChefHat, Layers } from 'lucide-react';
+import {
+  Coffee,
+  CheckCircle2,
+  Clock,
+  ArrowLeft,
+  CheckSquare,
+  Square,
+  Wine,
+  ChefHat,
+  Layers,
+  Lock
+} from 'lucide-react';
 
 interface ItemComanda {
   nombre: string;
   cantidad: number;
   comentarios?: string;
   listo?: boolean;
+  entregado?: boolean;
+  estado_cocina?: 'pendiente' | 'en_preparacion' | 'listo';
   destino?: string;
   categoria?: string;
 }
@@ -26,6 +39,9 @@ interface ItemAgrupado extends ItemComanda {
   comandaId: string;
   itemIdx: number;
   tipo_destino: 'barra' | 'cocina';
+  comandaEstado: Comanda['estado'];
+  listoEnCocina: boolean;
+  entregadoEnBarra: boolean;
   ticket_number?: string;
 }
 
@@ -33,6 +49,8 @@ interface MesaAgrupada {
   mesa: string;
   created_at: string; // La fecha más antigua para calcular la urgencia
   items: ItemAgrupado[];
+  itemsBarra: ItemAgrupado[];
+  itemsCocina: ItemAgrupado[];
 }
 
 export default function BarDisplay() {
@@ -84,23 +102,48 @@ export default function BarDisplay() {
         grupos[comanda.mesa] = {
           mesa: comanda.mesa,
           created_at: comanda.created_at,
-          items: []
+          items: [],
+          itemsBarra: [],
+          itemsCocina: []
         };
       }
 
       if (Array.isArray(comanda.items)) {
         comanda.items.forEach((it, idx) => {
+          // Omitir antiguos avisos duplicados de texto si existieran en la BD
+          if (String(it.nombre || '').startsWith('🍲 LISTO PARA RECOGER:')) {
+            return;
+          }
+
           const destItem = resolverDestinoItem(it, comanda.tipo_destino);
           if (filtroActual === 'barra' && destItem !== 'barra') return;
           if (filtroActual === 'cocina' && destItem !== 'cocina') return;
 
-          grupos[comanda.mesa].items.push({
+          const esCocina = destItem === 'cocina';
+          const listoEnCocina = esCocina
+            ? Boolean(it.listo || it.estado_cocina === 'listo' || comanda.estado === 'listo')
+            : true;
+          const entregadoEnBarra = esCocina
+            ? Boolean(it.entregado)
+            : Boolean(it.entregado ?? it.listo);
+
+          const itemConstruido: ItemAgrupado = {
             ...it,
             comandaId: comanda.id,
             itemIdx: idx,
             tipo_destino: destItem,
+            comandaEstado: comanda.estado,
+            listoEnCocina,
+            entregadoEnBarra,
             ticket_number: comanda.ticket_number
-          });
+          };
+
+          grupos[comanda.mesa].items.push(itemConstruido);
+          if (esCocina) {
+            grupos[comanda.mesa].itemsCocina.push(itemConstruido);
+          } else {
+            grupos[comanda.mesa].itemsBarra.push(itemConstruido);
+          }
         });
       }
     });
@@ -136,36 +179,84 @@ export default function BarDisplay() {
     };
   }, []);
 
-  const toggleItemBarra = async (comandaId: string, itemIdx: number) => {
-    const comanda = comandasOriginales.find((c) => c.id === comandaId);
+  const toggleItemBarra = async (item: ItemAgrupado) => {
+    // Regla de bloqueo de seguridad: si es de cocina y aún no está listo en cocina, bloquear
+    if (item.tipo_destino === 'cocina' && !item.listoEnCocina) {
+      return;
+    }
+
+    const comanda = comandasOriginales.find((c) => c.id === item.comandaId);
     if (!comanda) return;
 
     const nuevosItems = [...comanda.items];
-    nuevosItems[itemIdx] = {
-      ...nuevosItems[itemIdx],
-      listo: !nuevosItems[itemIdx].listo
-    };
+    const actual = { ...nuevosItems[item.itemIdx] };
 
-    const todosListos = nuevosItems.every((it) => it.listo === true);
-    const nuevoEstado = todosListos ? 'servido' : 'pendiente';
+    if (item.tipo_destino === 'cocina') {
+      actual.entregado = !actual.entregado;
+      actual.listo = true; // Se mantiene como listo en cocina
+    } else {
+      const nuevoValor = !(actual.entregado ?? actual.listo);
+      actual.entregado = nuevoValor;
+      actual.listo = nuevoValor;
+    }
+
+    nuevosItems[item.itemIdx] = actual;
+
+    const todosEntregados = nuevosItems.every((it) => {
+      const dest = resolverDestinoItem(it, comanda.tipo_destino);
+      return dest === 'cocina' ? Boolean(it.entregado) : Boolean(it.entregado ?? it.listo);
+    });
+
+    const todosListosEnCocina = nuevosItems.every((it) => Boolean(it.listo));
+    const nuevoEstado: Comanda['estado'] = todosEntregados
+      ? 'servido'
+      : comanda.tipo_destino === 'cocina' && todosListosEnCocina
+      ? 'listo'
+      : comanda.estado;
 
     await supabase
       .from('comandas_cocina')
       .update({ items: nuevosItems, estado: nuevoEstado })
-      .eq('id', comandaId);
+      .eq('id', item.comandaId);
 
     cargarComandas();
   };
 
-  const archivarMesaCompleta = async (mesaNombre: string) => {
-    const comandasDeMesa = comandasOriginales.filter((c) => c.mesa === mesaNombre);
+  const archivarMesaCompleta = async (mesaGrupo: MesaAgrupada) => {
+    const comandasDeMesa = comandasOriginales.filter((c) => c.mesa === mesaGrupo.mesa);
 
-    const promesas = comandasDeMesa.map((c) =>
-      supabase
+    const promesas = comandasDeMesa.map((c) => {
+      const nuevosItems = (c.items || []).map((it) => {
+        const dest = resolverDestinoItem(it, c.tipo_destino);
+        const listoCocina =
+          dest === 'cocina'
+            ? Boolean(it.listo || it.estado_cocina === 'listo' || c.estado === 'listo')
+            : true;
+
+        if (dest === 'cocina' && !listoCocina) {
+          // No se puede forzar entrega de un plato que sigue pendiente o en preparación en cocina
+          return it;
+        }
+        return {
+          ...it,
+          listo: true,
+          entregado: true
+        };
+      });
+
+      const todosEntregados = nuevosItems.every((it) => {
+        const dest = resolverDestinoItem(it, c.tipo_destino);
+        return dest === 'cocina' ? Boolean(it.entregado) : Boolean(it.entregado ?? it.listo);
+      });
+
+      return supabase
         .from('comandas_cocina')
-        .update({ estado: 'servido' })
-        .eq('id', c.id)
-    );
+        .update({
+          items: nuevosItems,
+          estado: todosEntregados ? 'servido' : c.estado
+        })
+        .eq('id', c.id);
+    });
 
     await Promise.all(promesas);
     cargarComandas();
@@ -177,6 +268,100 @@ export default function BarDisplay() {
     } else {
       window.location.href = 'https://nexusgamingcenter.es';
     }
+  };
+
+  const renderItemRow = (it: ItemAgrupado, idx: number) => {
+    const esCocina = it.tipo_destino === 'cocina';
+    const bloqueadoPorCocina = esCocina && !it.listoEnCocina;
+
+    return (
+      <button
+        key={`${it.comandaId}-${it.itemIdx}-${idx}`}
+        type="button"
+        disabled={bloqueadoPorCocina}
+        onClick={() => toggleItemBarra(it)}
+        className={`w-full text-left p-3 rounded-xl border flex items-start justify-between gap-3 transition-all ${
+          bloqueadoPorCocina
+            ? 'bg-slate-900/60 border-slate-800 text-slate-500 opacity-65 cursor-not-allowed select-none'
+            : it.entregadoEnBarra
+            ? 'bg-emerald-950/20 border-emerald-500/30 opacity-60 cursor-pointer'
+            : esCocina
+            ? 'bg-amber-950/25 border-amber-500/40 hover:border-amber-400 cursor-pointer shadow-sm'
+            : 'bg-black/40 border-white/10 hover:border-cyan-500/50 cursor-pointer'
+        }`}
+      >
+        <div className="flex items-start gap-2.5 min-w-0">
+          <div className="mt-0.5 shrink-0">
+            {bloqueadoPorCocina ? (
+              <Lock className="h-4 w-4 text-slate-500" />
+            ) : it.entregadoEnBarra ? (
+              <CheckSquare className="h-5 w-5 text-emerald-500" />
+            ) : (
+              <Square className={`h-5 w-5 ${esCocina ? 'text-amber-400' : 'text-cyan-400'}`} />
+            )}
+          </div>
+          <div className="min-w-0">
+            <span
+              className={`font-bold text-sm block break-words ${
+                bloqueadoPorCocina
+                  ? 'text-slate-400'
+                  : it.entregadoEnBarra
+                  ? 'text-emerald-400 line-through'
+                  : 'text-white'
+              }`}
+            >
+              <span
+                className={`font-mono mr-1.5 ${
+                  bloqueadoPorCocina
+                    ? 'text-slate-500'
+                    : esCocina
+                    ? 'text-amber-400'
+                    : 'text-cyan-400'
+                }`}
+              >
+                {it.cantidad}x
+              </span>
+              {it.nombre}
+            </span>
+            {it.comentarios && (
+              <p
+                className={`text-[11px] italic mt-0.5 ${
+                  bloqueadoPorCocina
+                    ? 'text-slate-500'
+                    : esCocina
+                    ? 'text-amber-200/70'
+                    : 'text-cyan-200/70'
+                }`}
+              >
+                {it.comentarios}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="shrink-0 flex flex-col items-end gap-1">
+          {esCocina ? (
+            bloqueadoPorCocina ? (
+              <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-slate-800 text-slate-400 border border-slate-700 whitespace-nowrap">
+                Esperando a cocina
+              </span>
+            ) : it.entregadoEnBarra ? (
+              <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 whitespace-nowrap">
+                Entregado
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-emerald-500 text-slate-950 shadow-sm whitespace-nowrap">
+                Listo en cocina
+              </span>
+            )
+          ) : (
+            <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 whitespace-nowrap">
+              {it.entregadoEnBarra ? 'Entregado' : 'Barra'}
+            </span>
+          )}
+        </div>
+      </button>
+    );
   };
 
   return (
@@ -259,12 +444,19 @@ export default function BarDisplay() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          <div
+            className={`grid gap-6 ${
+              filtroVista === 'general'
+                ? 'grid-cols-1 xl:grid-cols-2'
+                : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
+            }`}
+          >
             {mesasAgrupadas.map((mesaGrupo, index) => {
               const minutosTranscurridos = Math.floor(
                 (new Date().getTime() - new Date(mesaGrupo.created_at).getTime()) / 60000
               );
               const esUrgente = minutosTranscurridos >= 7;
+              const hayCocinaBloqueada = mesaGrupo.itemsCocina.some((it) => !it.listoEnCocina);
 
               return (
                 <div
@@ -277,7 +469,7 @@ export default function BarDisplay() {
                 >
                   <div className="space-y-4">
                     <div className="flex items-center justify-between pb-3 border-b border-white/10">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span
                           className={`text-xs font-black px-3 py-1 rounded-xl uppercase shadow-md ${
                             esUrgente ? 'bg-rose-500 text-white' : 'bg-cyan-500 text-slate-950'
@@ -300,86 +492,77 @@ export default function BarDisplay() {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      {mesaGrupo.items.map((it, idx) => {
-                        const esAvisoCocina = it.nombre.includes('🍲 LISTO PARA RECOGER');
-                        const esItemCocina = it.tipo_destino === 'cocina';
-
-                        return (
-                          <div
-                            key={idx}
-                            onClick={() => toggleItemBarra(it.comandaId, it.itemIdx)}
-                            className={`p-3 rounded-xl border flex items-start justify-between gap-3 cursor-pointer transition-all ${
-                              it.listo
-                                ? 'bg-emerald-950/20 border-emerald-500/30 opacity-60'
-                                : esAvisoCocina
-                                ? 'bg-amber-950/40 border-amber-500/50 text-amber-300'
-                                : esItemCocina
-                                ? 'bg-orange-950/25 border-orange-500/30 hover:border-orange-400'
-                                : 'bg-black/40 border-white/5 hover:border-cyan-500/50'
-                            }`}
-                          >
-                            <div className="flex items-start gap-3">
-                              <div className="mt-0.5">
-                                {it.listo ? (
-                                  <CheckSquare className="h-5 w-5 text-emerald-500" />
-                                ) : (
-                                  <Square
-                                    className={`h-5 w-5 ${
-                                      esAvisoCocina || esItemCocina ? 'text-amber-500' : 'text-slate-500'
-                                    }`}
-                                  />
-                                )}
-                              </div>
-                              <div>
-                                <span
-                                  className={`font-bold text-sm block ${
-                                    it.listo ? 'text-emerald-400 line-through' : 'text-white'
-                                  }`}
-                                >
-                                  <span
-                                    className={`${
-                                      esAvisoCocina || esItemCocina ? 'text-amber-400' : 'text-cyan-400'
-                                    } font-mono mr-2`}
-                                  >
-                                    {it.cantidad}x
-                                  </span>
-                                  {it.nombre}
-                                </span>
-                                {it.comentarios && (
-                                  <p
-                                    className={`text-[11px] italic mt-0.5 ${
-                                      esAvisoCocina || esItemCocina ? 'text-amber-200/70' : 'text-cyan-200/70'
-                                    }`}
-                                  >
-                                    {it.comentarios}
-                                  </p>
-                                )}
-                              </div>
+                    {filtroVista === 'general' ? (
+                      /* Vista Dividida (Split-Screen) dentro de la tarjeta de comanda */
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* Sección Izquierda: Barra / Bebidas */}
+                        <div className="rounded-2xl bg-cyan-950/10 border border-cyan-500/20 p-3.5 flex flex-col gap-2.5">
+                          <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
+                            <div className="flex items-center gap-2 text-cyan-400 font-black text-xs uppercase tracking-wider">
+                              <Coffee className="h-4 w-4" />
+                              <span>Barra / Bebidas</span>
                             </div>
-                            <span
-                              className={`shrink-0 px-2 py-0.5 rounded-lg text-[10px] font-black uppercase border ${
-                                esItemCocina
-                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                                  : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                              }`}
-                            >
-                              {esItemCocina ? 'Cocina' : 'Barra'}
+                            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300">
+                              {mesaGrupo.itemsBarra.length}
                             </span>
                           </div>
-                        );
-                      })}
-                    </div>
+
+                          {mesaGrupo.itemsBarra.length === 0 ? (
+                            <div className="py-6 text-center text-xs text-slate-500 italic">
+                              Sin bebidas o ítems de barra
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {mesaGrupo.itemsBarra.map((it, idx) => renderItemRow(it, idx))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Sección Derecha: Cocina / Platos */}
+                        <div className="rounded-2xl bg-amber-950/10 border border-amber-500/20 p-3.5 flex flex-col gap-2.5">
+                          <div className="flex items-center justify-between pb-2 border-b border-amber-500/20">
+                            <div className="flex items-center gap-2 text-amber-400 font-black text-xs uppercase tracking-wider">
+                              <ChefHat className="h-4 w-4" />
+                              <span>Cocina / Platos</span>
+                            </div>
+                            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300">
+                              {mesaGrupo.itemsCocina.length}
+                            </span>
+                          </div>
+
+                          {mesaGrupo.itemsCocina.length === 0 ? (
+                            <div className="py-6 text-center text-xs text-slate-500 italic">
+                              Sin platos destinados a cocina
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {mesaGrupo.itemsCocina.map((it, idx) => renderItemRow(it, idx))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      /* Vista individual para pestañas Solo Barra o Solo Cocina */
+                      <div className="space-y-2">
+                        {mesaGrupo.items.map((it, idx) => renderItemRow(it, idx))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-6 pt-3 border-t border-white/10">
                     <button
                       type="button"
-                      onClick={() => archivarMesaCompleta(mesaGrupo.mesa)}
-                      className="w-full py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                      onClick={() => archivarMesaCompleta(mesaGrupo)}
+                      className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all ${
+                        hayCocinaBloqueada
+                          ? 'bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30'
+                          : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+                      }`}
                     >
                       <CheckCircle2 className="h-4 w-4" />
-                      Marcar todo entregado
+                      {hayCocinaBloqueada
+                        ? 'Marcar disponibles como entregados (Cocina en espera)'
+                        : 'Marcar todo entregado'}
                     </button>
                   </div>
                 </div>

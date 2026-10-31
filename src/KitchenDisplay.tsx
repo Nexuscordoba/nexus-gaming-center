@@ -8,6 +8,8 @@ interface ItemComanda {
   comentarios?: string;
   es_menu?: boolean;
   listo?: boolean;
+  entregado?: boolean;
+  estado_cocina?: 'pendiente' | 'en_preparacion' | 'listo';
   destino?: string;
   categoria?: string;
 }
@@ -91,46 +93,35 @@ export default function KitchenDisplay() {
     };
   }, []);
 
-  // Marcar un plato individual como listo y generar el aviso en barra
+  // Marcar un plato individual como listo para habilitar su entrega en Barra
   const marcarPlatoListo = async (comandaId: string, indexItem: number) => {
     const comandaActual = comandas.find((c) => c.id === comandaId);
     if (!comandaActual) return;
 
     const nuevosItems = [...comandaActual.items];
-    const elPlato = nuevosItems[indexItem];
+    const elPlato = { ...nuevosItems[indexItem] };
 
-    // Alternar estado individual del plato
-    elPlato.listo = !elPlato.listo;
+    // Alternar estado individual del plato en cocina
+    const nuevoListo = !elPlato.listo;
+    elPlato.listo = nuevoListo;
+    elPlato.estado_cocina = nuevoListo ? 'listo' : 'pendiente';
+    if (!nuevoListo) {
+      elPlato.entregado = false;
+    }
+    nuevosItems[indexItem] = elPlato;
 
-    const todosListos = nuevosItems.every((it) => it.listo);
-    const nuevoEstadoComanda = todosListos ? 'servido' : 'pendiente';
+    const todosListosEnCocina = nuevosItems.every((it) => Boolean(it.listo));
+    const algunoListoEnCocina = nuevosItems.some((it) => Boolean(it.listo));
+    const nuevoEstadoComanda: Comanda['estado'] = todosListosEnCocina
+      ? 'listo'
+      : algunoListoEnCocina
+      ? 'en_preparacion'
+      : 'pendiente';
 
-    // 1. Actualizar comanda en cocina
     await supabase
       .from('comandas_cocina')
       .update({ items: nuevosItems, estado: nuevoEstadoComanda })
       .eq('id', comandaId);
-
-    // 2. Si se ha marcado como listo, crear el aviso explícito en la pantalla de Barra
-    if (elPlato.listo) {
-      await supabase.from('comandas_cocina').insert([
-        {
-          ticket_number: comandaActual.ticket_number,
-          mesa: comandaActual.mesa,
-          tipo_destino: 'barra',
-          estado: 'pendiente',
-          pagado: false,
-          items: [
-            {
-              nombre: `🍲 LISTO PARA RECOGER: ${elPlato.nombre}`,
-              cantidad: elPlato.cantidad,
-              destino: 'barra',
-              comentarios: 'Plato caliente terminado en cocina'
-            }
-          ]
-        }
-      ]);
-    }
 
     cargarComandas();
   };
@@ -167,7 +158,7 @@ export default function KitchenDisplay() {
 
         <div className="flex items-center gap-4">
           <span className="text-xs font-mono text-amber-400 bg-amber-950/40 px-3.5 py-1.5 rounded-xl border border-amber-500/20 hidden sm:inline">
-            {comandas.filter((c) => c.estado === 'pendiente').length} Comandas pendientes
+            {comandas.filter((c) => c.estado !== 'listo').length} Comandas en preparación
           </span>
 
           <button
@@ -195,7 +186,7 @@ export default function KitchenDisplay() {
               const minutosTranscurridos = Math.floor(
                 (new Date().getTime() - new Date(comanda.created_at).getTime()) / 60000
               );
-              const esUrgente = minutosTranscurridos >= 12 && comanda.estado === 'pendiente';
+              const esUrgente = minutosTranscurridos >= 12 && comanda.estado !== 'listo';
 
               return (
                 <div
@@ -223,7 +214,7 @@ export default function KitchenDisplay() {
                     </div>
 
                     <p className="text-[11px] text-cyan-400 font-medium">
-                      💡 Haz clic directamente en cada plato para marcarlo como listo y avisar a barra:
+                      💡 Haz clic en cada plato al terminarlo para desbloquear su entrega en Barra:
                     </p>
 
                     <div className="space-y-2.5">
@@ -282,7 +273,7 @@ export default function KitchenDisplay() {
       </main>
 
       <footer className="mt-8 border-t border-white/5 pt-4 text-center text-xs text-slate-500">
-        NEXUS KDS · Módulo de Cocina con Avisos a Barra
+        NEXUS KDS · Módulo de Cocina sincronizado en tiempo real con Barra
       </footer>
     </div>
   );
