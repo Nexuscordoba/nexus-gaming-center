@@ -45,7 +45,8 @@ import {
   TrendingUp,
   TrendingDown,
   Save,
-  EyeOff
+  EyeOff,
+  RefreshCw
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -235,6 +236,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const [enviando, setEnviando] = useState(false);
   const [imprimiendoPreTicket, setImprimiendoPreTicket] = useState(false);
+  const [refrescandoMesas, setRefrescandoMesas] = useState(false);
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
 
   const [alertaFlotante, setAlertaFlotante] = useState<AlertaPersonalizada | null>(null);
@@ -304,12 +306,28 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (!camareroActivo) return;
 
     const channel = supabase
-      .channel('realtime-waiter')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'comandas_cocina' }, () => {
+      .channel('realtime-waiter-mesas-comandas')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comandas_cocina' }, () => {
+        cargarMesasAbiertas();
+        cargarCaja();
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'comandas_cocina' }, () => {
+        cargarMesasAbiertas();
+        cargarCaja();
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'comandas_cocina' }, () => {
+
         cargarMesasAbiertas();
         cargarCaja();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'facturas_tickets' }, () => {
+        cargarMesasAbiertas();
+        cargarCaja();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'caja_diaria' }, () => {
+        cargarCaja();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cuentas_abiertas' }, () => {
         cargarCaja();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'productos_carta' }, () => {
@@ -333,6 +351,15 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setCuentaMesaActual([]);
     }
     setCarritoActual([]);
+  }, [mesaSeleccionada]);
+
+  useEffect(() => {
+    const encontrada = mesasAbiertas.find((m) => m.mesa === getNombreMesa(mesaSeleccionada));
+    if (encontrada && encontrada.items) {
+      setCuentaMesaActual(encontrada.items);
+    } else {
+      setCuentaMesaActual([]);
+    }
   }, [mesaSeleccionada, mesasAbiertas]);
 
   const cargarConfiguracion = async () => {
@@ -482,6 +509,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       });
 
       setMesasAbiertas(listado.filter((m) => m.total_ticket > 0));
+    }
+  };
+
+  const refrescarMesasManual = async () => {
+    if (refrescandoMesas) return;
+    setRefrescandoMesas(true);
+    try {
+      await Promise.all([
+        cargarMesasAbiertas(),
+        cargarCaja(),
+        new Promise((resolve) => setTimeout(resolve, 350))
+      ]);
+      mostrarAlerta('Mesas y comandas sincronizadas con éxito.', 'exito');
+    } catch (err: any) {
+      mostrarAlerta('Error al refrescar mesas: ' + (err.message || 'Error de red'), 'error');
+    } finally {
+      setRefrescandoMesas(false);
     }
   };
 
@@ -2705,6 +2749,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             {cocinaAbierta ? 'Cocina Abierta' : 'Cocina CERRADA'}
           </button>
 
+          <button
+            type="button"
+            onClick={refrescarMesasManual}
+            disabled={refrescandoMesas}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 text-xs font-bold shadow-md transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className={`h-4 w-4 ${refrescandoMesas ? 'animate-spin' : ''}`} />
+            <span>{refrescandoMesas ? 'Sincronizando...' : 'Refrescar Mesas'}</span>
+          </button>
+
           <div className="flex gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
             <button
               onClick={() => setVistaSeccion('tomar_nota')}
@@ -3060,7 +3114,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       {vistaSeccion === 'mesas_abiertas' && (
         <main className="flex-1 max-w-5xl w-full mx-auto space-y-6 pb-24">
-          <h2 className="text-xl font-bold text-white">📋 Mesas Activas sin cobrar</h2>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-xl font-bold text-white">📋 Mesas Activas sin cobrar</h2>
+            <button
+              type="button"
+              onClick={refrescarMesasManual}
+              disabled={refrescandoMesas}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 text-xs font-bold shadow-md transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <RefreshCw className={`h-4 w-4 ${refrescandoMesas ? 'animate-spin' : ''}`} />
+              <span>{refrescandoMesas ? 'Sincronizando...' : 'Refrescar Mesas'}</span>
+            </button>
+          </div>
 
           {mesasAbiertas.length === 0 ? (
             <div className="text-center py-20 text-slate-500">
