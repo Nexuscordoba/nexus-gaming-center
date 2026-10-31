@@ -42,7 +42,8 @@ import {
   FolderOpen,
   TrendingUp,
   TrendingDown,
-  Save
+  Save,
+  EyeOff
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -206,6 +207,24 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [remanenteAperturaInput, setRemanenteAperturaInput] = useState<string>('50.00');
   const [efectivoRealInput, setEfectivoRealInput] = useState<string>('');
   const [remanenteCierreInput, setRemanenteCierreInput] = useState<string>('50.00');
+  const [showModalArqueo, setShowModalArqueo] = useState<boolean>(false);
+  const [datosArqueoCaja, setDatosArqueoCaja] = useState<{
+    id: number;
+    fecha?: string;
+    remanente_apertura: number;
+    total_efectivo: number;
+    total_tarjeta: number;
+  } | null>(null);
+  const [procesandoArqueo, setProcesandoArqueo] = useState<boolean>(false);
+  const [resumenCierreModal, setResumenCierreModal] = useState<{
+    cuadrada: boolean;
+    efectivo_real: number;
+    efectivo_esperado: number;
+    total_tarjeta: number;
+    descuadre: number;
+    remanente_cierre: number;
+    efectivo_retirado: number;
+  } | null>(null);
 
   const [enviando, setEnviando] = useState(false);
   const [imprimiendoPreTicket, setImprimiendoPreTicket] = useState(false);
@@ -1266,7 +1285,140 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     cargarCaja();
   };
 
-  const cerrarCajaEspecifica = async (caja: CajaDiaria) => {
+  const abrirModalCierreCaja = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('caja_diaria')
+        .select('id, fecha, remanente_apertura, total_efectivo, total_tarjeta, estado')
+        .eq('estado', 'abierta')
+        .order('fecha', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (!data) {
+        mostrarAlerta('No hay ninguna caja abierta actualmente en el sistema.', 'aviso');
+        return;
+      }
+
+      const { id, remanente_apertura, total_efectivo, total_tarjeta } = data;
+      setEfectivoRealInput('');
+      setDatosArqueoCaja({
+        id,
+        fecha: data.fecha,
+        remanente_apertura: Number(remanente_apertura || 0),
+        total_efectivo: Number(total_efectivo || 0),
+        total_tarjeta: Number(total_tarjeta || 0)
+      });
+      setShowModalArqueo(true);
+    } catch (err: any) {
+      mostrarAlerta('Error al obtener el estado actual de la caja: ' + err.message, 'error');
+    }
+  };
+
+  const confirmarCierreCaja = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!datosArqueoCaja) return;
+
+    const efectivo_real = parseFloat(efectivoRealInput);
+    if (isNaN(efectivo_real) || efectivo_real < 0) {
+      mostrarAlerta('Por favor, introduce el dinero físico contado en el cajón.', 'error');
+      return;
+    }
+
+    setProcesandoArqueo(true);
+
+    try {
+      const { id, remanente_apertura, total_efectivo, total_tarjeta } = datosArqueoCaja;
+      const efectivoEsperado = Number((total_efectivo + remanente_apertura).toFixed(2));
+      const descuadre = Number((efectivo_real - (total_efectivo + remanente_apertura)).toFixed(2));
+      const remanente_cierre = 50.00;
+      const efectivo_retirado = Number((efectivo_real - 50.00).toFixed(2));
+
+      const { error: updateError } = await supabase
+        .from('caja_diaria')
+        .update({
+          estado: 'cerrada',
+          efectivo_real,
+          descuadre,
+          remanente_cierre,
+          efectivo_retirado
+        })
+        .eq('id', id);
+
+      if (updateError) throw updateError;
+
+      if (camareroActivo) {
+        try {
+          await supabase.from('cierres_caja').insert([
+            {
+              usuario_nombre: camareroActivo.nombre,
+              fondo_inicial: remanente_apertura,
+              ventas_efectivo_sistema: total_efectivo,
+              ventas_tarjeta_sistema: total_tarjeta,
+              efectivo_esperado_caja: efectivoEsperado,
+              efectivo_contado_trabajador: efectivo_real,
+              tarjeta_contada_trabajador: total_tarjeta,
+              descuadre_efectivo: descuadre,
+              descuadre_tarjeta: 0,
+              observaciones: `Cierre de Caja - Arqueo Ciego (${datosArqueoCaja.fecha || new Date().toISOString().split('T')[0]})`
+            }
+          ]);
+        } catch (histErr) {
+          console.warn('No se pudo registrar histórico en cierres_caja:', histErr);
+        }
+      }
+
+      setShowModalArqueo(false);
+      setDatosArqueoCaja(null);
+      setEfectivoRealInput('');
+
+      // Actualizar estado local de React inmediatamente para reflejar que el turno actual ha finalizado
+      setCajaHoy((prev) =>
+        prev && prev.id === id
+          ? {
+              ...prev,
+              efectivo_real,
+              descuadre,
+              remanente_cierre,
+              efectivo_retirado,
+              estado: 'cerrada'
+            }
+          : prev
+      );
+      setCajaAtrasada((prev) => (prev && prev.id === id ? null : prev));
+
+      const cuadrada = Math.abs(descuadre) < 0.01;
+      setResumenCierreModal({
+        cuadrada,
+        efectivo_real,
+        efectivo_esperado: efectivoEsperado,
+        total_tarjeta,
+        descuadre,
+        remanente_cierre,
+        efectivo_retirado
+      });
+
+      const msgResumen = cuadrada
+        ? `¡Cierre de caja completado! La caja ha cuadrado a cero (0.00 €). Retirado: ${efectivo_retirado.toFixed(2)} €.`
+        : `Cierre completado con descuadre de ${descuadre > 0 ? '+' : ''}${descuadre.toFixed(2)} €. Retirado: ${efectivo_retirado.toFixed(2)} €.`;
+
+      mostrarAlerta(msgResumen, cuadrada ? 'exito' : 'aviso');
+      cargarCaja();
+    } catch (err: any) {
+      mostrarAlerta('Error al cerrar la caja: ' + err.message, 'error');
+    } finally {
+      setProcesandoArqueo(false);
+    }
+  };
+
+  const cerrarCajaEspecifica = async (_caja: CajaDiaria) => {
+    await abrirModalCierreCaja();
+    return;
+  };
+
+  const _legacyCerrarCajaEspecificaUnused = async (caja: CajaDiaria) => {
     const efectivoReal = parseFloat(efectivoRealInput) || 0;
     const remanenteCierre = parseFloat(remanenteCierreInput) || 0;
     const teoricoEfectivo = Number(caja.remanente_apertura) + Number(caja.total_efectivo);
@@ -1432,6 +1584,169 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               className="ml-2 p-1 hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
             >
               <X className="h-4 w-4 opacity-70 hover:opacity-100" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE ARQUEO CIEGO - CIERRE DE CAJA */}
+      {showModalArqueo && datosArqueoCaja && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <form
+            onSubmit={confirmarCierreCaja}
+            className="w-full max-w-md bg-[#0d0f17] border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-5"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-amber-400">
+                <Calculator className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">Cierre de Caja · Arqueo Ciego</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowModalArqueo(false);
+                  setDatosArqueoCaja(null);
+                }}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="p-3.5 rounded-2xl bg-sky-950/30 border border-sky-500/30 space-y-1">
+                <span className="text-[10px] font-bold uppercase text-sky-400 flex items-center gap-1">
+                  <CreditCard className="h-3.5 w-3.5" /> Total Tarjeta
+                </span>
+                <p className="text-xl font-black font-mono text-white">
+                  {Number(datosArqueoCaja.total_tarjeta).toFixed(2)} €
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-black/50 border border-white/10 space-y-1 flex flex-col justify-between">
+                <span className="text-[10px] font-bold uppercase text-slate-400 flex items-center gap-1">
+                  <EyeOff className="h-3.5 w-3.5 text-amber-400" /> Efectivo Teórico
+                </span>
+                <p className="text-xs font-bold text-slate-500 italic">Oculto (Arqueo Ciego)</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-amber-400 uppercase block">
+                Efectivo Real en Cajón (Monedas y Billetes) *
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  autoFocus
+                  placeholder="0.00"
+                  value={efectivoRealInput}
+                  onChange={(e) => setEfectivoRealInput(e.target.value)}
+                  className="w-full bg-black/70 border-2 border-amber-500/50 focus:border-amber-400 rounded-2xl px-4 py-4 text-3xl font-mono font-black text-amber-400 text-center outline-none shadow-inner"
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xl font-mono font-bold text-slate-500">
+                  €
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 text-center">
+                Se mantendrá un fondo fijo de cierre de <strong className="text-white">50.00 €</strong> en caja.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowModalArqueo(false);
+                  setDatosArqueoCaja(null);
+                }}
+                className="py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={procesandoArqueo}
+                className="py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg disabled:opacity-50"
+              >
+                <Lock className="h-4 w-4" />
+                {procesandoArqueo ? 'Cerrando...' : 'Confirmar'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ALERTA VISUAL / RESUMEN DE CIERRE DE CAJA */}
+      {resumenCierreModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <div className="w-full max-w-md bg-[#0d0f17] border border-white/15 rounded-3xl p-6 shadow-2xl space-y-5 text-center">
+            <div
+              className={`h-16 w-16 mx-auto rounded-2xl flex items-center justify-center border ${
+                resumenCierreModal.cuadrada
+                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
+                  : 'bg-amber-500/10 border-amber-500/40 text-amber-400'
+              }`}
+            >
+              {resumenCierreModal.cuadrada ? (
+                <CheckCircle2 className="h-9 w-9" />
+              ) : (
+                <AlertTriangle className="h-9 w-9" />
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-xl font-black text-white">
+                {resumenCierreModal.cuadrada ? '¡Caja Cuadrada a Cero!' : 'Cierre Registrado con Descuadre'}
+              </h3>
+              <p className="text-xs text-slate-400">
+                El turno actual ha finalizado y la caja ha quedado en estado <strong className="text-rose-400">CERRADA</strong>.
+              </p>
+            </div>
+
+            <div className="bg-black/50 border border-white/10 rounded-2xl p-4 space-y-2.5 text-xs text-left">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Efectivo Físico Contado:</span>
+                <span className="font-mono font-bold text-white">{resumenCierreModal.efectivo_real.toFixed(2)} €</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Efectivo Teórico Esperado:</span>
+                <span className="font-mono font-bold text-slate-300">{resumenCierreModal.efectivo_esperado.toFixed(2)} €</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Total Ventas Tarjeta:</span>
+                <span className="font-mono font-bold text-sky-400">{resumenCierreModal.total_tarjeta.toFixed(2)} €</span>
+              </div>
+              <div className="flex justify-between border-t border-white/10 pt-2">
+                <span className="font-bold text-slate-300">Descuadre:</span>
+                <span
+                  className={`font-mono font-black text-sm ${
+                    resumenCierreModal.cuadrada ? 'text-emerald-400' : 'text-rose-400'
+                  }`}
+                >
+                  {resumenCierreModal.descuadre > 0 ? '+' : ''}
+                  {resumenCierreModal.descuadre.toFixed(2)} €
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-white/10 pt-2">
+                <span className="text-slate-400">Remanente Cierre (Fondo Fijo):</span>
+                <span className="font-mono font-bold text-amber-400">{resumenCierreModal.remanente_cierre.toFixed(2)} €</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Efectivo Retirado:</span>
+                <span className="font-mono font-bold text-cyan-400">{resumenCierreModal.efectivo_retirado.toFixed(2)} €</span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setResumenCierreModal(null)}
+              className="w-full py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer shadow-lg"
+            >
+              Entendido
             </button>
           </div>
         </div>
@@ -2474,7 +2789,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 de poder cobrar nada hoy.
               </p>
               <button
-                onClick={() => cerrarCajaEspecifica(cajaAtrasada)}
+                onClick={abrirModalCierreCaja}
                 className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
               >
                 Forzar Cierre de Caja Atrasada
@@ -2608,7 +2923,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
               {cajaHoy.estado === 'abierta' && (
                 <>
-                  <div className="space-y-4 pt-6 border-t border-white/10">
+                  <div className="hidden">
                     <div className="space-y-2">
                       <label className="text-xs font-bold text-amber-400">Efectivo Real Contado en Cajón (€)</label>
                       <input
@@ -2632,7 +2947,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   </div>
 
                   <button
-                    onClick={() => cerrarCajaEspecifica(cajaHoy)}
+                    type="button"
+                    onClick={abrirModalCierreCaja}
                     className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-lg"
                   >
                     <Lock className="h-5 w-5" /> Cerrar Caja y Terminar Turno

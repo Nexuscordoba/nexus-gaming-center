@@ -179,6 +179,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     total_tarjeta: number;
     procesando: boolean;
   } | null>(null);
+  const [showModalArqueo, setShowModalArqueo] = useState<boolean>(false);
   const [efectivoRealCierreInput, setEfectivoRealCierreInput] = useState<string>('');
   const [alertaResumenCierre, setAlertaResumenCierre] = useState<{
     cuadrada: boolean;
@@ -371,6 +372,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       const { id, remanente_apertura, total_efectivo, total_tarjeta } = data;
       setEfectivoRealCierreInput('');
+
+      setShowModalArqueo(true);
       setModalCierreCaja({
         id,
         fecha: data.fecha,
@@ -451,7 +454,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       }));
 
       setModalCierreCaja(null);
+      setShowModalArqueo(false);
       setEfectivoRealCierreInput('');
+
 
       const cuadrada = Math.abs(descuadre) < 0.01;
       setAlertaResumenCierre({
@@ -1737,7 +1742,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       )}
 
       {/* MODAL ARQUEO CIEGO - CIERRE DE CAJA */}
-      {modalCierreCaja && (
+      {showModalArqueo && modalCierreCaja && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
           <form
             onSubmit={confirmarCierreCajaBackoffice}
@@ -1750,7 +1755,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
               <button
                 type="button"
-                onClick={() => setModalCierreCaja(null)}
+                onClick={() => {
+                  setShowModalArqueo(false);
+                  setModalCierreCaja(null);
+                }}
                 className="text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="h-5 w-5" />
@@ -1803,7 +1811,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             <div className="grid grid-cols-2 gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setModalCierreCaja(null)}
+                onClick={() => {
+                  setShowModalArqueo(false);
+                  setModalCierreCaja(null);
+                }}
                 className="py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
               >
                 Cancelar
