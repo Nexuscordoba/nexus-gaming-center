@@ -638,9 +638,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const { data: facturaCompleta } = await supabase.from('facturas_tickets').select('*').eq('id', docEmitido.id).single();
       if (facturaCompleta) { imprimirDocumentoFiscalHTML(facturaCompleta, cfg); }
 
+      await descontarInventarioSupabase(itemsProcesados);
+
       mostrarAlerta(`Cobro parcial de ${desglose.totalFinal.toFixed(2)} € registrado y descontado.`, 'exito');
       setModalCobroParcial(null);
-      cargarMesasAbiertas(); cargarCaja();
+      cargarMesasAbiertas(); cargarCaja(); cargarProductosCarta();
     } catch (err: any) {
       mostrarAlerta('Error en cobro parcial: ' + err.message, 'error');
       setModalCobroParcial({ ...modalCobroParcial, procesando: false });
@@ -884,6 +886,87 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
+  const descontarInventarioSupabase = async (
+    itemsCarrito: Array<{
+      id?: number;
+      producto_id?: number;
+      articulo_inventario_id?: string;
+      nombre: string;
+      cantidad: number;
+    }>
+  ) => {
+    try {
+      const itemsValidos = itemsCarrito.filter(
+        (item) => item && !item.nombre.includes('├─') && Number(item.cantidad) > 0
+      );
+
+      await Promise.all(
+        itemsValidos.map(async (item) => {
+          const prodLocal = productosCarta.find(
+            (p) =>
+              (item.producto_id && p.id === item.producto_id) ||
+              (item.id && p.id === item.id) ||
+              p.nombre.trim().toLowerCase() === item.nombre.trim().toLowerCase()
+          );
+
+          const prodId = prodLocal?.id || item.producto_id || item.id;
+
+          let productoDB: {
+            id: number;
+            stock_actual: number | null;
+            articulo_inventario_id?: string | null;
+          } | null = null;
+
+          if (prodId) {
+            const { data, error } = await supabase
+              .from('productos_carta')
+              .select('id, stock_actual, articulo_inventario_id')
+              .eq('id', prodId)
+              .maybeSingle();
+
+            if (error) throw error;
+            productoDB = data;
+          }
+
+          if (!productoDB) {
+            const { data, error } = await supabase
+              .from('productos_carta')
+              .select('id, stock_actual, articulo_inventario_id')
+              .eq('nombre', item.nombre.trim())
+              .maybeSingle();
+
+            if (error) throw error;
+            productoDB = data;
+          }
+
+          if (!productoDB) return;
+
+          const stockActual = Number(productoDB.stock_actual ?? 0);
+          const nuevoStock = stockActual - Number(item.cantidad);
+
+          const { error: updateError } = await supabase
+            .from('productos_carta')
+            .update({ stock_actual: nuevoStock })
+            .eq('id', productoDB.id);
+
+          if (updateError) throw updateError;
+
+          const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
+          if (artInvId) {
+            const { error: updateMaestroError } = await supabase
+              .from('articulos_cafeteria')
+              .update({ stock_actual: nuevoStock })
+              .eq('id', artInvId);
+
+            if (updateMaestroError) throw updateMaestroError;
+          }
+        })
+      );
+    } catch (invError) {
+      console.error('Error al descontar inventario en Supabase:', invError);
+    }
+  };
+
   const cobrarMesaLegal = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
     if (cajaAtrasada) {
       mostrarAlerta('¡ATENCIÓN! Cierra primero la caja del día anterior antes de cobrar.', 'aviso');
@@ -954,6 +1037,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       if (facturaCompleta) {
         imprimirDocumentoFiscalHTML(facturaCompleta, cfg);
+      }
+
+      await descontarInventarioSupabase(mesaObj.items);
+
+      setCarritoActual([]);
+      if (getNombreMesa(mesaSeleccionada) === mesaNombre) {
+        setCuentaMesaActual([]);
       }
 
       setDescuentoGeneralMesa((prev) => {
