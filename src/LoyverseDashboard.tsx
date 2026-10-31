@@ -623,11 +623,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-    if (arts && arts.length > 0) {
-      setArticulosMaestro(arts);
-    }
-  };
-
   const refrescarStockInventario = async () => {
     setRefrescandoStock(true);
     try {
