@@ -914,7 +914,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setArtCodigoBarras(art.codigo_barras || '');
     setArtPrecioVenta(String(art.precio_venta || 0));
     setArtCosteUnitario(String(art.coste_unitario || 0));
-    setArtTipoIva(String(art.tipo_iva || 10));
+    setArtTipoIva(String(art.porcentaje_iva ?? art.tipo_iva ?? 10));
     setArtUnidadMedida((art.unidad_medida || 'ud') as UnidadMedida);
     setArtControlaStock(Boolean(art.controla_stock));
     setArtStockInicial(String(art.stock_actual || 0));
@@ -1004,6 +1004,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         codigo_barras: artCodigoBarras.trim(),
         precio_venta: precioNum,
         coste_unitario: costeNum,
+        porcentaje_iva: ivaNum,
         tipo_iva: ivaNum,
         unidad_medida: artUnidadMedida,
         controla_stock: artControlaStock,
@@ -1069,7 +1070,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           imagen_url: artImagenUrl.trim(),
           codigo_barras: artCodigoBarras.trim(),
           coste_unitario: costeNum,
-          tipo_iva: ivaNum,
+          porcentaje_iva: ivaNum,
+        tipo_iva: ivaNum,
           unidad_medida: artUnidadMedida,
           controla_stock: artControlaStock,
           stock_actual: stockNum,
@@ -1133,9 +1135,12 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   };
 
   const descargarPlantillaCSV = () => {
-    const cabeceras = "Nombre;Categoria;Destino(barra/cocina);PrecioVenta;CosteUnitario;TipoIVA;UnidadMedida;ControlaStock(SI/NO);StockInicial;StockMinimo;VisibleTPV(SI/NO)\n";
+    const cabeceras = "Nombre;Categoria;Destino(barra/cocina);PrecioVenta;CosteUnitario;porcentaje_iva;UnidadMedida;ControlaStock(SI/NO);StockInicial;StockMinimo;VisibleTPV(SI/NO)\n";
     const ejemplo1 = "Café Solo;Cafetería;barra;1.20;0.15;10;ud;SI;100;10;SI\n";
-    const ejemplo2 = "Ensalada César;Cocina / Tapas;cocina;6.50;2.10;10;ud;SI;20;5;SI\n";
+
+    const ejemplo2 = "Sobre Pokémon TCG;Merchandising;barra;4.50;2.80;21;ud;SI;50;5;SI\n";
+
+
     const blob = new Blob([cabeceras + ejemplo1 + ejemplo2], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -1160,17 +1165,53 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         let importados = 0;
         let ignorados = 0;
 
+        const cabecerasRaw = (lineas[0] || '').split(';').map(c => c.trim().toLowerCase());
+        const idxIvaCabecera = cabecerasRaw.findIndex(c => c === 'porcentaje_iva' || c === 'iva' || c === 'tipo_iva' || c === 'tipoiva');
+        const tieneColumnaIvaEnCabecera = idxIvaCabecera !== -1;
+
         for (let i = 1; i < lineas.length; i++) {
           const columnas = lineas[i].split(';');
-          if (columnas.length < 11) {
+          if (columnas.length < 10) {
+
             ignorados++;
             continue;
           }
 
-          const [
-            nombre, categoria, destino, precio, coste, iva, 
-            unidad, controlaStock, stockIni, stockMin, visible
-          ] = columnas;
+
+
+
+
+
+          let nombre = '';
+          let categoria = '';
+          let destino = '';
+          let precio = '';
+          let coste = '';
+          let ivaRaw = '';
+          let unidad = '';
+          let controlaStock = '';
+          let stockIni = '';
+          let stockMin = '';
+          let visible = '';
+
+          if (tieneColumnaIvaEnCabecera || columnas.length >= 11) {
+            [
+              nombre, categoria, destino, precio, coste, ivaRaw,
+              unidad, controlaStock, stockIni, stockMin, visible
+            ] = columnas;
+            if (tieneColumnaIvaEnCabecera && idxIvaCabecera < columnas.length) {
+              ivaRaw = columnas[idxIvaCabecera];
+            }
+          } else {
+            [
+              nombre, categoria, destino, precio, coste,
+              unidad, controlaStock, stockIni, stockMin, visible
+            ] = columnas;
+            ivaRaw = '10';
+          }
+
+          const ivaLimpiado = parseFloat(String(ivaRaw ?? '').replace('%', '').trim());
+          const porcentajeIvaFinal = !isNaN(ivaLimpiado) && ivaLimpiado > 0 ? ivaLimpiado : 10;
 
           if (!nombre) {
             ignorados++;
@@ -1183,7 +1224,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             destino: destino.trim().toLowerCase() === 'cocina' ? 'cocina' : 'barra',
             precio_venta: parseFloat(precio) || 0,
             coste_unitario: parseFloat(coste) || 0,
-            tipo_iva: parseFloat(iva) || 10,
+            porcentaje_iva: porcentajeIvaFinal,
+            tipo_iva: porcentajeIvaFinal,
             unidad_medida: unidad.trim().toLowerCase() || 'ud',
             controla_stock: controlaStock.trim().toUpperCase() === 'SI',
             stock_actual: parseFloat(stockIni) || 0,
@@ -1233,7 +1275,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 destino: payloadMaestro.destino,
                 activo: true,
                 coste_unitario: payloadMaestro.coste_unitario,
-                tipo_iva: payloadMaestro.tipo_iva,
+                porcentaje_iva: payloadMaestro.porcentaje_iva,
+                tipo_iva: payloadMaestro.porcentaje_iva,
                 unidad_medida: payloadMaestro.unidad_medida,
                 controla_stock: payloadMaestro.controla_stock,
                 stock_actual: payloadMaestro.stock_actual,
@@ -1248,7 +1291,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         }
         
         cargarArticulosYCategorias();
-        notificar(`Importación completada: ${importados} artículos nuevos añadidos. (${ignorados} ignorados o duplicados).`, 'ok');
+        notificar(`¡Importación completada! ${importados} artículos importados correctamente con sus respectivos tipos de IVA configurados${ignorados > 0 ? ` (${ignorados} ignorados o duplicados)` : ''}.`, 'ok');
       } catch (err: any) {
         notificar('Error procesando CSV: ' + err.message, 'error');
       } finally {
@@ -2634,6 +2677,17 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   <input type="number" step="0.01" value={artPrecioVenta} onChange={(e) => setArtPrecioVenta(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-emerald-400 font-mono font-bold text-sm" />
                 </div>
                 <div>
+                  <label className="font-bold text-slate-300 block mb-1">Tipo de IVA</label>
+                  <select
+                    value={artTipoIva}
+                    onChange={(e) => setArtTipoIva(e.target.value)}
+                    className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-white font-bold"
+                  >
+                    <option value="10">10% (Reducido - Hostelería / Alimentación)</option>
+                    <option value="21">21% (General - Ocio, TCG y Merchandising)</option>
+                  </select>
+                </div>
+                <div>
                   <label className="font-bold text-slate-300 block mb-1">
                     Coste por {artUnidadMedida} (€) {artEsCompuesto && '(Auto por Escandallo)'}
                   </label>
@@ -2829,7 +2883,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                           {art.es_combo && (<span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">Opciones</span>)}
                         </div>
                         <div className="text-[11px] text-slate-400">
-                          Pestaña: <strong className="text-cyan-300">{art.categoria}</strong> · Destino: <strong className="text-amber-300 uppercase">{art.destino || 'barra'}</strong> · PVP: <strong className="text-emerald-400">{Number(art.precio_venta).toFixed(2)}€</strong>
+                          Pestaña: <strong className="text-cyan-300">{art.categoria}</strong> · Destino: <strong className="text-amber-300 uppercase">{art.destino || 'barra'}</strong> · PVP: <strong className="text-emerald-400">{Number(art.precio_venta).toFixed(2)}€</strong> · <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-black ${Number(art.porcentaje_iva ?? art.tipo_iva ?? 10) === 21 ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'}`}>{Number(art.porcentaje_iva ?? art.tipo_iva ?? 10)}% IVA</span>
                         </div>
                       </div>
                     </div>
@@ -2941,7 +2995,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 <div className="overflow-x-auto max-h-[620px] overflow-y-auto rounded-2xl border border-white/5">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
-                      <tr><th className="px-5 py-3.5">Artículo</th><th className="px-5 py-3.5 text-right">Stock Real Actual</th><th className="px-5 py-3.5 text-right">Coste Unit.</th><th className="px-5 py-3.5 text-center">Acciones</th></tr>
+                      <tr><th className="px-5 py-3.5">Artículo</th><th className="px-5 py-3.5 text-center">IVA</th><th className="px-5 py-3.5 text-right">Stock Real Actual</th><th className="px-5 py-3.5 text-right">Coste Unit.</th><th className="px-5 py-3.5 text-center">Acciones</th></tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
                       {articulosMaestro.map((a) => {
@@ -2955,6 +3009,11 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                         return (
                           <tr key={a.id} className="hover:bg-white/[0.02]">
                             <td className="px-5 py-3.5"><div className="font-bold text-white text-sm">{a.nombre}</div><div className="text-[11px] text-slate-400">{a.categoria}</div></td>
+                            <td className="px-5 py-3.5 text-center">
+                              <span className={`px-2 py-0.5 rounded-lg text-xs font-mono font-bold border ${Number(a.porcentaje_iva ?? a.tipo_iva ?? 10) === 21 ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'}`}>
+                                {Number(a.porcentaje_iva ?? a.tipo_iva ?? 10)}%
+                              </span>
+                            </td>
                             <td className="px-5 py-3.5 text-right">
                               <span className={`font-mono text-sm inline-flex items-center justify-end gap-1.5 ${claseColorStock}`}>
                                 {stockNum <= 0 && <span title="Rotura de stock">⚠️</span>}

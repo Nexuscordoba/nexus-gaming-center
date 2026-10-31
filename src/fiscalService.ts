@@ -11,6 +11,64 @@ export interface LineaTicketFiscal {
   descuento_porcentaje: number;
   subtotal_linea: number;
   tipo_iva?: number;
+  porcentaje_iva?: number;
+}
+
+export interface DesgloseImpuestosTicket {
+  totalConIva10: number;
+  base_imponible_10: number;
+  iva_10: number;
+  totalConIva21: number;
+  base_imponible_21: number;
+  iva_21: number;
+  baseImponibleTotal: number;
+  cuotaIvaTotal: number;
+  totalGeneral: number;
+}
+
+export function calcularDesgloseImpuestosLineas(
+  lineas: LineaTicketFiscal[],
+  dtoGeneralPorc: number = 0
+): DesgloseImpuestosTicket {
+  const factorDtoGeneral = 1 - Math.max(0, Math.min(100, Number(dtoGeneralPorc || 0))) / 100;
+  let totalConIva10 = 0;
+  let totalConIva21 = 0;
+
+  for (const linea of lineas) {
+    const subtotalLinea = Number(linea.subtotal_linea || 0) * factorDtoGeneral;
+    const porcentajeIva = Number(linea.porcentaje_iva ?? linea.tipo_iva ?? 10) === 21 ? 21 : 10;
+    if (porcentajeIva === 21) {
+      totalConIva21 += subtotalLinea;
+    } else {
+      totalConIva10 += subtotalLinea;
+    }
+  }
+
+  totalConIva10 = Number(totalConIva10.toFixed(2));
+  totalConIva21 = Number(totalConIva21.toFixed(2));
+
+  // Fórmula estándar: Base = TotalConIVA / (1 + (PorcentajeIVA / 100)) e Impuesto = TotalConIVA - Base
+  const base_imponible_10 = Number((totalConIva10 / (1 + 10 / 100)).toFixed(2));
+  const iva_10 = Number((totalConIva10 - base_imponible_10).toFixed(2));
+
+  const base_imponible_21 = Number((totalConIva21 / (1 + 21 / 100)).toFixed(2));
+  const iva_21 = Number((totalConIva21 - base_imponible_21).toFixed(2));
+
+  const baseImponibleTotal = Number((base_imponible_10 + base_imponible_21).toFixed(2));
+  const cuotaIvaTotal = Number((iva_10 + iva_21).toFixed(2));
+  const totalGeneral = Number((totalConIva10 + totalConIva21).toFixed(2));
+
+  return {
+    totalConIva10,
+    base_imponible_10,
+    iva_10,
+    totalConIva21,
+    base_imponible_21,
+    iva_21,
+    baseImponibleTotal,
+    cuotaIvaTotal,
+    totalGeneral
+  };
 }
 
 export interface ConfiguracionFiscal {
@@ -129,6 +187,14 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
   });
 
   const lineas: LineaTicketFiscal[] = Array.isArray(factura.lineas) ? factura.lineas : [];
+  const desgloseIvaFactura = calcularDesgloseImpuestosLineas(
+    lineas,
+    Number(factura.descuento_general_porcentaje || 0)
+  );
+  const base10Print = Number(factura.base_imponible_10 ?? desgloseIvaFactura.base_imponible_10);
+  const iva10Print = Number(factura.iva_10 ?? desgloseIvaFactura.iva_10);
+  const base21Print = Number(factura.base_imponible_21 ?? desgloseIvaFactura.base_imponible_21);
+  const iva21Print = Number(factura.iva_21 ?? desgloseIvaFactura.iva_21);
   const huellaCorta = factura.hash_actual ? `${factura.hash_actual.substring(0, 16)}...` : 'N/A';
 
   const filasHTML = lineas
@@ -248,13 +314,39 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
             : ''
         }
         <tr>
-          <td>Base Imponible (${Number(factura.tipo_iva_aplicado || 10).toFixed(0)}%):</td>
-          <td style="text-align: right;">${Number(factura.base_imponible).toFixed(2)} €</td>
+
+
         </tr>
         <tr>
-          <td>Cuota IVA (${Number(factura.tipo_iva_aplicado || 10).toFixed(0)}%):</td>
-          <td style="text-align: right;">${Number(factura.cuota_iva).toFixed(2)} €</td>
+
+
         </tr>
+        ${
+          base10Print > 0 || (base10Print === 0 && base21Print === 0)
+            ? `
+        <tr>
+          <td>Base Imponible (10%):</td>
+          <td style="text-align: right;">${base10Print.toFixed(2)} €</td>
+        </tr>
+        <tr>
+          <td>Cuota IVA (10%):</td>
+          <td style="text-align: right;">${iva10Print.toFixed(2)} €</td>
+        </tr>`
+            : ''
+        }
+        ${
+          base21Print > 0
+            ? `
+        <tr>
+          <td>Base Imponible (21%):</td>
+          <td style="text-align: right;">${base21Print.toFixed(2)} €</td>
+        </tr>
+        <tr>
+          <td>Cuota IVA (21%):</td>
+          <td style="text-align: right;">${iva21Print.toFixed(2)} €</td>
+        </tr>`
+            : ''
+        }
         <tr style="font-size: 15px; border-top: 1px solid #000;">
           <td class="bold">TOTAL (IVA INCLUIDO):</td>
           <td class="bold" style="text-align: right;">${Number(factura.total_final).toFixed(2)} €</td>

@@ -22,7 +22,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { supabase } from './supabase';
-import { calcularHashVeriFactu } from './fiscalService';
+import { calcularHashVeriFactu, calcularDesgloseImpuestosLineas } from './fiscalService';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
@@ -166,13 +166,40 @@ export default function App() {
               const numeroTicket = String(docEmitido?.numero_completo || `T-${docEmitido?.id || Date.now()}`);
               const fechaExp = String(docEmitido?.fecha_expedicion || pedido.fecha || new Date().toISOString());
               const hash_actual = await calcularHashVeriFactu(numeroTicket, fechaExp, totalFinal, hash_anterior);
+              const desgloseOffline = calcularDesgloseImpuestosLineas(pedido.lineas || [], dtoGeneralPorc);
+              const base10 = Number(pedido?.totales?.base_imponible_10 ?? desgloseOffline.base_imponible_10);
+              const iva10 = Number(pedido?.totales?.iva_10 ?? desgloseOffline.iva_10);
+              const base21 = Number(pedido?.totales?.base_imponible_21 ?? desgloseOffline.base_imponible_21);
+              const iva21 = Number(pedido?.totales?.iva_21 ?? desgloseOffline.iva_21);
+              const baseImponible = Number(pedido?.totales?.baseImponibleTotal ?? desgloseOffline.baseImponibleTotal);
+              const cuotaIva = Number(pedido?.totales?.cuotaIvaTotal ?? desgloseOffline.cuotaIvaTotal);
               if (docEmitido?.id) {
                 const { error: vfErr } = await supabase
                   .from('facturas_tickets')
-                  .update({ tipo_factura: 'F2', hash_anterior, hash_actual })
+                  .update({
+                    tipo_factura: 'F2',
+                    base_imponible_10: base10,
+                    iva_10: iva10,
+                    base_imponible_21: base21,
+                    iva_21: iva21,
+                    base_imponible: baseImponible,
+                    cuota_iva: cuotaIva,
+                    total_final: totalFinal,
+                    hash_anterior,
+                    hash_actual
+                  })
                   .eq('id', docEmitido.id);
                 if (vfErr) {
-                  await supabase.from('facturas_tickets').update({ hash_anterior, hash_actual }).eq('id', docEmitido.id);
+                  await supabase
+                    .from('facturas_tickets')
+                    .update({
+                      base_imponible: baseImponible,
+                      cuota_iva: cuotaIva,
+                      total_final: totalFinal,
+                      hash_anterior,
+                      hash_actual
+                    })
+                    .eq('id', docEmitido.id);
                 }
               }
             } catch (vfErr) {

@@ -5,6 +5,7 @@ import LoyverseDashboard from './LoyverseDashboard';
 import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
+  calcularDesgloseImpuestosLineas,
   imprimirDocumentoFiscalHTML,
   type ConfiguracionFiscal,
   type LineaTicketFiscal
@@ -72,6 +73,7 @@ interface Producto {
   stock_actual?: number;
   unidad_medida?: string;
   tipo_iva?: number;
+  porcentaje_iva?: number;
   articulo_inventario_id?: string;
   notaExtra?: string; 
 }
@@ -84,6 +86,8 @@ interface ItemPedido {
   cantidad: number;
   destino: string;
   descuento_porcentaje?: number;
+  porcentaje_iva?: number;
+  tipo_iva?: number;
 }
 
 interface MesaAbierta {
@@ -353,7 +357,31 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       .order('id', { ascending: true });
 
     if (data) {
-      setProductosCarta(data as Producto[]);
+      const { data: maestroIva } = await supabase
+        .from('articulos_cafeteria')
+        .select('id, nombre, porcentaje_iva, tipo_iva');
+      const mapaIvaPorId = new Map<string, number>();
+      const mapaIvaPorNombre = new Map<string, number>();
+      if (maestroIva) {
+        maestroIva.forEach((m: any) => {
+          const ivaVal = Number(m.porcentaje_iva ?? m.tipo_iva ?? 10) === 21 ? 21 : 10;
+          if (m.id) mapaIvaPorId.set(String(m.id), ivaVal);
+          if (m.nombre) mapaIvaPorNombre.set(String(m.nombre).trim().toLowerCase(), ivaVal);
+        });
+      }
+      const enriquecidos = (data as Producto[]).map((p) => {
+        const ivaDirecto = p.porcentaje_iva ?? p.tipo_iva;
+        const ivaMaestro =
+          (p.articulo_inventario_id && mapaIvaPorId.get(String(p.articulo_inventario_id))) ||
+          mapaIvaPorNombre.get(String(p.nombre || '').trim().toLowerCase());
+        const ivaFinal = Number(ivaDirecto ?? ivaMaestro ?? 10) === 21 ? 21 : 10;
+        return {
+          ...p,
+          porcentaje_iva: ivaFinal,
+          tipo_iva: ivaFinal
+        };
+      });
+      setProductosCarta(enriquecidos);
     }
 
     const { data: cats } = await supabase
@@ -439,7 +467,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 nombre: it.nombre,
                 precio: it.precio || 0,
                 cantidad: it.cantidad || 1,
-                destino: row.tipo_destino
+                destino: row.tipo_destino,
+                porcentaje_iva: it.porcentaje_iva ?? it.tipo_iva,
+                tipo_iva: it.porcentaje_iva ?? it.tipo_iva
               });
             }
           });
@@ -478,12 +508,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           precio_unitario: Number(it.precio),
           descuento_porcentaje: dtoLinea,
           subtotal_linea: netoLinea,
-          tipo_iva: prodCarta?.tipo_iva || configFiscal?.iva_defecto || 10
+          tipo_iva: Number(it.porcentaje_iva ?? it.tipo_iva ?? prodCarta?.porcentaje_iva ?? prodCarta?.tipo_iva ?? configFiscal?.iva_defecto ?? 10) === 21 ? 21 : 10,
+          porcentaje_iva: Number(it.porcentaje_iva ?? it.tipo_iva ?? prodCarta?.porcentaje_iva ?? prodCarta?.tipo_iva ?? configFiscal?.iva_defecto ?? 10) === 21 ? 21 : 10
         };
       });
 
     const dtoGeneralPorc = descuentoGeneralMesa[mesaKey] || 0;
     const totalFinal = Number((subtotalTrasLineas * (1 - dtoGeneralPorc / 100)).toFixed(2));
+    const desgloseIva = calcularDesgloseImpuestosLineas(lineasCalculadas, dtoGeneralPorc);
     const descuentoTotalImporte = Number((subtotalBruto - totalFinal).toFixed(2));
 
     return {
@@ -491,6 +523,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       dtoGeneralPorc,
       descuentoTotalImporte,
       totalFinal,
+      base_imponible_10: desgloseIva.base_imponible_10,
+      iva_10: desgloseIva.iva_10,
+      base_imponible_21: desgloseIva.base_imponible_21,
+      iva_21: desgloseIva.iva_21,
+      baseImponibleTotal: desgloseIva.baseImponibleTotal,
+      cuotaIvaTotal: desgloseIva.cuotaIvaTotal,
       lineasCalculadas
     };
   };
@@ -876,7 +914,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         nombre: c.nombre,
         precio: Number(c.precio),
         cantidad: c.cantidad,
-        destino: c.destino
+        destino: c.destino,
+        porcentaje_iva: c.porcentaje_iva ?? c.tipo_iva,
+        tipo_iva: c.porcentaje_iva ?? c.tipo_iva
       }))
     )
   );
@@ -907,6 +947,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 nombre: i.nombre,
                 precio: Number(i.precio),
                 cantidad: i.cantidad,
+                porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
                 comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
                 es_menu: (i.categoria || '').toLowerCase().includes('menu')
               }))
@@ -929,6 +971,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 nombre: i.nombre,
                 precio: Number(i.precio),
                 cantidad: i.cantidad,
+                porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
                 comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
               }))
             }
@@ -1060,57 +1104,83 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         hash_anterior
       );
 
-      // Paso 4: Guardar tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
+      const base10 = Number(desglose.base_imponible_10 ?? 0);
+      const iva10 = Number(desglose.iva_10 ?? 0);
+      const base21 = Number(desglose.base_imponible_21 ?? 0);
+      const iva21 = Number(desglose.iva_21 ?? 0);
+      const baseImponible = Number(
+        desglose.baseImponibleTotal ?? Number((desglose.totalFinal / (1 + ivaDefecto / 100)).toFixed(2))
+      );
+      const cuotaIva = Number(
+        desglose.cuotaIvaTotal ?? Number((desglose.totalFinal - baseImponible).toFixed(2))
+      );
+
+      // Paso 3 (IVA) y Paso 4 (VeriFactu): Guardar desglose de impuestos (10% y 21%), tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
       if (docEmitido?.id) {
         const { error: updateErr } = await supabase
           .from('facturas_tickets')
           .update({
             tipo_factura: 'F2',
+            base_imponible_10: base10,
+            iva_10: iva10,
+            base_imponible_21: base21,
+            iva_21: iva21,
+            base_imponible: baseImponible,
+            cuota_iva: cuotaIva,
+            total_final: desglose.totalFinal,
             hash_anterior,
             hash_actual
           })
           .eq('id', docEmitido.id);
 
         if (updateErr) {
-          console.error('Aviso VeriFactu (update tipo_factura/hash):', updateErr);
+          console.error('Aviso VeriFactu/IVA (update completo):', updateErr);
           await supabase
             .from('facturas_tickets')
             .update({
+              base_imponible: baseImponible,
+              cuota_iva: cuotaIva,
+              total_final: desglose.totalFinal,
               hash_anterior,
               hash_actual
             })
             .eq('id', docEmitido.id);
         }
       } else {
-        const baseImponible = Number((desglose.totalFinal / (1 + ivaDefecto / 100)).toFixed(2));
-        const cuotaIva = Number((desglose.totalFinal - baseImponible).toFixed(2));
-
-        await supabase.from('facturas_tickets').insert([
-          {
-            serie: 'T',
-            tipo_documento: 'SIMPLIFICADA',
-            tipo_factura: 'F2',
-            numero_completo: numeroTicket,
-            fecha_expedicion: fechaExpedicion,
-            mesa,
-            vendedor_nombre: vendedor,
-            metodo_pago: metodo,
-            importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
-            importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
-            subtotal_bruto: desglose.subtotalBruto,
-            descuento_general_porcentaje: desglose.dtoGeneralPorc,
-            descuento_total_importe: desglose.descuentoTotalImporte,
-            autorizado_por: autorizadoPor,
-            base_imponible: baseImponible,
-            cuota_iva: cuotaIva,
-            tipo_iva_aplicado: ivaDefecto,
-            total_final: desglose.totalFinal,
-            lineas: desglose.lineasCalculadas,
-            estado_fiscal: 'EMITIDO',
-            hash_anterior,
-            hash_actual
-          }
-        ]);
+        const payloadTicketCompleto = {
+          serie: 'T',
+          tipo_documento: 'SIMPLIFICADA',
+          tipo_factura: 'F2',
+          numero_completo: numeroTicket,
+          fecha_expedicion: fechaExpedicion,
+          mesa,
+          vendedor_nombre: vendedor,
+          metodo_pago: metodo,
+          importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
+          importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
+          subtotal_bruto: desglose.subtotalBruto,
+          descuento_general_porcentaje: desglose.dtoGeneralPorc,
+          descuento_total_importe: desglose.descuentoTotalImporte,
+          autorizado_por: autorizadoPor,
+          base_imponible_10: base10,
+          iva_10: iva10,
+          base_imponible_21: base21,
+          iva_21: iva21,
+          base_imponible: baseImponible,
+          cuota_iva: cuotaIva,
+          tipo_iva_aplicado: ivaDefecto,
+          total_final: desglose.totalFinal,
+          lineas: desglose.lineasCalculadas,
+          estado_fiscal: 'EMITIDO',
+          hash_anterior,
+          hash_actual
+        };
+        const { error: insertErr } = await supabase.from('facturas_tickets').insert([payloadTicketCompleto]);
+        if (insertErr) {
+          const { base_imponible_10: _b10, iva_10: _i10, base_imponible_21: _b21, iva_21: _i21, ...payloadFallback } = payloadTicketCompleto;
+          void _b10; void _i10; void _b21; void _i21;
+          await supabase.from('facturas_tickets').insert([payloadFallback]);
+        }
       }
     } catch (verifactuErr) {
       console.error('Error en cálculo/inserción VeriFactu (no bloqueante):', verifactuErr);
@@ -1258,6 +1328,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             subtotalBruto: desglose.subtotalBruto,
             dtoGeneralPorc: desglose.dtoGeneralPorc,
             descuentoTotalImporte: desglose.descuentoTotalImporte,
+            base_imponible_10: desglose.base_imponible_10,
+            iva_10: desglose.iva_10,
+            base_imponible_21: desglose.base_imponible_21,
+            iva_21: desglose.iva_21,
+            baseImponibleTotal: desglose.baseImponibleTotal,
+            cuotaIvaTotal: desglose.cuotaIvaTotal,
             totalFinal: desglose.totalFinal,
             importeEfectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
             importeTarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0
