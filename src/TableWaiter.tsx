@@ -46,7 +46,9 @@ import {
   TrendingDown,
   Save,
   EyeOff,
-  RefreshCw
+  RefreshCw,
+  ChefHat,
+  Clock
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -87,8 +89,23 @@ interface ItemPedido {
   cantidad: number;
   destino: string;
   descuento_porcentaje?: number;
+  estado_cocina?: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
+  listo?: boolean;
   porcentaje_iva?: number;
   tipo_iva?: number;
+}
+
+interface PlatoCocinaActivo {
+  comandaId: string;
+  itemIdx: number;
+  ticket_number: string;
+  mesa: string;
+  nombre: string;
+  cantidad: number;
+  comentarios?: string;
+  estado: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
+  listo: boolean;
+  created_at: string;
 }
 
 interface MesaAbierta {
@@ -158,6 +175,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [carritoActual, setCarritoActual] = useState<Array<Producto & { cantidad: number; idCarritoUnico: number }>>([]);
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
+  const [platosEnviadosCocina, setPlatosEnviadosCocina] = useState<PlatoCocinaActivo[]>([]);
 
   const [descuentosLineas, setDescuentosLineas] = useState<Record<string, number>>({});
   const [descuentoGeneralMesa, setDescuentoGeneralMesa] = useState<Record<string, number>>({});
@@ -463,10 +481,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const cargarMesasAbiertas = async () => {
-    const { data } = await supabase.from('comandas_cocina').select('*').eq('pagado', false);
+    const { data } = await supabase.from('comandas_cocina').select('*').eq('pagado', false).order('created_at', { ascending: true });
 
     if (data) {
       const mapMesas: Record<string, MesaAbierta> = {};
+      const listaPlatosCocina: PlatoCocinaActivo[] = [];
 
       data.forEach((row: any) => {
         const mKey = row.mesa;
@@ -484,6 +503,35 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
         if (row.items && Array.isArray(row.items)) {
           row.items.forEach((it: any) => {
+            const nombreItem = String(it.nombre || '');
+            if (nombreItem.startsWith('🍲 LISTO PARA RECOGER:')) {
+              return;
+            }
+            const esPlatoListo = Boolean(it.listo || row.estado === 'listo' || row.estado === 'servido');
+            const estadoPlato: 'pendiente' | 'en_preparacion' | 'listo' | 'servido' =
+              row.estado === 'servido'
+                ? 'servido'
+                : esPlatoListo
+                ? 'listo'
+                : row.estado === 'en_preparacion'
+                ? 'en_preparacion'
+                : 'pendiente';
+
+            if (row.tipo_destino === 'cocina' && !nombreItem.includes('├─')) {
+              listaPlatosCocina.push({
+                comandaId: String(row.id),
+                itemIdx: Number(it.producto_id || 0),
+                ticket_number: String(row.ticket_number || ''),
+                mesa: mKey,
+                nombre: nombreItem,
+                cantidad: Number(it.cantidad || 1),
+                comentarios: it.comentarios,
+                estado: estadoPlato,
+                listo: esPlatoListo,
+                created_at: String(row.created_at || new Date().toISOString())
+              });
+            }
+
             const existente = mapMesas[mKey].items.find((x) => x.nombre === it.nombre);
             if (existente) {
               existente.cantidad += it.cantidad || 1;
@@ -496,13 +544,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 cantidad: it.cantidad || 1,
                 destino: row.tipo_destino,
                 porcentaje_iva: it.porcentaje_iva ?? it.tipo_iva,
-                tipo_iva: it.porcentaje_iva ?? it.tipo_iva
+                tipo_iva: it.porcentaje_iva ?? it.tipo_iva,
+                estado_cocina: row.tipo_destino === 'cocina' ? estadoPlato : undefined,
+                listo: row.tipo_destino === 'cocina' ? esPlatoListo : undefined
               });
             }
           });
         }
       });
 
+      setPlatosEnviadosCocina(listaPlatosCocina);
       const listado = Object.values(mapMesas).map((m) => {
         const total = m.items.reduce((acc, i) => acc + i.precio * i.cantidad, 0);
         return { ...m, total_ticket: total };
@@ -3035,6 +3086,102 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 )}
               </div>
 
+              {/* BLOQUE DIVIDIDO: ENVIADO A COCINA (ESTADO EN TIEMPO REAL) */}
+              <div className="pt-4 mt-4 border-t border-white/10 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black uppercase tracking-wider text-orange-400 flex items-center gap-1.5">
+                    <ChefHat className="h-4 w-4" /> Enviado a Cocina ({getNombreMesa(mesaSeleccionada)})
+                  </span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/30">
+                    {platosEnviadosCocina.filter((p) => p.mesa === getNombreMesa(mesaSeleccionada)).length} plato(s)
+                  </span>
+                </div>
+
+                {platosEnviadosCocina.filter((p) => p.mesa === getNombreMesa(mesaSeleccionada)).length === 0 ? (
+                  <p className="text-[11px] text-slate-500 italic bg-black/30 px-3 py-2 rounded-xl border border-white/5">
+                    No hay platos enviados a cocina en esta mesa.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                    {platosEnviadosCocina
+                      .filter((p) => p.mesa === getNombreMesa(mesaSeleccionada))
+                      .map((plato, pIdx) => {
+                        const estaListo = plato.listo || plato.estado === 'listo' || plato.estado === 'servido';
+                        return (
+                          <div
+                            key={`${plato.comandaId}_${pIdx}`}
+                            className={`flex items-center justify-between text-xs px-3 py-2 rounded-xl border transition-colors ${
+                              estaListo
+                                ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
+                                : 'bg-amber-950/20 border-amber-500/30 text-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-mono font-black text-amber-400">{plato.cantidad}x</span>
+                              <span className="font-semibold truncate">{plato.nombre}</span>
+                            </div>
+                            <span
+                              className={`shrink-0 ml-2 px-2 py-0.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1 border ${
+                                estaListo
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              }`}
+                            >
+                              {estaListo ? (
+                                <>
+                                  <CheckCircle2 className="h-3 w-3" /> {plato.estado === 'servido' ? 'Servido' : '¡Listo!'}
+                                </>
+                              ) : (
+                                <>
+                                  <Clock className="h-3 w-3 animate-pulse" /> En Cocina
+                                </>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+
+                {platosEnviadosCocina.filter((p) => p.mesa !== getNombreMesa(mesaSeleccionada)).length > 0 && (
+                  <div className="pt-2 border-t border-white/5 space-y-1.5">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                      Otras mesas en cocina ({platosEnviadosCocina.filter((p) => p.mesa !== getNombreMesa(mesaSeleccionada)).length}):
+                    </span>
+                    <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                      {platosEnviadosCocina
+                        .filter((p) => p.mesa !== getNombreMesa(mesaSeleccionada))
+                        .map((plato, oIdx) => {
+                          const estaListo = plato.listo || plato.estado === 'listo' || plato.estado === 'servido';
+                          return (
+                            <div
+                              key={`otras_${plato.comandaId}_${oIdx}`}
+                              className={`flex items-center justify-between text-[11px] px-2.5 py-1.5 rounded-lg border ${
+                                estaListo
+                                  ? 'bg-emerald-950/25 border-emerald-500/30 text-emerald-200'
+                                  : 'bg-black/40 border-white/5 text-slate-300'
+                              }`}
+                            >
+                              <div className="truncate">
+                                <span className="font-black text-amber-400 mr-1.5">[{plato.mesa}]</span>
+                                <span className="font-mono font-bold mr-1">{plato.cantidad}x</span>
+                                <span>{plato.nombre}</span>
+                              </div>
+                              <span
+                                className={`shrink-0 ml-2 px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                                  estaListo ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
+                                }`}
+                              >
+                                {estaListo ? '¡Listo!' : 'Preparando'}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {carritoActual.length > 0 && (
                 <div className="pt-4 mt-4 border-t border-white/10 space-y-3">
                   <span className="text-xs font-bold text-cyan-400 block">
@@ -3219,6 +3366,60 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         );
                       })}
                     </div>
+
+                    {/* Sub-bloque dividido: Enviado a Cocina de esta mesa */}
+                    {platosEnviadosCocina.some((p) => p.mesa === m.mesa) && (
+                      <div className="pt-2.5 border-t border-white/10 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-black uppercase text-orange-400 flex items-center gap-1">
+                            <ChefHat className="h-3.5 w-3.5" /> Enviado a Cocina
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {platosEnviadosCocina.filter((p) => p.mesa === m.mesa && (p.listo || p.estado === 'listo' || p.estado === 'servido')).length}/
+                            {platosEnviadosCocina.filter((p) => p.mesa === m.mesa).length} listos
+                          </span>
+                        </div>
+                        <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                          {platosEnviadosCocina
+                            .filter((p) => p.mesa === m.mesa)
+                            .map((plato, pIdx) => {
+                              const estaListo = plato.listo || plato.estado === 'listo' || plato.estado === 'servido';
+                              return (
+                                <div
+                                  key={`mesa_kds_${plato.comandaId}_${pIdx}`}
+                                  className={`flex items-center justify-between text-xs px-2.5 py-1.5 rounded-lg border ${
+                                    estaListo
+                                      ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
+                                      : 'bg-amber-950/20 border-amber-500/30 text-slate-200'
+                                  }`}
+                                >
+                                  <span className="truncate">
+                                    <strong className="font-mono text-amber-400 mr-1.5">{plato.cantidad}x</strong>
+                                    {plato.nombre}
+                                  </span>
+                                  <span
+                                    className={`shrink-0 ml-2 px-2 py-0.5 rounded text-[10px] font-black uppercase flex items-center gap-1 ${
+                                      estaListo
+                                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                    }`}
+                                  >
+                                    {estaListo ? (
+                                      <>
+                                        <CheckCircle2 className="h-3 w-3" /> {plato.estado === 'servido' ? 'Servido' : '¡Listo!'}
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Clock className="h-3 w-3 animate-pulse" /> En Cocina
+                                      </>
+                                    )}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-3 border-t border-white/10">
                       <button
