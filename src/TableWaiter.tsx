@@ -1342,7 +1342,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .from('caja_diaria')
         .select('id, fecha, remanente_apertura, total_efectivo, total_tarjeta, estado')
         .eq('estado', 'abierta')
-        .order('fecha', { ascending: false })
+        .order('id', { ascending: false })
         .limit(1)
         .maybeSingle();
 

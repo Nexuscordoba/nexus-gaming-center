@@ -1,6 +1,7 @@
 // src/LoyverseDashboard.tsx
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabase';
+import HistorialCajas from './HistorialCajas';
 import {
   obtenerConfiguracionFiscal,
   imprimirDocumentoFiscalHTML,
@@ -58,13 +59,48 @@ const agruparFacturas = (lista: any[]) => {
   return raices;
 };
 
+const formatearFechaHoraCaja = (c: any): string => {
+  const rawTimestamp = c?.created_at || c?.fecha_apertura || c?.fecha_cierre || c?.fecha;
+  if (!rawTimestamp) return '-';
+
+  if (typeof rawTimestamp === 'string' && (rawTimestamp.includes('T') || rawTimestamp.includes(':'))) {
+    const d = new Date(rawTimestamp);
+    if (!isNaN(d.getTime())) {
+      const dia = String(d.getDate()).padStart(2, '0');
+      const mes = String(d.getMonth() + 1).padStart(2, '0');
+      const anio = d.getFullYear();
+      const horas = String(d.getHours()).padStart(2, '0');
+      const minutos = String(d.getMinutes()).padStart(2, '0');
+      return `${dia}/${mes}/${anio} - ${horas}:${minutos}h`;
+    }
+  }
+
+  if (typeof c?.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(c.fecha)) {
+    const [anio, mes, dia] = c.fecha.split('-');
+    const horaExtra = c?.hora_apertura || c?.hora || '00:00';
+    return `${dia}/${mes}/${anio} - ${horaExtra}h`;
+  }
+
+  const d = new Date(rawTimestamp);
+  if (!isNaN(d.getTime())) {
+    const dia = String(d.getDate()).padStart(2, '0');
+    const mes = String(d.getMonth() + 1).padStart(2, '0');
+    const anio = d.getFullYear();
+    const horas = String(d.getHours()).padStart(2, '0');
+    const minutos = String(d.getMinutes()).padStart(2, '0');
+    return `${dia}/${mes}/${anio} - ${horas}:${minutos}h`;
+  }
+
+  return String(rawTimestamp);
+};
+
 export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
   const [pinAdminLogin, setPinAdminLogin] = useState('');
   const [errorLoginAdmin, setErrorLoginAdmin] = useState('');
 
   const [pestanaActiva, setPestanaActiva] = useState<
-    'ventas_dia' | 'historico_tickets' | 'articulos_escandallos' | 'inventario_compras' | 'proveedores' | 'datos_fiscales' | 'empleados'
+    'ventas_dia' | 'historial_cajas' | 'historico_tickets' | 'articulos_escandallos' | 'inventario_compras' | 'proveedores' | 'datos_fiscales' | 'empleados'
   >('ventas_dia');
 
   const [configFiscal, setConfigFiscal] = useState<ConfiguracionFiscal>({
@@ -346,6 +382,19 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         .maybeSingle();
       setCajaHoy(ultimaCerradaHoy || null);
     }
+    const { data: historialCajas } = await supabase
+      .from('caja_diaria')
+      .select('*')
+      .order('id', { ascending: false })
+      .order('fecha', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(100);
+
+    if (historialCajas) {
+      setCierresTrabajadores(historialCajas);
+    }
+
+    /*
     const { data: cData } = await supabase
       .from('caja_diaria')
       .select('*')
@@ -359,7 +408,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         .from('caja_diaria')
         .select('*')
         .eq('estado', 'abierta')
-        .order('fecha', { ascending: false })
+        .order('id', { ascending: false })
         .limit(1)
         .maybeSingle();
       if (!cajaAbiertaActiva) setCajaHoy(cajaAbierta || null);
@@ -372,7 +421,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       .limit(25);
 
     if (cierresData) {
-      setCierresTrabajadores(cierresData);
+    if (cierresData && false) { setCierresTrabajadores(cierresData); } */
+    if (false) {
     }
   };
 
@@ -429,7 +479,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         .from('caja_diaria')
         .select('id, fecha, remanente_apertura, total_efectivo, total_tarjeta, estado')
         .eq('estado', 'abierta')
-        .order('fecha', { ascending: false })
+        .order('id', { ascending: false })
         .limit(1)
         .maybeSingle();
 
@@ -2067,6 +2117,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       <div className="max-w-7xl w-full mx-auto mb-6 flex flex-wrap gap-2 border-b border-white/10 pb-4">
         <button onClick={() => setPestanaActiva('ventas_dia')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'ventas_dia' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><BarChart3 className="h-4 w-4" /> Ventas y Cuadre</button>
+        <button onClick={() => setPestanaActiva('historial_cajas')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'historial_cajas' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Wallet className="h-4 w-4" /> Historial de Cajas</button>
         <button onClick={() => setPestanaActiva('historico_tickets')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'historico_tickets' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Receipt className="h-4 w-4" /> Histórico Tickets</button>
         <button onClick={() => setPestanaActiva('articulos_escandallos')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'articulos_escandallos' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Layers className="h-4 w-4" /> Artículos y Escandallos</button>
         <button onClick={() => setPestanaActiva('inventario_compras')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'inventario_compras' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Package className="h-4 w-4" /> Inventario y Compras</button>
@@ -2339,23 +2390,46 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   </button>
                 </div>
               </div>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto max-h-[450px] overflow-y-auto rounded-2xl border border-white/5">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-white/5 text-slate-400 uppercase">
-                    <tr><th className="p-3">Fecha / Hora Cierre</th><th className="p-3">Trabajador</th><th className="p-3 text-right">Fondo Inicial</th><th className="p-3 text-right">Efectivo Sist.</th><th className="p-3 text-right">Tarjeta Sist.</th><th className="p-3 text-right">Esperado Cajón</th><th className="p-3 text-right">Contado Trabajador</th><th className="p-3 text-right">Descuadre</th></tr>
+                  <thead className="bg-[#141824] text-slate-400 uppercase sticky top-0 z-10 border-b border-white/10">
+                    <tr><th className="p-3">Ref. Turno</th><th className="p-3">Fecha</th><th className="p-3">Estado</th><th className="p-3 text-right">Ingresos Tarjeta</th><th className="p-3 text-right">Efectivo Teórico</th><th className="p-3 text-right">Efectivo Real Contado</th><th className="p-3 text-right">Remanente (Fondo de caja)</th><th className="p-3 text-right">Descuadre</th></tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {cierresTrabajadores.length === 0 ? ( <tr><td colSpan={8} className="p-6 text-center text-slate-500">No hay cierres de turno registrados todavía.</td></tr> ) : (
+                    {cierresTrabajadores.length === 0 ? ( <tr><td colSpan={8} className="p-6 text-center text-slate-500">No hay turnos ni cierres de caja registrados todavía.</td></tr> ) : (
                       cierresTrabajadores.map((c) => (
                         <tr key={c.id} className="hover:bg-white/[0.02]">
-                          <td className="p-3">{new Date(c.fecha_cierre).toLocaleString('es-ES')}</td>
-                          <td className="p-3 font-bold text-white">{c.usuario_nombre}</td>
-                          <td className="p-3 text-right font-mono">{Number(c.fondo_inicial).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono text-emerald-400">{Number(c.ventas_efectivo_sistema).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono text-sky-400">{Number(c.ventas_tarjeta_sistema).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono font-bold text-white">{Number(c.efectivo_esperado_caja).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono font-bold text-amber-400">{Number(c.efectivo_contado_trabajador).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono font-black"><span className={`px-2 py-0.5 rounded ${Math.abs(Number(c.descuadre_efectivo)) < 0.05 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>{Number(c.descuadre_efectivo).toFixed(2)} €</span></td>
+                          <td className="p-3 font-mono font-black text-amber-400">#{c.id}</td>
+                          <td className="p-3 font-mono text-slate-200">{formatearFechaHoraCaja(c)}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${c.estado === 'abierta' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-500/20 text-slate-300 border border-white/10'}`}>
+                              {String(c.estado).toLowerCase() === 'abierta' ? 'Abierta' : 'Cerrada'}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right font-mono text-sky-400">{Number(c.total_tarjeta ?? c.ventas_tarjeta_sistema ?? 0).toFixed(2)} €</td>
+                          <td className="p-3 text-right font-mono text-slate-200">{Number(c.total_efectivo ?? c.ventas_efectivo_sistema ?? 0).toFixed(2)} €</td>
+                          <td className="p-3 text-right font-mono font-bold text-white">{Number(c.efectivo_real ?? c.efectivo_contado_trabajador ?? 0).toFixed(2)} €</td>
+                          <td className="p-3 text-right font-mono text-slate-300">{Number(c.remanente_apertura ?? c.fondo_inicial ?? 0).toFixed(2)} €</td>
+                          <td className="p-3 text-right font-mono">
+                            {(() => {
+                              const desc = Number(Number(c.descuadre ?? c.descuadre_efectivo ?? 0).toFixed(2));
+                              if (desc === 0) {
+                                return <span className="text-emerald-400 font-semibold">{desc.toFixed(2)} €</span>;
+                              }
+                              if (desc < 0) {
+                                return <span className="text-red-500 font-bold">{desc.toFixed(2)} €</span>;
+                              }
+                              return <span className="text-amber-400 font-semibold">+{desc.toFixed(2)} €</span>;
+                            })()}
+                          </td>
+                          {/* <td className="p-3">{new Date(c.fecha_cierre).toLocaleString('es-ES')}</td> */}
+                          {/* <td className="p-3 font-bold text-white">{c.usuario_nombre}</td> */}
+                          {/* <td className="p-3 text-right font-mono">{Number(c.fondo_inicial).toFixed(2)} €</td> */}
+                          {/* <td className="p-3 text-right font-mono text-emerald-400">{Number(c.ventas_efectivo_sistema).toFixed(2)} €</td> */}
+                          {/* <td className="p-3 text-right font-mono text-sky-400">{Number(c.ventas_tarjeta_sistema).toFixed(2)} €</td> */}
+                          {/* <td className="p-3 text-right font-mono font-bold text-white">{Number(c.efectivo_esperado_caja).toFixed(2)} €</td> */}
+                          {/* <td className="p-3 text-right font-mono font-bold text-amber-400">{Number(c.efectivo_contado_trabajador).toFixed(2)} €</td> */}
+                          {/* <td className="p-3 text-right font-mono font-black"><span className={`px-2 py-0.5 rounded ${Math.abs(Number(c.descuadre_efectivo)) < 0.05 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>{Number(c.descuadre_efectivo).toFixed(2)} €</span></td> */}
                         </tr>
                       ))
                     )}
@@ -2364,6 +2438,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
             </div>
           </div>
+        )}
+
+        {pestanaActiva === 'historial_cajas' && (
+          <HistorialCajas refreshTrigger={cajaHoy} />
         )}
 
         {pestanaActiva === 'historico_tickets' && (
@@ -2845,7 +2923,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               </div>
               <div className="overflow-x-auto max-h-60">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-white/5 text-slate-400 uppercase">
+                  <thead className="bg-[#141824] text-slate-400 uppercase sticky top-0 z-10 border-b border-white/10">
                     <tr><th className="p-2.5">Fecha</th><th className="p-2.5">Artículo</th><th className="p-2.5">Tipo</th><th className="p-2.5 text-right">Cantidad</th><th className="p-2.5">Observaciones / Albarán</th><th className="p-2.5">Usuario</th></tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
