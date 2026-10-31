@@ -1,11 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from './supabase';
 import {
   Coffee,
   CheckCircle2,
   Clock,
   ArrowLeft,
-  CheckSquare,
   Square,
   Wine,
   ChefHat,
@@ -14,12 +13,14 @@ import {
 } from 'lucide-react';
 
 interface ItemComanda {
+  id?: string | number;
+  producto_id?: number;
   nombre: string;
   cantidad: number;
   comentarios?: string;
   listo?: boolean;
   entregado?: boolean;
-  estado_cocina?: 'pendiente' | 'en_preparacion' | 'listo';
+  estado_cocina?: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
   destino?: string;
   categoria?: string;
 }
@@ -30,7 +31,7 @@ interface Comanda {
   mesa: string;
   created_at: string;
   items: ItemComanda[];
-  estado: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
+  estado: 'pendiente' | 'listo' | 'servido';
   tipo_destino?: string;
   camarero_nombre?: string;
 }
@@ -38,6 +39,7 @@ interface Comanda {
 interface ItemAgrupado extends ItemComanda {
   comandaId: string;
   itemIdx: number;
+  platoUid: string;
   tipo_destino: 'barra' | 'cocina';
   comandaEstado: Comanda['estado'];
   listoEnCocina: boolean;
@@ -58,8 +60,9 @@ export default function BarDisplay() {
   const [mesasAgrupadas, setMesasAgrupadas] = useState<MesaAgrupada[]>([]);
   const [loading, setLoading] = useState(true);
   const [filtroVista, setFiltroVista] = useState<'general' | 'barra' | 'cocina'>('general');
+  const [procesandoKey, setProcesandoKey] = useState<string | null>(null);
 
-  const resolverDestinoItem = (it: ItemComanda, comandaDestino?: string): 'barra' | 'cocina' => {
+  const resolverDestinoItem = useCallback((it: ItemComanda, comandaDestino?: string): 'barra' | 'cocina' => {
     const destRaw = String(it.destino || comandaDestino || 'barra').trim().toLowerCase();
     const catRaw = String(it.categoria || '').trim().toLowerCase();
     if (destRaw === 'cocina') return 'cocina';
@@ -78,88 +81,98 @@ export default function BarDisplay() {
       return 'cocina';
     }
     return 'barra';
-  };
+  }, []);
 
-  const cargarComandas = async () => {
-    const { data } = await supabase
+  const cargarComandas = useCallback(async () => {
+    const { data, error } = await supabase
       .from('comandas_cocina')
       .select('*')
       .neq('tipo_destino', 'cuenta')
-      .in('estado', ['pendiente', 'en_preparacion', 'listo'])
+      .in('estado', ['pendiente', 'listo'])
       .order('created_at', { ascending: true });
 
-    if (data) {
+    if (!error && data) {
       setComandasOriginales(data as Comanda[]);
     }
     setLoading(false);
-  };
+  }, []);
 
-  const agruparPorMesa = (data: Comanda[], filtroActual: 'general' | 'barra' | 'cocina') => {
-    const grupos: Record<string, MesaAgrupada> = {};
+  const agruparPorMesa = useCallback(
+    (data: Comanda[], filtroActual: 'general' | 'barra' | 'cocina') => {
+      const grupos: Record<string, MesaAgrupada> = {};
 
-    data.forEach((comanda) => {
-      if (!grupos[comanda.mesa]) {
-        grupos[comanda.mesa] = {
-          mesa: comanda.mesa,
-          created_at: comanda.created_at,
-          items: [],
-          itemsBarra: [],
-          itemsCocina: []
-        };
-      }
-
-      if (Array.isArray(comanda.items)) {
-        comanda.items.forEach((it, idx) => {
-          // Omitir antiguos avisos duplicados de texto si existieran en la BD
-          if (String(it.nombre || '').startsWith('🍲 LISTO PARA RECOGER:')) {
-            return;
-          }
-
-          const destItem = resolverDestinoItem(it, comanda.tipo_destino);
-          if (filtroActual === 'barra' && destItem !== 'barra') return;
-          if (filtroActual === 'cocina' && destItem !== 'cocina') return;
-
-          const esCocina = destItem === 'cocina';
-          const listoEnCocina = esCocina
-            ? Boolean(it.listo || it.estado_cocina === 'listo' || comanda.estado === 'listo')
-            : true;
-          const entregadoEnBarra = esCocina
-            ? Boolean(it.entregado)
-            : Boolean(it.entregado ?? it.listo);
-
-          const itemConstruido: ItemAgrupado = {
-            ...it,
-            comandaId: comanda.id,
-            itemIdx: idx,
-            tipo_destino: destItem,
-            comandaEstado: comanda.estado,
-            listoEnCocina,
-            entregadoEnBarra,
-            ticket_number: comanda.ticket_number
+      data.forEach((comanda) => {
+        if (!grupos[comanda.mesa]) {
+          grupos[comanda.mesa] = {
+            mesa: comanda.mesa,
+            created_at: comanda.created_at,
+            items: [],
+            itemsBarra: [],
+            itemsCocina: []
           };
+        }
 
-          grupos[comanda.mesa].items.push(itemConstruido);
-          if (esCocina) {
-            grupos[comanda.mesa].itemsCocina.push(itemConstruido);
-          } else {
-            grupos[comanda.mesa].itemsBarra.push(itemConstruido);
-          }
-        });
-      }
-    });
+        if (Array.isArray(comanda.items)) {
+          comanda.items.forEach((it, idx) => {
+            if (String(it.nombre || '').startsWith('🍲 LISTO PARA RECOGER:')) {
+              return;
+            }
 
-    setMesasAgrupadas(Object.values(grupos).filter((g) => g.items.length > 0));
-  };
+            const destItem = resolverDestinoItem(it, comanda.tipo_destino);
+            if (filtroActual === 'barra' && destItem !== 'barra') return;
+            if (filtroActual === 'cocina' && destItem !== 'cocina') return;
+
+            const esCocina = destItem === 'cocina';
+            const listoEnCocina = esCocina
+              ? Boolean(it.listo || it.estado_cocina === 'listo' || comanda.estado === 'listo')
+              : true;
+            const entregadoEnBarra = esCocina
+              ? Boolean(it.entregado || it.estado_cocina === 'servido')
+              : Boolean(it.entregado ?? it.listo);
+
+            // Solo desaparece definitivamente del KDS cuando el camarero lo ha marcado como entregado
+            if (entregadoEnBarra) {
+              return;
+            }
+
+            const platoUid = `${comanda.id}_item_${it.id ?? it.producto_id ?? idx}_${idx}`;
+
+            const itemConstruido: ItemAgrupado = {
+              ...it,
+              comandaId: comanda.id,
+              itemIdx: idx,
+              platoUid,
+              tipo_destino: destItem,
+              comandaEstado: comanda.estado,
+              listoEnCocina,
+              entregadoEnBarra,
+              ticket_number: comanda.ticket_number
+            };
+
+            grupos[comanda.mesa].items.push(itemConstruido);
+            if (esCocina) {
+              grupos[comanda.mesa].itemsCocina.push(itemConstruido);
+            } else {
+              grupos[comanda.mesa].itemsBarra.push(itemConstruido);
+            }
+          });
+        }
+      });
+
+      setMesasAgrupadas(Object.values(grupos).filter((g) => g.items.length > 0));
+    },
+    [resolverDestinoItem]
+  );
 
   useEffect(() => {
     agruparPorMesa(comandasOriginales, filtroVista);
-  }, [comandasOriginales, filtroVista]);
+  }, [comandasOriginales, filtroVista, agruparPorMesa]);
 
   useEffect(() => {
     cargarComandas();
 
     const channel = supabase
-      .channel('realtime-barra')
+      .channel('realtime-barra-kds-sync')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'comandas_cocina' },
@@ -171,62 +184,80 @@ export default function BarDisplay() {
 
     const interval = setInterval(() => {
       cargarComandas();
-    }, 10000);
+    }, 6000);
 
     return () => {
       supabase.removeChannel(channel);
       clearInterval(interval);
     };
-  }, []);
+  }, [cargarComandas]);
 
-  const toggleItemBarra = async (item: ItemAgrupado) => {
-    // Regla de bloqueo de seguridad: si es de cocina y aún no está listo en cocina, bloquear
+  // Paso 2: Marcar ítem como entregado al cliente en la mesa (solo permitido si Barra o si Cocina ya está "Listo para servir")
+  const entregarItemBarra = async (item: ItemAgrupado) => {
     if (item.tipo_destino === 'cocina' && !item.listoEnCocina) {
       return;
     }
+    if (procesandoKey === item.platoUid) return;
+    setProcesandoKey(item.platoUid);
 
-    const comanda = comandasOriginales.find((c) => c.id === item.comandaId);
-    if (!comanda) return;
+    try {
+      const comanda = comandasOriginales.find((c) => String(c.id) === String(item.comandaId));
+      if (!comanda || !Array.isArray(comanda.items)) return;
 
-    const nuevosItems = [...comanda.items];
-    const actual = { ...nuevosItems[item.itemIdx] };
+      const nuevosItems: ItemComanda[] = comanda.items.map((it, idx) => {
+        if (idx !== item.itemIdx) return { ...it };
+        return {
+          ...it,
+          listo: true,
+          entregado: true,
+          estado_cocina: 'servido'
+        };
+      });
 
-    if (item.tipo_destino === 'cocina') {
-      actual.entregado = !actual.entregado;
-      actual.listo = true; // Se mantiene como listo en cocina
-    } else {
-      const nuevoValor = !(actual.entregado ?? actual.listo);
-      actual.entregado = nuevoValor;
-      actual.listo = nuevoValor;
+      const todosEntregados = nuevosItems.every((it) => {
+        const dest = resolverDestinoItem(it, comanda.tipo_destino);
+        return dest === 'cocina'
+          ? Boolean(it.entregado || it.estado_cocina === 'servido')
+          : Boolean(it.entregado ?? it.listo);
+      });
+
+      const todosListosEnCocina = nuevosItems.every((it) =>
+        Boolean(it.listo || it.estado_cocina === 'listo' || it.estado_cocina === 'servido')
+      );
+
+      const nuevoEstado: Comanda['estado'] = todosEntregados
+        ? 'servido'
+        : todosListosEnCocina
+        ? 'listo'
+        : 'pendiente';
+
+      // Actualización optimista en React
+      setComandasOriginales((prev) =>
+        prev
+          .map((c) =>
+            String(c.id) === String(item.comandaId)
+              ? { ...c, items: nuevosItems, estado: nuevoEstado }
+              : c
+          )
+          .filter((c) => c.estado !== 'servido')
+      );
+
+      await supabase
+        .from('comandas_cocina')
+        .update({ items: nuevosItems, estado: nuevoEstado })
+        .eq('id', item.comandaId);
+
+      await cargarComandas();
+    } finally {
+      setProcesandoKey(null);
     }
-
-    nuevosItems[item.itemIdx] = actual;
-
-    const todosEntregados = nuevosItems.every((it) => {
-      const dest = resolverDestinoItem(it, comanda.tipo_destino);
-      return dest === 'cocina' ? Boolean(it.entregado) : Boolean(it.entregado ?? it.listo);
-    });
-
-    const todosListosEnCocina = nuevosItems.every((it) => Boolean(it.listo));
-    const nuevoEstado: Comanda['estado'] = todosEntregados
-      ? 'servido'
-      : comanda.tipo_destino === 'cocina' && todosListosEnCocina
-      ? 'listo'
-      : comanda.estado;
-
-    await supabase
-      .from('comandas_cocina')
-      .update({ items: nuevosItems, estado: nuevoEstado })
-      .eq('id', item.comandaId);
-
-    cargarComandas();
   };
 
   const archivarMesaCompleta = async (mesaGrupo: MesaAgrupada) => {
     const comandasDeMesa = comandasOriginales.filter((c) => c.mesa === mesaGrupo.mesa);
 
     const promesas = comandasDeMesa.map((c) => {
-      const nuevosItems = (c.items || []).map((it) => {
+      const nuevosItems: ItemComanda[] = (c.items || []).map((it) => {
         const dest = resolverDestinoItem(it, c.tipo_destino);
         const listoCocina =
           dest === 'cocina'
@@ -234,19 +265,22 @@ export default function BarDisplay() {
             : true;
 
         if (dest === 'cocina' && !listoCocina) {
-          // No se puede forzar entrega de un plato que sigue pendiente o en preparación en cocina
-          return it;
+          // Mantener intactos los platos que siguen en cocina pendientes
+          return { ...it };
         }
         return {
           ...it,
           listo: true,
-          entregado: true
+          entregado: true,
+          estado_cocina: 'servido'
         };
       });
 
       const todosEntregados = nuevosItems.every((it) => {
         const dest = resolverDestinoItem(it, c.tipo_destino);
-        return dest === 'cocina' ? Boolean(it.entregado) : Boolean(it.entregado ?? it.listo);
+        return dest === 'cocina'
+          ? Boolean(it.entregado || it.estado_cocina === 'servido')
+          : Boolean(it.entregado ?? it.listo);
       });
 
       return supabase
@@ -259,7 +293,7 @@ export default function BarDisplay() {
     });
 
     await Promise.all(promesas);
-    cargarComandas();
+    await cargarComandas();
   };
 
   const volverAWebPrincipal = () => {
@@ -270,23 +304,22 @@ export default function BarDisplay() {
     }
   };
 
-  const renderItemRow = (it: ItemAgrupado, idx: number) => {
+  const renderItemRow = (it: ItemAgrupado) => {
     const esCocina = it.tipo_destino === 'cocina';
     const bloqueadoPorCocina = esCocina && !it.listoEnCocina;
+    const listoParaServirCocina = esCocina && it.listoEnCocina;
 
     return (
       <button
-        key={`${it.comandaId}-${it.itemIdx}-${idx}`}
+        key={it.platoUid}
         type="button"
-        disabled={bloqueadoPorCocina}
-        onClick={() => toggleItemBarra(it)}
+        disabled={bloqueadoPorCocina || procesandoKey === it.platoUid}
+        onClick={() => entregarItemBarra(it)}
         className={`w-full text-left p-3 rounded-xl border flex items-start justify-between gap-3 transition-all ${
           bloqueadoPorCocina
             ? 'bg-slate-900/60 border-slate-800 text-slate-500 opacity-65 cursor-not-allowed select-none'
-            : it.entregadoEnBarra
-            ? 'bg-emerald-950/20 border-emerald-500/30 opacity-60 cursor-pointer'
-            : esCocina
-            ? 'bg-amber-950/25 border-amber-500/40 hover:border-amber-400 cursor-pointer shadow-sm'
+            : listoParaServirCocina
+            ? 'bg-emerald-950/35 border-emerald-500/60 hover:border-emerald-400 hover:bg-emerald-950/50 cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.15)]'
             : 'bg-black/40 border-white/10 hover:border-cyan-500/50 cursor-pointer'
         }`}
       >
@@ -294,10 +327,12 @@ export default function BarDisplay() {
           <div className="mt-0.5 shrink-0">
             {bloqueadoPorCocina ? (
               <Lock className="h-4 w-4 text-slate-500" />
-            ) : it.entregadoEnBarra ? (
-              <CheckSquare className="h-5 w-5 text-emerald-500" />
             ) : (
-              <Square className={`h-5 w-5 ${esCocina ? 'text-amber-400' : 'text-cyan-400'}`} />
+              <Square
+                className={`h-5 w-5 ${
+                  listoParaServirCocina ? 'text-emerald-400' : 'text-cyan-400'
+                }`}
+              />
             )}
           </div>
           <div className="min-w-0">
@@ -305,8 +340,8 @@ export default function BarDisplay() {
               className={`font-bold text-sm block break-words ${
                 bloqueadoPorCocina
                   ? 'text-slate-400'
-                  : it.entregadoEnBarra
-                  ? 'text-emerald-400 line-through'
+                  : listoParaServirCocina
+                  ? 'text-emerald-200'
                   : 'text-white'
               }`}
             >
@@ -314,8 +349,8 @@ export default function BarDisplay() {
                 className={`font-mono mr-1.5 ${
                   bloqueadoPorCocina
                     ? 'text-slate-500'
-                    : esCocina
-                    ? 'text-amber-400'
+                    : listoParaServirCocina
+                    ? 'text-emerald-400'
                     : 'text-cyan-400'
                 }`}
               >
@@ -328,8 +363,8 @@ export default function BarDisplay() {
                 className={`text-[11px] italic mt-0.5 ${
                   bloqueadoPorCocina
                     ? 'text-slate-500'
-                    : esCocina
-                    ? 'text-amber-200/70'
+                    : listoParaServirCocina
+                    ? 'text-emerald-300/80'
                     : 'text-cyan-200/70'
                 }`}
               >
@@ -345,18 +380,15 @@ export default function BarDisplay() {
               <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-slate-800 text-slate-400 border border-slate-700 whitespace-nowrap">
                 Esperando a cocina
               </span>
-            ) : it.entregadoEnBarra ? (
-              <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 whitespace-nowrap">
-                Entregado
-              </span>
             ) : (
-              <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-emerald-500 text-slate-950 shadow-sm whitespace-nowrap">
-                Listo en cocina
+              <span className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase bg-emerald-500 text-slate-950 shadow-md flex items-center gap-1 whitespace-nowrap">
+                <CheckCircle2 className="h-3 w-3" />
+                Listo para servir
               </span>
             )
           ) : (
             <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 whitespace-nowrap">
-              {it.entregadoEnBarra ? 'Entregado' : 'Barra'}
+              Servir Barra
             </span>
           )}
         </div>
@@ -451,16 +483,18 @@ export default function BarDisplay() {
                 : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
             }`}
           >
-            {mesasAgrupadas.map((mesaGrupo, index) => {
+            {mesasAgrupadas.map((mesaGrupo) => {
               const minutosTranscurridos = Math.floor(
                 (new Date().getTime() - new Date(mesaGrupo.created_at).getTime()) / 60000
               );
               const esUrgente = minutosTranscurridos >= 7;
               const hayCocinaBloqueada = mesaGrupo.itemsCocina.some((it) => !it.listoEnCocina);
+              const hayItemsDisponiblesParaServir =
+                mesaGrupo.itemsBarra.length > 0 || mesaGrupo.itemsCocina.some((it) => it.listoEnCocina);
 
               return (
                 <div
-                  key={index}
+                  key={mesaGrupo.mesa}
                   className={`rounded-3xl border p-5 flex flex-col justify-between transition-all ${
                     esUrgente
                       ? 'bg-rose-950/20 border-rose-500/50 shadow-lg shadow-rose-900/20'
@@ -478,7 +512,7 @@ export default function BarDisplay() {
                           {mesaGrupo.mesa}
                         </span>
                         <span className="text-[10px] text-slate-400 font-bold bg-white/5 px-2 py-0.5 rounded-md">
-                          {mesaGrupo.items.length} Ítems
+                          {mesaGrupo.items.length} Ítems pendientes
                         </span>
                       </div>
 
@@ -509,11 +543,11 @@ export default function BarDisplay() {
 
                           {mesaGrupo.itemsBarra.length === 0 ? (
                             <div className="py-6 text-center text-xs text-slate-500 italic">
-                              Sin bebidas o ítems de barra
+                              Sin bebidas pendientes
                             </div>
                           ) : (
                             <div className="space-y-2">
-                              {mesaGrupo.itemsBarra.map((it, idx) => renderItemRow(it, idx))}
+                              {mesaGrupo.itemsBarra.map((it) => renderItemRow(it))}
                             </div>
                           )}
                         </div>
@@ -532,11 +566,11 @@ export default function BarDisplay() {
 
                           {mesaGrupo.itemsCocina.length === 0 ? (
                             <div className="py-6 text-center text-xs text-slate-500 italic">
-                              Sin platos destinados a cocina
+                              Sin platos pendientes
                             </div>
                           ) : (
                             <div className="space-y-2">
-                              {mesaGrupo.itemsCocina.map((it, idx) => renderItemRow(it, idx))}
+                              {mesaGrupo.itemsCocina.map((it) => renderItemRow(it))}
                             </div>
                           )}
                         </div>
@@ -544,7 +578,7 @@ export default function BarDisplay() {
                     ) : (
                       /* Vista individual para pestañas Solo Barra o Solo Cocina */
                       <div className="space-y-2">
-                        {mesaGrupo.items.map((it, idx) => renderItemRow(it, idx))}
+                        {mesaGrupo.items.map((it) => renderItemRow(it))}
                       </div>
                     )}
                   </div>
@@ -552,17 +586,22 @@ export default function BarDisplay() {
                   <div className="mt-6 pt-3 border-t border-white/10">
                     <button
                       type="button"
+                      disabled={!hayItemsDisponiblesParaServir}
                       onClick={() => archivarMesaCompleta(mesaGrupo)}
-                      className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all ${
-                        hayCocinaBloqueada
-                          ? 'bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30'
-                          : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+                      className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg transition-all ${
+                        !hayItemsDisponiblesParaServir
+                          ? 'bg-slate-900 border border-slate-800 text-slate-500 opacity-60 cursor-not-allowed'
+                          : hayCocinaBloqueada
+                          ? 'bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 cursor-pointer'
+                          : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 cursor-pointer'
                       }`}
                     >
                       <CheckCircle2 className="h-4 w-4" />
-                      {hayCocinaBloqueada
-                        ? 'Marcar disponibles como entregados (Cocina en espera)'
-                        : 'Marcar todo entregado'}
+                      {!hayItemsDisponiblesParaServir
+                        ? 'Esperando a cocina para poder servir'
+                        : hayCocinaBloqueada
+                        ? 'Entregar disponibles (Cocina aún en preparación)'
+                        : 'Marcar todo entregado en mesa'}
                     </button>
                   </div>
                 </div>

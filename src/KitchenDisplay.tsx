@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from './supabase';
-import { ChefHat, CheckCircle2, Clock, Flame, Utensils, ArrowLeft } from 'lucide-react';
+import { ChefHat, CheckCircle2, Clock, Flame, Utensils, ArrowLeft, CheckSquare, Square } from 'lucide-react';
 
 interface ItemComanda {
+  id?: string | number;
+  producto_id?: number;
   nombre: string;
   cantidad: number;
   comentarios?: string;
   es_menu?: boolean;
   listo?: boolean;
   entregado?: boolean;
-  estado_cocina?: 'pendiente' | 'en_preparacion' | 'listo';
+  estado_cocina?: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
   destino?: string;
   categoria?: string;
 }
@@ -20,15 +22,16 @@ interface Comanda {
   mesa: string;
   created_at: string;
   items: ItemComanda[];
-  estado: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
+  estado: 'pendiente' | 'listo' | 'servido';
   tipo_destino: string;
 }
 
 export default function KitchenDisplay() {
   const [comandas, setComandas] = useState<Comanda[]>([]);
   const [loading, setLoading] = useState(true);
+  const [procesandoKey, setProcesandoKey] = useState<string | null>(null);
 
-  const esItemCocina = (it: ItemComanda, tipoDestinoComanda?: string): boolean => {
+  const esItemCocina = useCallback((it: ItemComanda, tipoDestinoComanda?: string): boolean => {
     const destItem = String(it.destino || tipoDestinoComanda || '').trim().toLowerCase();
     const catItem = String(it.categoria || '').trim().toLowerCase();
     if (destItem === 'cocina') return true;
@@ -46,34 +49,42 @@ export default function KitchenDisplay() {
       return true;
     }
     return false;
-  };
+  }, []);
 
-  const cargarComandas = async () => {
-    const { data } = await supabase
+  const cargarComandas = useCallback(async () => {
+    const { data, error } = await supabase
       .from('comandas_cocina')
       .select('*')
       .neq('tipo_destino', 'cuenta')
-      .in('estado', ['pendiente', 'en_preparacion', 'listo'])
+      .in('estado', ['pendiente', 'listo'])
       .order('created_at', { ascending: true });
 
-    if (data) {
+    if (!error && data) {
       const filtradasCocina = (data as Comanda[]).filter((c) => {
-        if (String(c.tipo_destino || '').trim().toLowerCase() === 'cocina') return true;
-        if (Array.isArray(c.items) && c.items.some((it) => esItemCocina(it, c.tipo_destino))) {
-          return true;
-        }
-        return false;
+        const tieneItemsCocina =
+          String(c.tipo_destino || '').trim().toLowerCase() === 'cocina' ||
+          (Array.isArray(c.items) && c.items.some((it) => esItemCocina(it, c.tipo_destino)));
+
+        if (!tieneItemsCocina) return false;
+
+        // Mantener visible mientras exista al menos un plato de cocina que no haya sido entregado por el camarero
+        const itemsReales = Array.isArray(c.items) ? c.items : [];
+        const todosEntregados =
+          itemsReales.length > 0 &&
+          itemsReales.every((it) => Boolean(it.entregado) || it.estado_cocina === 'servido');
+
+        return !todosEntregados;
       });
       setComandas(filtradasCocina);
     }
     setLoading(false);
-  };
+  }, [esItemCocina]);
 
   useEffect(() => {
     cargarComandas();
 
     const channel = supabase
-      .channel('realtime-cocina-v2')
+      .channel('realtime-cocina-kds-sync')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'comandas_cocina' },
@@ -91,48 +102,105 @@ export default function KitchenDisplay() {
       supabase.removeChannel(channel);
       clearInterval(interval);
     };
-  }, []);
+  }, [cargarComandas]);
 
-  // Marcar un plato individual como listo para habilitar su entrega en Barra
-  const marcarPlatoListo = async (comandaId: string, indexItem: number) => {
-    const comandaActual = comandas.find((c) => c.id === comandaId);
-    if (!comandaActual) return;
+  // Paso 1: Marcar o desmarcar un plato individualmente como "Listo" sin hacer desaparecer la comanda
+  const marcarPlatoListo = async (comandaId: string, itemIdx: number, platoUid: string) => {
+    if (procesandoKey === platoUid) return;
+    setProcesandoKey(platoUid);
 
-    const nuevosItems = [...comandaActual.items];
-    const elPlato = { ...nuevosItems[indexItem] };
+    try {
+      const comandaActual = comandas.find((c) => String(c.id) === String(comandaId));
+      if (!comandaActual || !Array.isArray(comandaActual.items) || !comandaActual.items[itemIdx]) {
+        return;
+      }
 
-    // Alternar estado individual del plato en cocina
-    const nuevoListo = !elPlato.listo;
-    elPlato.listo = nuevoListo;
-    elPlato.estado_cocina = nuevoListo ? 'listo' : 'pendiente';
-    if (!nuevoListo) {
-      elPlato.entregado = false;
+      const nuevosItems = comandaActual.items.map((item, idx) => {
+        if (idx !== itemIdx) return { ...item };
+        const estaListoAhora = Boolean(item.listo || item.estado_cocina === 'listo');
+        const nuevoEstadoListo = !estaListoAhora;
+        return {
+          ...item,
+          listo: nuevoEstadoListo,
+          estado_cocina: (nuevoEstadoListo ? 'listo' : 'pendiente') as ItemComanda['estado_cocina'],
+          entregado: nuevoEstadoListo ? Boolean(item.entregado) : false
+        };
+      });
+
+      const todosListosEnCocina = nuevosItems.every((it) =>
+        Boolean(it.listo || it.estado_cocina === 'listo')
+      );
+      // Importante: nunca pasar a 'servido' desde cocina; 'listo' mantiene el plato visible y lo habilita en Barra
+      const nuevoEstadoComanda: Comanda['estado'] = todosListosEnCocina ? 'listo' : 'pendiente';
+
+      // Actualización optimista del estado en React para respuesta visual inmediata
+      setComandas((prev) =>
+        prev.map((c) =>
+          String(c.id) === String(comandaId)
+            ? { ...c, items: nuevosItems, estado: nuevoEstadoComanda }
+            : c
+        )
+      );
+
+      const { error } = await supabase
+        .from('comandas_cocina')
+        .update({
+          items: nuevosItems,
+          estado: nuevoEstadoComanda
+        })
+        .eq('id', comandaId);
+
+      if (error) {
+        console.error('Error al actualizar estado del plato en cocina:', error);
+      }
+
+      await cargarComandas();
+    } finally {
+      setProcesandoKey(null);
     }
-    nuevosItems[indexItem] = elPlato;
-
-    const todosListosEnCocina = nuevosItems.every((it) => Boolean(it.listo));
-    const algunoListoEnCocina = nuevosItems.some((it) => Boolean(it.listo));
-    const nuevoEstadoComanda: Comanda['estado'] = todosListosEnCocina
-      ? 'listo'
-      : algunoListoEnCocina
-      ? 'en_preparacion'
-      : 'pendiente';
-
-    await supabase
-      .from('comandas_cocina')
-      .update({ items: nuevosItems, estado: nuevoEstadoComanda })
-      .eq('id', comandaId);
-
-    cargarComandas();
   };
 
-  const archivarComanda = async (id: string) => {
-    await supabase
-      .from('comandas_cocina')
-      .update({ estado: 'servido' })
-      .eq('id', id);
+  // Paso 2: "Marcar todo listo" en cocina pone todos los platos en estado 'listo' para Barra (sin archivarlos como 'servido')
+  const marcarTodaComandaLista = async (comandaId: string) => {
+    const lockId = `all_${comandaId}`;
+    if (procesandoKey === lockId) return;
+    setProcesandoKey(lockId);
 
-    cargarComandas();
+    try {
+      const comandaActual = comandas.find((c) => String(c.id) === String(comandaId));
+      if (!comandaActual || !Array.isArray(comandaActual.items)) return;
+
+      const nuevosItems: ItemComanda[] = comandaActual.items.map((item) => ({
+        ...item,
+        listo: true,
+        estado_cocina: 'listo',
+        entregado: Boolean(item.entregado)
+      }));
+
+      setComandas((prev) =>
+        prev.map((c) =>
+          String(c.id) === String(comandaId)
+            ? { ...c, items: nuevosItems, estado: 'listo' }
+            : c
+        )
+      );
+
+      const { error } = await supabase
+        .from('comandas_cocina')
+        .update({
+          items: nuevosItems,
+          estado: 'listo'
+        })
+        .eq('id', comandaId);
+
+      if (error) {
+        console.error('Error al marcar toda la comanda como lista:', error);
+      }
+
+      await cargarComandas();
+    } finally {
+      setProcesandoKey(null);
+    }
   };
 
   const volverAWebPrincipal = () => {
@@ -152,13 +220,13 @@ export default function KitchenDisplay() {
           </div>
           <div>
             <h1 className="text-xl font-black tracking-wide text-white">NEXUS KDS · PANTALLA DE COCINA</h1>
-            <p className="text-xs text-slate-400">Chinales 45 · Selección individual por plato</p>
+            <p className="text-xs text-slate-400">Chinales 45 · Selección individual por plato hacia Barra</p>
           </div>
         </div>
 
         <div className="flex items-center gap-4">
           <span className="text-xs font-mono text-amber-400 bg-amber-950/40 px-3.5 py-1.5 rounded-xl border border-amber-500/20 hidden sm:inline">
-            {comandas.filter((c) => c.estado !== 'listo').length} Comandas en preparación
+            {comandas.filter((c) => c.estado === 'pendiente').length} Comanda(s) en fuego
           </span>
 
           <button
@@ -186,26 +254,35 @@ export default function KitchenDisplay() {
               const minutosTranscurridos = Math.floor(
                 (new Date().getTime() - new Date(comanda.created_at).getTime()) / 60000
               );
-              const esUrgente = minutosTranscurridos >= 12 && comanda.estado !== 'listo';
+              const todosPlatosListos =
+                Array.isArray(comanda.items) &&
+                comanda.items.length > 0 &&
+                comanda.items.every((it) => Boolean(it.listo || it.estado_cocina === 'listo'));
+              const esUrgente = minutosTranscurridos >= 12 && !todosPlatosListos;
 
               return (
                 <div
                   key={comanda.id}
                   className={`rounded-3xl border p-5 flex flex-col justify-between transition-all ${
-                    comanda.estado === 'listo'
-                      ? 'bg-emerald-950/40 border-emerald-500/60 shadow-[0_0_30px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/50'
+                    todosPlatosListos
+                      ? 'bg-emerald-950/30 border-emerald-500/60 shadow-[0_0_30px_rgba(16,185,129,0.12)] ring-1 ring-emerald-500/40'
                       : esUrgente
-                      ? 'bg-rose-950/30 border-rose-500/60 shadow-[0_0_25px_rgba(244,63,94,0.15)] animate-pulse'
+                      ? 'bg-rose-950/30 border-rose-500/60 shadow-[0_0_25px_rgba(244,63,94,0.15)]'
                       : 'bg-[#0c0e17] border-white/10'
                   }`}
                 >
                   <div className="space-y-4">
                     <div className="flex items-center justify-between pb-3 border-b border-white/10">
-                      <div>
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-black px-3 py-1 rounded-xl bg-amber-500 text-slate-950 uppercase shadow-md">
                           {comanda.mesa}
                         </span>
-                        <span className="text-xs text-slate-400 ml-2 font-mono">#{comanda.ticket_number}</span>
+                        <span className="text-xs text-slate-400 font-mono">#{comanda.ticket_number}</span>
+                        {todosPlatosListos && (
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            Listo en Barra
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5 text-xs font-mono text-slate-300">
                         <Clock className="h-3.5 w-3.5 text-amber-400" />
@@ -214,55 +291,85 @@ export default function KitchenDisplay() {
                     </div>
 
                     <p className="text-[11px] text-cyan-400 font-medium">
-                      💡 Haz clic en cada plato al terminarlo para desbloquear su entrega en Barra:
+                      💡 Pulsa sobre cada plato para marcarlo como <strong>Listo para servir</strong> en Barra:
                     </p>
 
                     <div className="space-y-2.5">
-                      {comanda.items.map((it, idx) => (
-                        <div
-                          key={idx}
-                          onClick={() => marcarPlatoListo(comanda.id, idx)}
-                          className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
-                            it.listo
-                              ? 'bg-emerald-950/60 border-emerald-500/80 text-emerald-300 line-through'
-                              : 'bg-black/50 border-white/15 hover:border-cyan-400 text-white shadow-md'
-                          }`}
-                        >
-                          <div className="space-y-0.5">
-                            <span className="font-bold text-sm">
-                              <span className="text-amber-400 font-mono mr-2">{it.cantidad}x</span>
-                              {it.nombre}
-                            </span>
-                            {it.comentarios && (
-                              <p className="text-xs text-rose-300 italic flex items-center gap-1">
-                                <Flame className="h-3 w-3 shrink-0" /> {it.comentarios}
-                              </p>
-                            )}
+                      {(comanda.items || []).map((it, idx) => {
+                        const platoUid = `${comanda.id}_item_${it.id ?? it.producto_id ?? idx}_${idx}`;
+                        const estaListo = Boolean(it.listo || it.estado_cocina === 'listo');
+                        const estaEntregado = Boolean(it.entregado || it.estado_cocina === 'servido');
+
+                        if (estaEntregado) return null;
+
+                        return (
+                          <div
+                            key={platoUid}
+                            onClick={() => marcarPlatoListo(comanda.id, idx, platoUid)}
+                            className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                              estaListo
+                                ? 'bg-emerald-950/60 border-emerald-500/80 text-emerald-200'
+                                : 'bg-black/50 border-white/15 hover:border-amber-400 text-white shadow-md'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2.5 min-w-0">
+                              <div className="mt-0.5 shrink-0">
+                                {estaListo ? (
+                                  <CheckSquare className="h-5 w-5 text-emerald-400" />
+                                ) : (
+                                  <Square className="h-5 w-5 text-amber-400" />
+                                )}
+                              </div>
+                              <div className="space-y-0.5 min-w-0">
+                                <span className={`font-bold text-sm block break-words ${estaListo ? 'text-emerald-300' : 'text-white'}`}>
+                                  <span className="text-amber-400 font-mono mr-2">{it.cantidad}x</span>
+                                  {it.nombre}
+                                </span>
+                                {it.comentarios && (
+                                  <p className="text-xs text-rose-300 italic flex items-center gap-1">
+                                    <Flame className="h-3 w-3 shrink-0" /> {it.comentarios}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              disabled={procesandoKey === platoUid}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                marcarPlatoListo(comanda.id, idx, platoUid);
+                              }}
+                              className={`shrink-0 text-xs font-black px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer ${
+                                estaListo
+                                  ? 'bg-emerald-500 text-slate-950 shadow-md hover:bg-emerald-400'
+                                  : 'bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/40'
+                              }`}
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              <span>{estaListo ? 'Listo para servir' : 'Marcar Listo'}</span>
+                            </button>
                           </div>
-                          <div className="shrink-0">
-                            {it.listo ? (
-                              <span className="text-xs bg-emerald-500 text-slate-950 font-black px-3 py-1.5 rounded-xl flex items-center gap-1 shadow">
-                                <CheckCircle2 className="h-4 w-4" /> Listo
-                              </span>
-                            ) : (
-                              <span className="text-xs bg-white/10 hover:bg-cyan-500 hover:text-slate-950 text-slate-200 px-3 py-1.5 rounded-xl border border-white/20 font-bold transition-colors">
-                                Marcar Listo
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
                   <div className="mt-6 pt-3 border-t border-white/10">
                     <button
                       type="button"
-                      onClick={() => archivarComanda(comanda.id)}
-                      className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                      disabled={todosPlatosListos || procesandoKey === `all_${comanda.id}`}
+                      onClick={() => marcarTodaComandaLista(comanda.id)}
+                      className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg transition-all ${
+                        todosPlatosListos
+                          ? 'bg-emerald-950/50 border border-emerald-500/40 text-emerald-300 cursor-default'
+                          : 'bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer'
+                      }`}
                     >
                       <CheckCircle2 className="h-4 w-4" />
-                      Archivar / Todo Entregado en Mesa
+                      {todosPlatosListos
+                        ? 'Todo Listo · Esperando entrega en Barra'
+                        : 'Marcar Todo Listo para Servir'}
                     </button>
                   </div>
                 </div>
