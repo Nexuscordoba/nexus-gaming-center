@@ -28,6 +28,21 @@ export interface ConfiguracionFiscal {
  * Convierte una cantidad desde la unidad usada en el escandallo a la unidad base del artículo ingrediente
  * Ejemplo: Si el café en grano se compra en 'kg' (coste 18€/kg) y la receta lleva 8 'g', el factor es 0.008
  */
+export async function calcularHashVeriFactu(
+  numeroTicket: string,
+  fechaExpedicion: string,
+  total: number | string,
+  hashAnterior: string
+): Promise<string> {
+  const totalStr = typeof total === 'number' ? total.toFixed(2) : String(total);
+  const cadena = `${numeroTicket}${fechaExpedicion}${totalStr}${hashAnterior}`;
+  const encoder = new TextEncoder();
+  const data = encoder.encode(cadena);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function obtenerFactorConversion(unidadBase: UnidadMedida, unidadUso: UnidadMedida): number {
   if (unidadBase === unidadUso) return 1;
   // Peso

@@ -22,6 +22,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { supabase } from './supabase';
+import { calcularHashVeriFactu } from './fiscalService';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
@@ -129,6 +130,19 @@ export default function App() {
             const descuentoTotalImporte = Number(pedido?.totales?.descuentoTotalImporte ?? 0);
             const metodo = pedido?.metodo === 'tarjeta' ? 'tarjeta' : 'efectivo';
 
+            let hash_anterior = '';
+            try {
+              const { data: ultimoTicket } = await supabase
+                .from('facturas_tickets')
+                .select('hash_actual')
+                .order('id', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              hash_anterior = ultimoTicket?.hash_actual || '';
+            } catch (errHashPrev) {
+              console.error('Error obteniendo hash_anterior VeriFactu:', errHashPrev);
+            }
+
             const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
               p_serie: 'T',
               p_tipo_documento: 'SIMPLIFICADA',
@@ -147,6 +161,23 @@ export default function App() {
             });
 
             if (rpcError) throw rpcError;
+
+            try {
+              const numeroTicket = String(docEmitido?.numero_completo || `T-${docEmitido?.id || Date.now()}`);
+              const fechaExp = String(docEmitido?.fecha_expedicion || pedido.fecha || new Date().toISOString());
+              const hash_actual = await calcularHashVeriFactu(numeroTicket, fechaExp, totalFinal, hash_anterior);
+              if (docEmitido?.id) {
+                const { error: vfErr } = await supabase
+                  .from('facturas_tickets')
+                  .update({ tipo_factura: 'F2', hash_anterior, hash_actual })
+                  .eq('id', docEmitido.id);
+                if (vfErr) {
+                  await supabase.from('facturas_tickets').update({ hash_anterior, hash_actual }).eq('id', docEmitido.id);
+                }
+              }
+            } catch (vfErr) {
+              console.error('Error VeriFactu al sincronizar pedido offline:', vfErr);
+            }
 
             if (pedido.mesa) {
               await supabase

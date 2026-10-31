@@ -4,6 +4,7 @@ import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
 import {
   obtenerConfiguracionFiscal,
+  calcularHashVeriFactu,
   imprimirDocumentoFiscalHTML,
   type ConfiguracionFiscal,
   type LineaTicketFiscal
@@ -613,6 +614,22 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       if (!navigator.onLine) {
         throw new Error('Sin conexión a internet (offline)');
       }
+
+      // Paso 2 (VeriFactu): Obtener el hash_actual del último ticket emitido (SELECT hash_actual FROM facturas_tickets ORDER BY id DESC LIMIT 1)
+      let hash_anterior = '';
+      try {
+        const { data: ultimoTicket } = await supabase
+          .from('facturas_tickets')
+          .select('hash_actual')
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        hash_anterior = ultimoTicket?.hash_actual || '';
+      } catch (errPrevHash) {
+        console.error('Error al obtener hash_anterior en VeriFactu:', errPrevHash);
+        hash_anterior = '';
+      }
+
       const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'T', p_tipo_documento: 'SIMPLIFICADA', p_mesa: modalCobroParcial.mesaNombre, p_vendedor: camareroActivo.nombre,
         p_metodo_pago: metodo, p_importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0, p_importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
@@ -671,6 +688,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0);
       const nuevaTarjeta = Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? desglose.totalFinal : 0);
       await supabase.from('caja_diaria').update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta }).eq('id', cajaHoy.id);
+
+      // Paso 3 y Paso 4 (VeriFactu): Calcular SHA-256 y guardar tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
+      await encadenarTicketVeriFactu({
+        docEmitido,
+        hash_anterior,
+        mesa: modalCobroParcial.mesaNombre,
+        vendedor: camareroActivo.nombre,
+        metodo,
+        desglose,
+        ivaDefecto: cfg.iva_defecto || 10,
+        autorizadoPor: autorizadorDescuentoMesa[modalCobroParcial.mesaNombre] || null
+      });
 
       const { data: facturaCompleta } = await supabase.from('facturas_tickets').select('*').eq('id', docEmitido.id).single();
       if (facturaCompleta) { imprimirDocumentoFiscalHTML(facturaCompleta, cfg); }
@@ -1004,6 +1033,90 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
+  // Función auxiliar VeriFactu: calcula el hash SHA-256 (NumeroTicket + FechaExpedicion + Total + HashAnterior)
+  // y actualiza/inserta en facturas_tickets con tipo_factura: 'F2', hash_anterior y hash_actual dentro de try/catch
+  const encadenarTicketVeriFactu = async (params: {
+    docEmitido: any;
+    hash_anterior: string;
+    mesa: string;
+    vendedor: string;
+    metodo: 'efectivo' | 'tarjeta';
+    desglose: any;
+    ivaDefecto: number;
+    autorizadoPor: string | null;
+  }) => {
+    try {
+      const { docEmitido, hash_anterior, mesa, vendedor, metodo, desglose, ivaDefecto, autorizadoPor } = params;
+      const fechaExpedicion = String(docEmitido?.fecha_expedicion || new Date().toISOString());
+      const numeroTicket = String(
+        docEmitido?.numero_completo || `T-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`
+      );
+
+      // Paso 3: Calcular Hash Actual (SHA-256) nativo del navegador sobre NumeroTicket + FechaExpedicion + Total + HashAnterior
+      const hash_actual = await calcularHashVeriFactu(
+        numeroTicket,
+        fechaExpedicion,
+        desglose.totalFinal,
+        hash_anterior
+      );
+
+      // Paso 4: Guardar tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
+      if (docEmitido?.id) {
+        const { error: updateErr } = await supabase
+          .from('facturas_tickets')
+          .update({
+            tipo_factura: 'F2',
+            hash_anterior,
+            hash_actual
+          })
+          .eq('id', docEmitido.id);
+
+        if (updateErr) {
+          console.error('Aviso VeriFactu (update tipo_factura/hash):', updateErr);
+          await supabase
+            .from('facturas_tickets')
+            .update({
+              hash_anterior,
+              hash_actual
+            })
+            .eq('id', docEmitido.id);
+        }
+      } else {
+        const baseImponible = Number((desglose.totalFinal / (1 + ivaDefecto / 100)).toFixed(2));
+        const cuotaIva = Number((desglose.totalFinal - baseImponible).toFixed(2));
+
+        await supabase.from('facturas_tickets').insert([
+          {
+            serie: 'T',
+            tipo_documento: 'SIMPLIFICADA',
+            tipo_factura: 'F2',
+            numero_completo: numeroTicket,
+            fecha_expedicion: fechaExpedicion,
+            mesa,
+            vendedor_nombre: vendedor,
+            metodo_pago: metodo,
+            importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
+            importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
+            subtotal_bruto: desglose.subtotalBruto,
+            descuento_general_porcentaje: desglose.dtoGeneralPorc,
+            descuento_total_importe: desglose.descuentoTotalImporte,
+            autorizado_por: autorizadoPor,
+            base_imponible: baseImponible,
+            cuota_iva: cuotaIva,
+            tipo_iva_aplicado: ivaDefecto,
+            total_final: desglose.totalFinal,
+            lineas: desglose.lineasCalculadas,
+            estado_fiscal: 'EMITIDO',
+            hash_anterior,
+            hash_actual
+          }
+        ]);
+      }
+    } catch (verifactuErr) {
+      console.error('Error en cálculo/inserción VeriFactu (no bloqueante):', verifactuErr);
+    }
+  };
+
   const cobrarMesaLegal = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
     if (cajaAtrasada) {
       mostrarAlerta('¡ATENCIÓN! Cierra primero la caja del día anterior antes de cobrar.', 'aviso');
@@ -1026,6 +1139,22 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       if (!navigator.onLine) {
         throw new Error('Sin conexión a internet (offline)');
       }
+
+      // Paso 2 (VeriFactu): Obtener el hash_actual del último ticket emitido (SELECT hash_actual FROM facturas_tickets ORDER BY id DESC LIMIT 1)
+      let hash_anterior = '';
+      try {
+        const { data: ultimoTicket } = await supabase
+          .from('facturas_tickets')
+          .select('hash_actual')
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        hash_anterior = ultimoTicket?.hash_actual || '';
+      } catch (errPrevHash) {
+        console.error('Error al obtener hash_anterior en VeriFactu:', errPrevHash);
+        hash_anterior = '';
+      }
+
       const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'T',
         p_tipo_documento: 'SIMPLIFICADA',
@@ -1069,6 +1198,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           total_tarjeta: nuevaTarjeta
         })
         .eq('id', cajaHoy.id);
+
+      // Paso 3 y Paso 4 (VeriFactu): Calcular SHA-256 y guardar tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
+      await encadenarTicketVeriFactu({
+        docEmitido,
+        hash_anterior,
+        mesa: mesaNombre,
+        vendedor: camareroActivo.nombre,
+        metodo,
+        desglose,
+        ivaDefecto: cfg.iva_defecto || 10,
+        autorizadoPor: autorizadorDescuentoMesa[mesaNombre] || null
+      });
 
       const { data: facturaCompleta } = await supabase
         .from('facturas_tickets')
