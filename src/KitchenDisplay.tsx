@@ -8,6 +8,8 @@ interface ItemComanda {
   comentarios?: string;
   es_menu?: boolean;
   listo?: boolean;
+  destino?: string;
+  categoria?: string;
 }
 
 interface Comanda {
@@ -16,7 +18,7 @@ interface Comanda {
   mesa: string;
   created_at: string;
   items: ItemComanda[];
-  estado: 'pendiente' | 'listo' | 'servido';
+  estado: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
   tipo_destino: string;
 }
 
@@ -24,16 +26,43 @@ export default function KitchenDisplay() {
   const [comandas, setComandas] = useState<Comanda[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const esItemCocina = (it: ItemComanda, tipoDestinoComanda?: string): boolean => {
+    const destItem = String(it.destino || tipoDestinoComanda || '').trim().toLowerCase();
+    const catItem = String(it.categoria || '').trim().toLowerCase();
+    if (destItem === 'cocina') return true;
+    if (
+      !it.destino &&
+      (catItem.includes('cocina') ||
+        catItem.includes('tapa') ||
+        catItem.includes('comida') ||
+        catItem.includes('bocadillo') ||
+        catItem.includes('hamburguesa') ||
+        catItem.includes('racion') ||
+        catItem.includes('ración') ||
+        catItem.includes('plato'))
+    ) {
+      return true;
+    }
+    return false;
+  };
+
   const cargarComandas = async () => {
     const { data } = await supabase
       .from('comandas_cocina')
       .select('*')
-      .eq('tipo_destino', 'cocina')
-      .in('estado', ['pendiente', 'listo'])
+      .neq('tipo_destino', 'cuenta')
+      .in('estado', ['pendiente', 'en_preparacion', 'listo'])
       .order('created_at', { ascending: true });
 
     if (data) {
-      setComandas(data as Comanda[]);
+      const filtradasCocina = (data as Comanda[]).filter((c) => {
+        if (String(c.tipo_destino || '').trim().toLowerCase() === 'cocina') return true;
+        if (Array.isArray(c.items) && c.items.some((it) => esItemCocina(it, c.tipo_destino))) {
+          return true;
+        }
+        return false;
+      });
+      setComandas(filtradasCocina);
     }
     setLoading(false);
   };
@@ -64,18 +93,16 @@ export default function KitchenDisplay() {
 
   // Marcar un plato individual como listo y generar el aviso en barra
   const marcarPlatoListo = async (comandaId: string, indexItem: number) => {
-    const comandaActual = comandas.find(c => c.id === comandaId);
+    const comandaActual = comandas.find((c) => c.id === comandaId);
     if (!comandaActual) return;
 
     const nuevosItems = [...comandaActual.items];
     const elPlato = nuevosItems[indexItem];
-    
+
     // Alternar estado individual del plato
     elPlato.listo = !elPlato.listo;
 
-    const todosListos = nuevosItems.every(it => it.listo);
-    
-    // AQUÍ ESTÁ EL CAMBIO: Si todos están listos, pasa a 'servido' para que desaparezca automáticamente
+    const todosListos = nuevosItems.every((it) => it.listo);
     const nuevoEstadoComanda = todosListos ? 'servido' : 'pendiente';
 
     // 1. Actualizar comanda en cocina
@@ -86,17 +113,23 @@ export default function KitchenDisplay() {
 
     // 2. Si se ha marcado como listo, crear el aviso explícito en la pantalla de Barra
     if (elPlato.listo) {
-      await supabase.from('comandas_cocina').insert([{
-        ticket_number: comandaActual.ticket_number,
-        mesa: comandaActual.mesa,
-        tipo_destino: 'barra',
-        estado: 'pendiente',
-        items: [{ 
-          nombre: `🍲 LISTO PARA RECOGER: ${elPlato.nombre}`, 
-          cantidad: elPlato.cantidad, 
-          comentarios: 'Plato caliente terminado en cocina' 
-        }]
-      }]);
+      await supabase.from('comandas_cocina').insert([
+        {
+          ticket_number: comandaActual.ticket_number,
+          mesa: comandaActual.mesa,
+          tipo_destino: 'barra',
+          estado: 'pendiente',
+          pagado: false,
+          items: [
+            {
+              nombre: `🍲 LISTO PARA RECOGER: ${elPlato.nombre}`,
+              cantidad: elPlato.cantidad,
+              destino: 'barra',
+              comentarios: 'Plato caliente terminado en cocina'
+            }
+          ]
+        }
+      ]);
     }
 
     cargarComandas();
@@ -134,7 +167,7 @@ export default function KitchenDisplay() {
 
         <div className="flex items-center gap-4">
           <span className="text-xs font-mono text-amber-400 bg-amber-950/40 px-3.5 py-1.5 rounded-xl border border-amber-500/20 hidden sm:inline">
-            {comandas.filter(c => c.estado === 'pendiente').length} Comandas pendientes
+            {comandas.filter((c) => c.estado === 'pendiente').length} Comandas pendientes
           </span>
 
           <button

@@ -234,7 +234,26 @@ export default function TableOrder() {
   const enviarPedido = async () => {
     if (carritoActual.length === 0) return;
     
-    const itemsCocina = carritoActual.filter(i => i.destino === 'cocina');
+    const esDestinoCocina = (item: Producto) => {
+      const dest = String(item.destino || '').trim().toLowerCase();
+      const cat = String(item.categoria || '').trim().toLowerCase();
+      if (dest === 'cocina') return true;
+      if (
+        !dest &&
+        (cat.includes('cocina') ||
+          cat.includes('tapa') ||
+          cat.includes('comida') ||
+          cat.includes('bocadillo') ||
+          cat.includes('hamburguesa') ||
+          cat.includes('racion') ||
+          cat.includes('ración') ||
+          cat.includes('plato'))
+      ) {
+        return true;
+      }
+      return false;
+    };
+    const itemsCocina = carritoActual.filter(i => esDestinoCocina(i));
     if (itemsCocina.length > 0 && !cocinaAbierta) {
       alert("Lo sentimos, la cocina acaba de cerrar. Por favor, retira los platos de comida de tu pedido para poder enviar las bebidas.");
       return;
@@ -244,7 +263,7 @@ export default function TableOrder() {
     setMensaje(null);
 
     try {
-      const itemsBarra = carritoActual.filter(i => i.destino === 'barra');
+      const itemsBarra = carritoActual.filter(i => !esDestinoCocina(i));
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
 
       const promesas = [];
@@ -262,6 +281,8 @@ export default function TableOrder() {
               precio: Number(i.precio), 
               cantidad: i.cantidad, 
               variante: '', 
+              categoria: i.categoria || 'Cocina',
+              destino: 'cocina',
               comentarios: 'Pedido desde QR mesa', 
               es_menu: (i.categoria || '').toLowerCase().includes('menu') 
             }))
@@ -282,6 +303,8 @@ export default function TableOrder() {
               precio: Number(i.precio), 
               cantidad: i.cantidad, 
               variante: '', 
+              categoria: i.categoria || 'General',
+              destino: esDestinoCocina(i) ? 'cocina' : 'barra',
               comentarios: 'Pedido desde QR mesa' 
             }))
           }])

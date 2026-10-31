@@ -404,14 +404,24 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (data) {
       const { data: maestroIva } = await supabase
         .from('articulos_cafeteria')
-        .select('id, nombre, porcentaje_iva, tipo_iva');
+        .select('id, nombre, porcentaje_iva, tipo_iva, destino, categoria');
       const mapaIvaPorId = new Map<string, number>();
       const mapaIvaPorNombre = new Map<string, number>();
+      const mapaDestinoPorId = new Map<string, 'cocina' | 'barra'>();
+      const mapaDestinoPorNombre = new Map<string, 'cocina' | 'barra'>();
       if (maestroIva) {
         maestroIva.forEach((m: any) => {
           const ivaVal = Number(m.porcentaje_iva ?? m.tipo_iva ?? 10) === 21 ? 21 : 10;
-          if (m.id) mapaIvaPorId.set(String(m.id), ivaVal);
-          if (m.nombre) mapaIvaPorNombre.set(String(m.nombre).trim().toLowerCase(), ivaVal);
+          const destM = String(m.destino || '').trim().toLowerCase() === 'cocina' ? 'cocina' : 'barra';
+          if (m.id) {
+            mapaIvaPorId.set(String(m.id), ivaVal);
+            mapaDestinoPorId.set(String(m.id), destM);
+          }
+          if (m.nombre) {
+            const keyNom = String(m.nombre).trim().toLowerCase();
+            mapaIvaPorNombre.set(keyNom, ivaVal);
+            mapaDestinoPorNombre.set(keyNom, destM);
+          }
         });
       }
       const enriquecidos = (data as Producto[]).map((p) => {
@@ -420,8 +430,29 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           (p.articulo_inventario_id && mapaIvaPorId.get(String(p.articulo_inventario_id))) ||
           mapaIvaPorNombre.get(String(p.nombre || '').trim().toLowerCase());
         const ivaFinal = Number(ivaDirecto ?? ivaMaestro ?? 10) === 21 ? 21 : 10;
+
+        const destDirecto = String(p.destino || '').trim().toLowerCase();
+        const destMaestro =
+          (p.articulo_inventario_id && mapaDestinoPorId.get(String(p.articulo_inventario_id))) ||
+          mapaDestinoPorNombre.get(String(p.nombre || '').trim().toLowerCase());
+        const catLower = String(p.categoria || '').trim().toLowerCase();
+        const esCatCocina =
+          catLower.includes('cocina') ||
+          catLower.includes('tapa') ||
+          catLower.includes('comida') ||
+          catLower.includes('bocadillo') ||
+          catLower.includes('hamburguesa') ||
+          catLower.includes('racion') ||
+          catLower.includes('ración') ||
+          catLower.includes('plato');
+        const destinoFinal: 'cocina' | 'barra' =
+          destDirecto === 'cocina' || destMaestro === 'cocina' || (!destDirecto && esCatCocina)
+            ? 'cocina'
+            : 'barra';
+
         return {
           ...p,
+          destino: destinoFinal,
           porcentaje_iva: ivaFinal,
           tipo_iva: ivaFinal
         };
@@ -1021,8 +1052,27 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     setEnviando(true);
 
     try {
-      const itemsCocina = carritoActual.filter((i) => i.destino === 'cocina');
-      const itemsBarra = carritoActual.filter((i) => i.destino === 'barra');
+      const esDestinoCocina = (item: Producto) => {
+        const dest = String(item.destino || '').trim().toLowerCase();
+        const cat = String(item.categoria || '').trim().toLowerCase();
+        if (dest === 'cocina') return true;
+        if (
+          !dest &&
+          (cat.includes('cocina') ||
+            cat.includes('tapa') ||
+            cat.includes('comida') ||
+            cat.includes('bocadillo') ||
+            cat.includes('hamburguesa') ||
+            cat.includes('racion') ||
+            cat.includes('ración') ||
+            cat.includes('plato'))
+        ) {
+          return true;
+        }
+        return false;
+      };
+      const itemsCocina = carritoActual.filter((i) => esDestinoCocina(i));
+      const itemsBarra = carritoActual.filter((i) => !esDestinoCocina(i));
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
       const mesaDestinoFormat = getNombreMesa(mesaSeleccionada);
 
@@ -1035,6 +1085,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               ticket_number: ticketNum,
               mesa: mesaDestinoFormat,
               tipo_destino: 'cocina',
+              estado: 'pendiente',
+              pagado: false,
               camarero_nombre: camareroActivo.nombre,
               items: itemsCocina.map((i) => ({
                 producto_id: i.id,
@@ -1044,6 +1096,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 cantidad: i.cantidad,
                 porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
                 tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                categoria: i.categoria || 'General',
+                destino: esDestinoCocina(i) ? 'cocina' : 'barra',
                 comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
                 es_menu: (i.categoria || '').toLowerCase().includes('menu')
               }))
@@ -1059,6 +1113,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               ticket_number: ticketNum,
               mesa: mesaDestinoFormat,
               tipo_destino: 'barra',
+              estado: 'pendiente',
+              pagado: false,
               camarero_nombre: camareroActivo.nombre,
               items: itemsBarra.map((i) => ({
                 producto_id: i.id,
@@ -1068,6 +1124,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 cantidad: i.cantidad,
                 porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
                 tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                categoria: i.categoria || 'General',
+                destino: esDestinoCocina(i) ? 'cocina' : 'barra',
                 comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
               }))
             }
