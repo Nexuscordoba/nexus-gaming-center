@@ -19,10 +19,11 @@ import {
   CalendarDays,
   QrCode,
   Utensils,
-  CheckCircle2
+  CheckCircle2,
+  WifiOff
 } from 'lucide-react';
 import { supabase } from './supabase';
-import { calcularHashVeriFactu, calcularDesgloseImpuestosLineas, redondearMoneda } from './fiscalService';
+import { calcularHashVeriFactu, calcularDesgloseImpuestosLineas, obtenerFactorConversion, redondearMoneda, type UnidadMedida } from './fiscalService';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
@@ -45,27 +46,74 @@ export default function App() {
   // Estado para controlar el submenú de Cafetería en el Dock
   const [showCafeteriaMenu, setShowCafeteriaMenu] = useState(false);
   const [toastOfflineSync, setToastOfflineSync] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [colaOfflinePendientes, setColaOfflinePendientes] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('pedidos_offline');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      return 0;
+    }
+  });
 
   useEffect(() => {
     let sincronizando = false;
     let toastTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
+    const actualizarContadorCola = () => {
+      try {
+        const raw = localStorage.getItem('pedidos_offline');
+        const parsed = raw ? JSON.parse(raw) : [];
+        setColaOfflinePendientes(Array.isArray(parsed) ? parsed.length : 0);
+      } catch {
+        setColaOfflinePendientes(0);
+      }
+    };
+
     const descontarStockPedidoOffline = async (itemsPedido: any[]) => {
       try {
         const itemsValidos = (itemsPedido || []).filter(
-          (item) => item && !String(item.nombre || '').includes('├─') && Number(item.cantidad) > 0
+          (item) =>
+            item &&
+            !String(item.nombre || '').includes('├─') &&
+            Number(item.cantidad) > 0 &&
+            !item.stock_descontado
         );
 
-        // Procesar secuencialmente para evitar condiciones de carrera si dos líneas comparten artículo
+        // Procesar secuencialmente para evitar condiciones de carrera si dos líneas comparten artículo o ingrediente
         for (const item of itemsValidos) {
-          const prodId = item.producto_id || item.id;
-          let productoDB: { id: number; stock_actual: number | null; articulo_inventario_id?: string | null } | null = null;
+          const cantidadVendida = Number(item.cantidad || 0);
+          if (cantidadVendida <= 0) continue;
 
-          if (prodId) {
+          const prodId = item.producto_id || item.id;
+          const artIdItem = item.articulo_inventario_id || item.articulo_id;
+          let productoDB: {
+            id: number;
+            nombre?: string;
+            stock_actual: number | null;
+            controla_stock?: boolean | null;
+            es_compuesto?: boolean | null;
+            escandallo_json?: any[] | null;
+            articulo_inventario_id?: string | null;
+          } | null = null;
+
+          if (prodId && typeof prodId === 'number') {
             const { data } = await supabase
               .from('productos_carta')
-              .select('id, stock_actual, articulo_inventario_id')
+              .select('id, nombre, stock_actual, controla_stock, es_compuesto, escandallo_json, articulo_inventario_id')
               .eq('id', prodId)
+              .maybeSingle();
+            productoDB = data;
+          }
+
+          if (!productoDB && artIdItem) {
+            const { data } = await supabase
+              .from('productos_carta')
+              .select('id, nombre, stock_actual, controla_stock, es_compuesto, escandallo_json, articulo_inventario_id')
+              .eq('articulo_inventario_id', artIdItem)
               .maybeSingle();
             productoDB = data;
           }
@@ -73,26 +121,123 @@ export default function App() {
           if (!productoDB && item.nombre) {
             const { data } = await supabase
               .from('productos_carta')
-              .select('id, stock_actual, articulo_inventario_id')
+              .select('id, nombre, stock_actual, controla_stock, es_compuesto, escandallo_json, articulo_inventario_id')
               .eq('nombre', String(item.nombre).trim())
               .maybeSingle();
             productoDB = data;
           }
 
-          if (!productoDB) continue;
+          let artInvId: string | null = artIdItem || productoDB?.articulo_inventario_id || null;
+          let articuloMaestroDB: {
+            id: string;
+            nombre: string;
+            stock_actual: number | null;
+            controla_stock?: boolean | null;
+            es_compuesto?: boolean | null;
+            unidad_medida?: string | null;
+            coste_unitario?: number | null;
+          } | null = null;
 
-          const nuevoStock = Number((Number(productoDB.stock_actual ?? 0) - Number(item.cantidad)).toFixed(4));
-          await supabase
-            .from('productos_carta')
-            .update({ stock_actual: nuevoStock })
-            .eq('id', productoDB.id);
-
-          const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
           if (artInvId) {
+            const { data } = await supabase
+              .from('articulos_cafeteria')
+              .select('id, nombre, stock_actual, controla_stock, es_compuesto, unidad_medida, coste_unitario')
+              .eq('id', artInvId)
+              .maybeSingle();
+            articuloMaestroDB = data;
+          }
+
+          if (!articuloMaestroDB && item.nombre) {
+            const { data } = await supabase
+              .from('articulos_cafeteria')
+              .select('id, nombre, stock_actual, controla_stock, es_compuesto, unidad_medida, coste_unitario')
+              .eq('nombre', String(item.nombre).trim())
+              .maybeSingle();
+            articuloMaestroDB = data;
+            if (articuloMaestroDB && !artInvId) {
+              artInvId = articuloMaestroDB.id;
+            }
+          }
+
+          // 1. Descontar el stock del artículo directo en productos_carta y articulos_cafeteria
+          if (productoDB) {
+            const stockBaseCarta = Number(productoDB.stock_actual ?? articuloMaestroDB?.stock_actual ?? 0);
+            const nuevoStockCarta = Number((stockBaseCarta - cantidadVendida).toFixed(4));
+            await supabase
+              .from('productos_carta')
+              .update({ stock_actual: nuevoStockCarta })
+              .eq('id', productoDB.id);
+
+            if (artInvId) {
+              const stockBaseMaestro = Number(articuloMaestroDB?.stock_actual ?? productoDB.stock_actual ?? 0);
+              const nuevoStockMaestro = Number((stockBaseMaestro - cantidadVendida).toFixed(4));
+              await supabase
+                .from('articulos_cafeteria')
+                .update({ stock_actual: nuevoStockMaestro })
+                .eq('id', artInvId);
+            }
+          } else if (articuloMaestroDB) {
+            const nuevoStockMaestro = Number((Number(articuloMaestroDB.stock_actual ?? 0) - cantidadVendida).toFixed(4));
             await supabase
               .from('articulos_cafeteria')
-              .update({ stock_actual: nuevoStock })
-              .eq('id', artInvId);
+              .update({ stock_actual: nuevoStockMaestro })
+              .eq('id', articuloMaestroDB.id);
+          }
+
+          // 2. Descontar el stock de los ingredientes asociados (escandallos / recetas) si existen
+          let lineasEscandallo: Array<{
+            ingrediente_id: string;
+            cantidad: number;
+            unidad_uso?: string;
+            merma_porcentaje?: number;
+          }> = [];
+
+          if (artInvId) {
+            const { data: escData } = await supabase
+              .from('escandallos_cafeteria')
+              .select('ingrediente_id, cantidad, unidad_uso, merma_porcentaje')
+              .eq('articulo_padre_id', artInvId);
+            if (escData && escData.length > 0) {
+              lineasEscandallo = escData;
+            }
+          }
+
+          if (lineasEscandallo.length === 0 && Array.isArray(productoDB?.escandallo_json) && productoDB.escandallo_json.length > 0) {
+            lineasEscandallo = productoDB.escandallo_json;
+          }
+
+          for (const lineaIng of lineasEscandallo) {
+            if (!lineaIng?.ingrediente_id) continue;
+
+            const { data: ingDB } = await supabase
+              .from('articulos_cafeteria')
+              .select('id, nombre, stock_actual, unidad_medida, controla_stock, coste_unitario')
+              .eq('id', lineaIng.ingrediente_id)
+              .maybeSingle();
+
+            if (!ingDB || ingDB.controla_stock === false) continue;
+
+            const unidadBase = (ingDB.unidad_medida || 'ud') as UnidadMedida;
+            const unidadUso = (lineaIng.unidad_uso || unidadBase) as UnidadMedida;
+            const factorConversion = obtenerFactorConversion(unidadBase, unidadUso);
+            const factorMerma = 1 + Number(lineaIng.merma_porcentaje || 0) / 100;
+            const consumoTotalIngrediente = Number(
+              (cantidadVendida * Number(lineaIng.cantidad || 0) * factorConversion * factorMerma).toFixed(4)
+            );
+
+            if (consumoTotalIngrediente <= 0) continue;
+
+            const nuevoStockIng = Number((Number(ingDB.stock_actual ?? 0) - consumoTotalIngrediente).toFixed(4));
+
+            await supabase
+              .from('articulos_cafeteria')
+              .update({ stock_actual: nuevoStockIng })
+              .eq('id', ingDB.id);
+
+            await supabase
+              .from('productos_carta')
+              .update({ stock_actual: nuevoStockIng })
+              .eq('articulo_inventario_id', ingDB.id);
           }
         }
       } catch (stockErr) {
@@ -104,7 +249,10 @@ export default function App() {
       if (sincronizando || !navigator.onLine) return;
 
       const raw = localStorage.getItem('pedidos_offline');
-      if (!raw) return;
+      if (!raw) {
+        setColaOfflinePendientes(0);
+        return;
+      }
 
       let cola: any[] = [];
       try {
@@ -115,7 +263,10 @@ export default function App() {
         return;
       }
 
-      if (cola.length === 0) return;
+      if (cola.length === 0) {
+        setColaOfflinePendientes(0);
+        return;
+      }
 
       sincronizando = true;
       const pendientesRestantes = [...cola];
@@ -124,75 +275,103 @@ export default function App() {
       try {
         for (const pedido of cola) {
           try {
-            const totalFinal = redondearMoneda(Number(pedido?.totales?.totalFinal ?? 0));
-            const subtotalBruto = redondearMoneda(Number(pedido?.totales?.subtotalBruto ?? totalFinal));
-            const dtoGeneralPorc = Number(pedido?.totales?.dtoGeneralPorc ?? 0);
-            const descuentoTotalImporte = redondearMoneda(Number(pedido?.totales?.descuentoTotalImporte ?? 0));
-            const metodo = pedido?.metodo === 'tarjeta' ? 'tarjeta' : 'efectivo';
+            if (pedido.tipo_operacion === 'comanda') {
+              // Sincronización de comanda enviada a Cocina/Barra (enviarPedido / enviarPedidoCamarero)
+              const comandasInserts = Array.isArray(pedido.comandas_inserts) ? pedido.comandas_inserts : [];
+              if (comandasInserts.length > 0) {
+                for (const cmdPayload of comandasInserts) {
+                  const itemsMarcados = Array.isArray(cmdPayload.items)
+                    ? cmdPayload.items.map((it: any) => ({ ...it, stock_descontado: true }))
+                    : [];
+                  const { error: insertCmdErr } = await supabase
+                    .from('comandas_cocina')
+                    .insert([{ ...cmdPayload, items: itemsMarcados }]);
+                  if (insertCmdErr) throw insertCmdErr;
+                }
+              } else if (Array.isArray(pedido.items) && pedido.items.length > 0) {
+                const { error: insertCmdErr } = await supabase.from('comandas_cocina').insert([
+                  {
+                    ticket_number: pedido.ticket_number || Math.floor(1000 + Math.random() * 9000).toString(),
+                    mesa: pedido.mesa || 'BARRA',
+                    tipo_destino: pedido.destino || 'barra',
+                    estado: 'pendiente',
+                    pagado: false,
+                    camarero_nombre: pedido.vendedor || 'Camarero',
+                    items: pedido.items.map((it: any) => ({ ...it, stock_descontado: true }))
+                  }
+                ]);
+                if (insertCmdErr) throw insertCmdErr;
+              }
 
-            let hash_anterior = '';
-            try {
-              const { data: ultimoTicket } = await supabase
-                .from('facturas_tickets')
-                .select('hash_actual')
-                .order('id', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-              hash_anterior = ultimoTicket?.hash_actual || '';
-            } catch (errHashPrev) {
-              console.error('Error obteniendo hash_anterior VeriFactu:', errHashPrev);
-            }
+              if (pedido.descontar_stock !== false) {
+                await descontarStockPedidoOffline(pedido.items || []);
+              }
+            } else {
+              // Sincronización de comanda rápida / cobro de mesa / cobro parcial
+              if (Array.isArray(pedido.comandas_inserts) && pedido.comandas_inserts.length > 0) {
+                for (const cmdPayload of pedido.comandas_inserts) {
+                  await supabase.from('comandas_cocina').insert([cmdPayload]);
+                }
+              }
 
-            const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
-              p_serie: 'T',
-              p_tipo_documento: 'SIMPLIFICADA',
-              p_mesa: pedido.mesa || 'BARRA',
-              p_vendedor: pedido.vendedor || 'Camarero',
-              p_metodo_pago: metodo,
-              p_importe_efectivo: metodo === 'efectivo' ? totalFinal : 0,
-              p_importe_tarjeta: metodo === 'tarjeta' ? totalFinal : 0,
-              p_subtotal_bruto: subtotalBruto,
-              p_descuento_general_porc: dtoGeneralPorc,
-              p_descuento_total_imp: descuentoTotalImporte,
-              p_autorizado_por: pedido.autorizado_por || null,
-              p_tipo_iva: Number(pedido.tipo_iva ?? 10),
-              p_total_final: totalFinal,
-              p_lineas: pedido.lineas || []
-            });
+              const totalFinal = redondearMoneda(Number(pedido?.totales?.totalFinal ?? 0));
+              const subtotalBruto = redondearMoneda(Number(pedido?.totales?.subtotalBruto ?? totalFinal));
+              const dtoGeneralPorc = Number(pedido?.totales?.dtoGeneralPorc ?? 0);
+              const descuentoTotalImporte = redondearMoneda(Number(pedido?.totales?.descuentoTotalImporte ?? 0));
+              const metodo = pedido?.metodo === 'tarjeta' ? 'tarjeta' : 'efectivo';
 
-            if (rpcError) throw rpcError;
-
-            try {
-              const numeroTicket = String(docEmitido?.numero_completo || `T-${docEmitido?.id || Date.now()}`);
-              const fechaExp = String(docEmitido?.fecha_expedicion || pedido.fecha || new Date().toISOString());
-              const hash_actual = await calcularHashVeriFactu(numeroTicket, fechaExp, totalFinal, hash_anterior);
-              const desgloseOffline = calcularDesgloseImpuestosLineas(pedido.lineas || [], dtoGeneralPorc, totalFinal);
-              const base10 = redondearMoneda(Number(pedido?.totales?.base_imponible_10 ?? desgloseOffline.base_imponible_10));
-              const iva10 = redondearMoneda(Number(pedido?.totales?.iva_10 ?? desgloseOffline.iva_10));
-              const base21 = redondearMoneda(Number(pedido?.totales?.base_imponible_21 ?? desgloseOffline.base_imponible_21));
-              const iva21 = redondearMoneda(Number(pedido?.totales?.iva_21 ?? desgloseOffline.iva_21));
-              const baseImponible = redondearMoneda(Number(pedido?.totales?.baseImponibleTotal ?? desgloseOffline.baseImponibleTotal));
-              const cuotaIva = redondearMoneda(Number(pedido?.totales?.cuotaIvaTotal ?? desgloseOffline.cuotaIvaTotal));
-              if (docEmitido?.id) {
-                const { error: vfErr } = await supabase
+              let hash_anterior = '';
+              try {
+                const { data: ultimoTicket } = await supabase
                   .from('facturas_tickets')
-                  .update({
-                    tipo_factura: 'F2',
-                    base_imponible_10: base10,
-                    iva_10: iva10,
-                    base_imponible_21: base21,
-                    iva_21: iva21,
-                    base_imponible: baseImponible,
-                    cuota_iva: cuotaIva,
-                    total_final: totalFinal,
-                    hash_anterior,
-                    hash_actual
-                  })
-                  .eq('id', docEmitido.id);
-                if (vfErr) {
-                  await supabase
+                  .select('hash_actual')
+                  .order('id', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                hash_anterior = ultimoTicket?.hash_actual || '';
+              } catch (errHashPrev) {
+                console.error('Error obteniendo hash_anterior VeriFactu:', errHashPrev);
+              }
+
+              const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
+                p_serie: 'T',
+                p_tipo_documento: 'SIMPLIFICADA',
+                p_mesa: pedido.mesa || 'BARRA',
+                p_vendedor: pedido.vendedor || 'Camarero',
+                p_metodo_pago: metodo,
+                p_importe_efectivo: metodo === 'efectivo' ? totalFinal : 0,
+                p_importe_tarjeta: metodo === 'tarjeta' ? totalFinal : 0,
+                p_subtotal_bruto: subtotalBruto,
+                p_descuento_general_porc: dtoGeneralPorc,
+                p_descuento_total_imp: descuentoTotalImporte,
+                p_autorizado_por: pedido.autorizado_por || null,
+                p_tipo_iva: Number(pedido.tipo_iva ?? 10),
+                p_total_final: totalFinal,
+                p_lineas: pedido.lineas || []
+              });
+
+              if (rpcError) throw rpcError;
+
+              try {
+                const numeroTicket = String(docEmitido?.numero_completo || `T-${docEmitido?.id || Date.now()}`);
+                const fechaExp = String(docEmitido?.fecha_expedicion || pedido.fecha || new Date().toISOString());
+                const hash_actual = await calcularHashVeriFactu(numeroTicket, fechaExp, totalFinal, hash_anterior);
+                const desgloseOffline = calcularDesgloseImpuestosLineas(pedido.lineas || [], dtoGeneralPorc, totalFinal);
+                const base10 = redondearMoneda(Number(pedido?.totales?.base_imponible_10 ?? desgloseOffline.base_imponible_10));
+                const iva10 = redondearMoneda(Number(pedido?.totales?.iva_10 ?? desgloseOffline.iva_10));
+                const base21 = redondearMoneda(Number(pedido?.totales?.base_imponible_21 ?? desgloseOffline.base_imponible_21));
+                const iva21 = redondearMoneda(Number(pedido?.totales?.iva_21 ?? desgloseOffline.iva_21));
+                const baseImponible = redondearMoneda(Number(pedido?.totales?.baseImponibleTotal ?? desgloseOffline.baseImponibleTotal));
+                const cuotaIva = redondearMoneda(Number(pedido?.totales?.cuotaIvaTotal ?? desgloseOffline.cuotaIvaTotal));
+                if (docEmitido?.id) {
+                  const { error: vfErr } = await supabase
                     .from('facturas_tickets')
                     .update({
+                      tipo_factura: 'F2',
+                      base_imponible_10: base10,
+                      iva_10: iva10,
+                      base_imponible_21: base21,
+                      iva_21: iva21,
                       base_imponible: baseImponible,
                       cuota_iva: cuotaIva,
                       total_final: totalFinal,
@@ -200,49 +379,61 @@ export default function App() {
                       hash_actual
                     })
                     .eq('id', docEmitido.id);
+                  if (vfErr) {
+                    await supabase
+                      .from('facturas_tickets')
+                      .update({
+                        base_imponible: baseImponible,
+                        cuota_iva: cuotaIva,
+                        total_final: totalFinal,
+                        hash_anterior,
+                        hash_actual
+                      })
+                      .eq('id', docEmitido.id);
+                  }
                 }
+              } catch (vfErr) {
+                console.error('Error VeriFactu al sincronizar pedido offline:', vfErr);
               }
-            } catch (vfErr) {
-              console.error('Error VeriFactu al sincronizar pedido offline:', vfErr);
+
+              if (pedido.mesa && pedido.tipo_operacion !== 'cobro_parcial') {
+                await supabase
+                  .from('comandas_cocina')
+                  .update({
+                    pagado: true,
+                    metodo_pago: metodo,
+                    camarero_nombre: pedido.vendedor || 'Camarero',
+                    total_ticket: totalFinal,
+                    factura_fiscal_id: docEmitido?.id,
+                    numero_factura_legal: docEmitido?.numero_completo,
+                    descuento_aplicado: descuentoTotalImporte
+                  })
+                  .eq('mesa', pedido.mesa)
+                  .eq('pagado', false);
+              }
+
+              // Actualizar caja_diaria activa o correspondiente al turno del pedido
+              const { data: cajaDestino } = pedido.caja_id
+                ? await supabase.from('caja_diaria').select('*').eq('id', pedido.caja_id).maybeSingle()
+                : await supabase.from('caja_diaria').select('*').eq('estado', 'abierta').order('id', { ascending: false }).limit(1).maybeSingle();
+
+              if (cajaDestino) {
+                const nuevoEfectivo = redondearMoneda(Number(cajaDestino.total_efectivo || 0) + (metodo === 'efectivo' ? totalFinal : 0));
+                const nuevaTarjeta = redondearMoneda(Number(cajaDestino.total_tarjeta || 0) + (metodo === 'tarjeta' ? totalFinal : 0));
+                await supabase
+                  .from('caja_diaria')
+                  .update({
+                    total_efectivo: nuevoEfectivo,
+                    total_tarjeta: nuevaTarjeta
+                  })
+                  .eq('id', cajaDestino.id);
+              }
+
+              // Descontar inventario e ingredientes en Supabase
+              await descontarStockPedidoOffline(pedido.items || []);
             }
 
-            if (pedido.mesa) {
-              await supabase
-                .from('comandas_cocina')
-                .update({
-                  pagado: true,
-                  metodo_pago: metodo,
-                  camarero_nombre: pedido.vendedor || 'Camarero',
-                  total_ticket: totalFinal,
-                  factura_fiscal_id: docEmitido?.id,
-                  numero_factura_legal: docEmitido?.numero_completo,
-                  descuento_aplicado: descuentoTotalImporte
-                })
-                .eq('mesa', pedido.mesa)
-                .eq('pagado', false);
-            }
-
-            // Actualizar caja_diaria activa o correspondiente al turno del pedido
-            const { data: cajaDestino } = pedido.caja_id
-              ? await supabase.from('caja_diaria').select('*').eq('id', pedido.caja_id).maybeSingle()
-              : await supabase.from('caja_diaria').select('*').eq('estado', 'abierta').order('id', { ascending: false }).limit(1).maybeSingle();
-
-            if (cajaDestino) {
-              const nuevoEfectivo = redondearMoneda(Number(cajaDestino.total_efectivo || 0) + (metodo === 'efectivo' ? totalFinal : 0));
-              const nuevaTarjeta = redondearMoneda(Number(cajaDestino.total_tarjeta || 0) + (metodo === 'tarjeta' ? totalFinal : 0));
-              await supabase
-                .from('caja_diaria')
-                .update({
-                  total_efectivo: nuevoEfectivo,
-                  total_tarjeta: nuevaTarjeta
-                })
-                .eq('id', cajaDestino.id);
-            }
-
-            // Descontar inventario en Supabase
-            await descontarStockPedidoOffline(pedido.items || []);
-
-            // Eliminar este ticket sincronizado con éxito de la cola en localStorage
+            // Eliminar este pedido sincronizado con éxito de la cola en localStorage
             const idx = pendientesRestantes.findIndex(
               (p) => (p.id_cola && p.id_cola === pedido.id_cola) || p === pedido
             );
@@ -254,6 +445,8 @@ export default function App() {
             } else {
               localStorage.setItem('pedidos_offline', JSON.stringify(pendientesRestantes));
             }
+            actualizarContadorCola();
+            window.dispatchEvent(new CustomEvent('pedidos-offline-actualizados'));
 
             sincronizadosExito++;
           } catch (errPedido) {
@@ -262,10 +455,12 @@ export default function App() {
         }
 
         if (sincronizadosExito > 0) {
-          const msgExito = `¡Conexión recuperada! Se han sincronizado ${sincronizadosExito} pedido(s) pendientes de la cola offline.`;
+          const msgExito = `✅ Sincronización completada: ${sincronizadosExito} pedidos offline sincronizados`;
           setToastOfflineSync(msgExito);
           window.dispatchEvent(
-            new CustomEvent('pedidos-offline-sincronizados', { detail: { cantidad: sincronizadosExito } })
+            new CustomEvent('pedidos-offline-sincronizados', {
+              detail: { cantidad: sincronizadosExito, mensaje: msgExito }
+            })
           );
           if (toastTimeoutId) clearTimeout(toastTimeoutId);
           toastTimeoutId = setTimeout(() => {
@@ -277,13 +472,30 @@ export default function App() {
       }
     };
 
-    window.addEventListener('online', sincronizarPedidosOffline);
+    const handleOnline = () => {
+      setIsOnline(true);
+      sincronizarPedidosOffline();
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      actualizarContadorCola();
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('pedidos-offline-actualizados', actualizarContadorCola);
+    window.addEventListener('storage', actualizarContadorCola);
+
     if (navigator.onLine) {
       sincronizarPedidosOffline();
     }
 
     return () => {
-      window.removeEventListener('online', sincronizarPedidosOffline);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('pedidos-offline-actualizados', actualizarContadorCola);
+      window.removeEventListener('storage', actualizarContadorCola);
       if (toastTimeoutId) clearTimeout(toastTimeoutId);
     };
   }, []);
@@ -433,6 +645,17 @@ export default function App() {
   if (subdomainRoute === 'waiter') {
     return (
       <>
+        {!isOnline && (
+          <div className="fixed top-2 left-1/2 -translate-x-1/2 z-[9998] px-4 py-2 rounded-2xl bg-rose-950/95 border border-rose-500/60 text-rose-200 text-xs font-black shadow-2xl flex items-center gap-2 backdrop-blur-md">
+            <WifiOff className="h-4 w-4 text-rose-400 animate-pulse shrink-0" />
+            <span>🔴 Sin conexión · Modo Offline activo</span>
+            {colaOfflinePendientes > 0 && (
+              <span className="ml-1 px-2 py-0.5 rounded-full bg-rose-500/30 text-white text-[10px] font-mono">
+                {colaOfflinePendientes} en cola
+              </span>
+            )}
+          </div>
+        )}
         {toastOfflineSync && (
           <div className="fixed top-4 right-4 z-[9999] max-w-md rounded-2xl border border-emerald-500/50 bg-emerald-950/95 px-4 py-3 text-xs font-bold text-emerald-300 shadow-2xl flex items-center gap-2.5 backdrop-blur-md">
             <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />
@@ -447,6 +670,17 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#08090d] text-slate-200 font-sans selection:bg-cyan-500 selection:text-black flex flex-col justify-between">
       
+      {!isOnline && (
+        <div className="fixed top-2 left-1/2 -translate-x-1/2 z-[9998] px-4 py-2 rounded-2xl bg-rose-950/95 border border-rose-500/60 text-rose-200 text-xs font-black shadow-2xl flex items-center gap-2 backdrop-blur-md">
+          <WifiOff className="h-4 w-4 text-rose-400 animate-pulse shrink-0" />
+          <span>🔴 Sin conexión · Modo Offline activo</span>
+          {colaOfflinePendientes > 0 && (
+            <span className="ml-1 px-2 py-0.5 rounded-full bg-rose-500/30 text-white text-[10px] font-mono">
+              {colaOfflinePendientes} en cola
+            </span>
+          )}
+        </div>
+      )}
       {toastOfflineSync && (
         <div className="fixed top-4 right-4 z-[9999] max-w-md rounded-2xl border border-emerald-500/50 bg-emerald-950/95 px-4 py-3 text-xs font-bold text-emerald-300 shadow-2xl flex items-center gap-2.5 backdrop-blur-md">
           <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />

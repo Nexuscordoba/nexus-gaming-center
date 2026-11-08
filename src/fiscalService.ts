@@ -140,6 +140,10 @@ export function obtenerFactorConversion(unidadBase: UnidadMedida, unidadUso: Uni
   // Volumen
   if (unidadBase === 'l' && unidadUso === 'ml') return 0.001;
   if (unidadBase === 'ml' && unidadUso === 'l') return 1000;
+  if (unidadBase === 'l' && unidadUso === 'cl') return 0.01;
+  if (unidadBase === 'cl' && unidadUso === 'l') return 100;
+  if (unidadBase === 'ml' && unidadUso === 'cl') return 10;
+  if (unidadBase === 'cl' && unidadUso === 'ml') return 0.1;
   // Longitud / Dimensiones
   if (unidadBase === 'm' && unidadUso === 'cm') return 0.01;
   if (unidadBase === 'cm' && unidadUso === 'm') return 100;

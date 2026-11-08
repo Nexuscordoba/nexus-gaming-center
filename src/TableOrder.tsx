@@ -60,6 +60,18 @@ export default function TableOrder() {
   const [enviando, setEnviando] = useState(false);
   const [enviandoCuenta, setEnviandoCuenta] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   useEffect(() => {
     const hash = window.location.hash;
@@ -418,9 +430,31 @@ export default function TableOrder() {
     setEnviando(true);
     setMensaje(null);
 
+    const itemsBarra = carritoActual.filter(i => !esDestinoCocina(i));
+    const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
+
+    const mapearItem = (i: Producto & { cantidad: number }, destinoForzado: 'cocina' | 'barra') => {
+      const ivaProd = Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10;
+      return {
+        producto_id: i.id,
+        articulo_inventario_id: i.articulo_inventario_id || undefined,
+        nombre: i.nombre,
+        precio: Number(i.precio),
+        cantidad: i.cantidad,
+        variante: '',
+        categoria: i.categoria || (destinoForzado === 'cocina' ? 'Cocina' : 'General'),
+        destino: destinoForzado,
+        porcentaje_iva: ivaProd,
+        tipo_iva: ivaProd,
+        comentarios: 'Pedido desde QR mesa',
+        es_menu: (i.categoria || '').toLowerCase().includes('menu')
+      };
+    };
+
     try {
-      const itemsBarra = carritoActual.filter(i => !esDestinoCocina(i));
-      const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
+      if (!navigator.onLine) {
+        throw new Error('OFFLINE_NETWORK');
+      }
 
       const promesas = [];
 
@@ -432,23 +466,7 @@ export default function TableOrder() {
             tipo_destino: 'cocina',
             estado: 'pendiente',
             pagado: false,
-            items: itemsCocina.map(i => {
-              const ivaProd = Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10;
-              return { 
-                producto_id: i.id,
-                articulo_inventario_id: i.articulo_inventario_id || undefined,
-                nombre: i.nombre, 
-                precio: Number(i.precio), 
-                cantidad: i.cantidad, 
-                variante: '', 
-                categoria: i.categoria || 'Cocina',
-                destino: 'cocina',
-                porcentaje_iva: ivaProd,
-                tipo_iva: ivaProd,
-                comentarios: 'Pedido desde QR mesa', 
-                es_menu: (i.categoria || '').toLowerCase().includes('menu') 
-              };
-            })
+            items: itemsCocina.map(i => mapearItem(i, 'cocina'))
           }])
         );
       }
@@ -461,22 +479,7 @@ export default function TableOrder() {
             tipo_destino: 'barra',
             estado: 'pendiente',
             pagado: false,
-            items: itemsBarra.map(i => {
-              const ivaProd = Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10;
-              return { 
-                producto_id: i.id,
-                articulo_inventario_id: i.articulo_inventario_id || undefined,
-                nombre: i.nombre, 
-                precio: Number(i.precio), 
-                cantidad: i.cantidad, 
-                variante: '', 
-                categoria: i.categoria || 'General',
-                destino: esDestinoCocina(i) ? 'cocina' : 'barra',
-                porcentaje_iva: ivaProd,
-                tipo_iva: ivaProd,
-                comentarios: 'Pedido desde QR mesa' 
-              };
-            })
+            items: itemsBarra.map(i => mapearItem(i, esDestinoCocina(i) ? 'cocina' : 'barra'))
           }])
         );
       }
@@ -489,7 +492,32 @@ export default function TableOrder() {
       await cargarCuentaDesdeSupabase(mesaNum);
       setMensaje('¡Pedido enviado correctamente! Tu cuenta ha sido actualizada.');
     } catch (err: any) {
-      setMensaje('Error al enviar el pedido: ' + (err?.message || 'Error desconocido'));
+      try {
+        const raw = localStorage.getItem('pedidos_offline');
+        const cola = raw ? JSON.parse(raw) : [];
+        const itemsCombinados = [
+          ...itemsCocina.map(i => mapearItem(i, 'cocina')),
+          ...itemsBarra.map(i => mapearItem(i, esDestinoCocina(i) ? 'cocina' : 'barra'))
+        ];
+        cola.push({
+          id_local: `offline_qr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          fecha: new Date().toISOString(),
+          tipo_operacion: 'comanda',
+          mesa: `MESA ${mesaNum}`,
+          ticket_number: ticketNum,
+          total: totalCarritoActual,
+          pagado: false,
+          items_cocina: itemsCocina.map(i => mapearItem(i, 'cocina')),
+          items_barra: itemsBarra.map(i => mapearItem(i, esDestinoCocina(i) ? 'cocina' : 'barra')),
+          items: itemsCombinados
+        });
+        localStorage.setItem('pedidos_offline', JSON.stringify(cola));
+        window.dispatchEvent(new CustomEvent('pedidos-offline-actualizados'));
+      } catch {
+        // Ignorar fallo de cuota localStorage
+      }
+      setCarritoActual([]);
+      setMensaje('📦 Pedido guardado en cola local offline');
     } finally {
       setEnviando(false);
     }
@@ -526,6 +554,11 @@ export default function TableOrder() {
 
   return (
     <div className="min-h-screen bg-[#06070a] text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
+      {!isOnline && (
+        <div className="bg-rose-600/95 text-white text-xs font-black py-2 px-4 text-center sticky top-0 z-50 shadow-lg">
+          🔴 Sin conexión · Modo Offline activo
+        </div>
+      )}
       
       {comboActivo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">

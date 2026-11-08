@@ -6,10 +6,12 @@ import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
   calcularDesgloseImpuestosLineas,
+  obtenerFactorConversion,
   imprimirDocumentoFiscalHTML,
   redondearMoneda,
   type ConfiguracionFiscal,
-  type LineaTicketFiscal
+  type LineaTicketFiscal,
+  type UnidadMedida
 } from './fiscalService';
 import {
   Utensils,
@@ -49,7 +51,10 @@ import {
   EyeOff,
   RefreshCw,
   ChefHat,
-  Clock
+  Clock,
+  Wifi,
+  WifiOff,
+  Package
 } from 'lucide-react';
 
 interface OpcionCombo {
@@ -94,6 +99,7 @@ interface ItemPedido {
   listo?: boolean;
   porcentaje_iva?: number;
   tipo_iva?: number;
+  stock_descontado?: boolean;
 }
 
 interface PlatoCocinaActivo {
@@ -265,9 +271,45 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [procesandoLogin, setProcesandoLogin] = useState(false);
   const [procesandoCocina, setProcesandoCocina] = useState(false);
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [colaOfflineCount, setColaOfflineCount] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('pedidos_offline');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      return 0;
+    }
+  });
 
   const [alertaFlotante, setAlertaFlotante] = useState<AlertaPersonalizada | null>(null);
   const alertaTimeoutRef = useRef<number | null>(null);
+
+  const actualizarContadorColaOffline = () => {
+    try {
+      const raw = localStorage.getItem('pedidos_offline');
+      const parsed = raw ? JSON.parse(raw) : [];
+      setColaOfflineCount(Array.isArray(parsed) ? parsed.length : 0);
+    } catch {
+      setColaOfflineCount(0);
+    }
+  };
+
+  const guardarEnColaLocalOffline = (nuevoPedidoOffline: any) => {
+    try {
+      const rawCola = localStorage.getItem('pedidos_offline');
+      const colaActual = rawCola ? JSON.parse(rawCola) : [];
+      const listaPedidos = Array.isArray(colaActual) ? colaActual : [];
+      listaPedidos.push(nuevoPedidoOffline);
+      localStorage.setItem('pedidos_offline', JSON.stringify(listaPedidos));
+      setColaOfflineCount(listaPedidos.length);
+      window.dispatchEvent(new CustomEvent('pedidos-offline-actualizados'));
+    } catch (storageErr) {
+      console.error('Error guardando en pedidos_offline de localStorage:', storageErr);
+    }
+  };
 
   const mostrarAlerta = (mensaje: string, tipo: 'exito' | 'error' | 'aviso' = 'aviso') => {
     const id = Date.now();
@@ -302,16 +344,40 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }
     };
     initSesion();
+
+    const handleOnlineStatus = () => {
+      setIsOnline(true);
+      actualizarContadorColaOffline();
+    };
+
+    const handleOfflineStatus = () => {
+      setIsOnline(false);
+      actualizarContadorColaOffline();
+    };
+
     const handleSynced = (ev: Event) => {
-      const customEv = ev as CustomEvent<{ cantidad?: number }>;
+      const customEv = ev as CustomEvent<{ cantidad?: number; mensaje?: string }>;
       const cant = customEv.detail?.cantidad ?? 1;
-      mostrarAlerta(`Conexión recuperada: ${cant} pedido(s) de la cola offline sincronizado(s) con éxito.`, 'exito');
+      const msg =
+        customEv.detail?.mensaje ||
+        `✅ Sincronización completada: ${cant} pedidos offline sincronizados`;
+      actualizarContadorColaOffline();
+      mostrarAlerta(msg, 'exito');
       cargarMesasAbiertas();
       cargarCaja();
       cargarProductosCarta();
     };
+
+    window.addEventListener('online', handleOnlineStatus);
+    window.addEventListener('offline', handleOfflineStatus);
+    window.addEventListener('pedidos-offline-actualizados', actualizarContadorColaOffline);
+    window.addEventListener('storage', actualizarContadorColaOffline);
     window.addEventListener('pedidos-offline-sincronizados', handleSynced);
     return () => {
+      window.removeEventListener('online', handleOnlineStatus);
+      window.removeEventListener('offline', handleOfflineStatus);
+      window.removeEventListener('pedidos-offline-actualizados', actualizarContadorColaOffline);
+      window.removeEventListener('storage', actualizarContadorColaOffline);
       window.removeEventListener('pedidos-offline-sincronizados', handleSynced);
       if (alertaTimeoutRef.current !== null) {
         window.clearTimeout(alertaTimeoutRef.current);
@@ -666,6 +732,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               const existente = mapMesas[mKey].items.find((x) => x.nombre === it.nombre);
               if (existente) {
                 existente.cantidad += Number(it.cantidad) || 1;
+                if (it.stock_descontado) existente.stock_descontado = true;
               } else {
                 mapMesas[mKey].items.push({
                   producto_id: it.producto_id,
@@ -677,7 +744,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   porcentaje_iva: it.porcentaje_iva ?? it.tipo_iva,
                   tipo_iva: it.porcentaje_iva ?? it.tipo_iva,
                   estado_cocina: row.tipo_destino === 'cocina' ? estadoPlato : undefined,
-                  listo: row.tipo_destino === 'cocina' ? esPlatoListo : undefined
+                  listo: row.tipo_destino === 'cocina' ? esPlatoListo : undefined,
+                  stock_descontado: Boolean(it.stock_descontado)
                 });
               }
             });
@@ -1010,8 +1078,36 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setModalCobroParcial(null);
       await Promise.all([cargarMesasAbiertas(), cargarCaja(), cargarProductosCarta()]);
     } catch (err: any) {
-      mostrarAlerta('Error en cobro parcial: ' + err.message, 'error');
-      setModalCobroParcial((prev) => (prev ? { ...prev, procesando: false } : null));
+      guardarEnColaLocalOffline({
+        id_cola: `offline_parc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        tipo_operacion: 'cobro_parcial',
+        mesa: modalCobroParcial.mesaNombre,
+        fecha: new Date().toISOString(),
+        metodo,
+        vendedor: camareroActivo.nombre,
+        caja_id: cajaHoy.id,
+        autorizado_por: autorizadorDescuentoMesa[modalCobroParcial.mesaNombre] || null,
+        tipo_iva: cfgFallback.iva_defecto || 10,
+        items: itemsProcesados,
+        totales: {
+          subtotalBruto: desglose.subtotalBruto,
+          dtoGeneralPorc: desglose.dtoGeneralPorc,
+          descuentoTotalImporte: desglose.descuentoTotalImporte,
+          base_imponible_10: desglose.base_imponible_10,
+          iva_10: desglose.iva_10,
+          base_imponible_21: desglose.base_imponible_21,
+          iva_21: desglose.iva_21,
+          baseImponibleTotal: desglose.baseImponibleTotal,
+          cuotaIvaTotal: desglose.cuotaIvaTotal,
+          totalFinal: desglose.totalFinal,
+          importeEfectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
+          importeTarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0
+        },
+        lineas: desglose.lineasCalculadas
+      });
+      setModalCobroParcial(null);
+      mostrarAlerta('📦 Pedido guardado en cola local offline', 'aviso');
+      console.warn('Cobro parcial almacenado en cola offline:', err);
     }
   };
 
@@ -1216,87 +1312,87 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     if (carritoActual.length === 0 || !camareroActivo || enviando) return;
     setEnviando(true);
 
+    const esDestinoCocina = (item: Producto) => {
+      const dest = String(item.destino || '').trim().toLowerCase();
+      const cat = String(item.categoria || '').trim().toLowerCase();
+      if (dest === 'cocina') return true;
+      if (
+        !dest &&
+        (cat.includes('cocina') ||
+          cat.includes('tapa') ||
+          cat.includes('comida') ||
+          cat.includes('bocadillo') ||
+          cat.includes('hamburguesa') ||
+          cat.includes('racion') ||
+          cat.includes('ración') ||
+          cat.includes('plato'))
+      ) {
+        return true;
+      }
+      return false;
+    };
+
+    const itemsCocina = carritoActual.filter((i) => esDestinoCocina(i));
+    const itemsBarra = carritoActual.filter((i) => !esDestinoCocina(i));
+    const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
+    const mesaDestinoFormat = getNombreMesa(mesaSeleccionada);
+
+    const comandasInserts: any[] = [];
+    if (itemsCocina.length > 0) {
+      comandasInserts.push({
+        ticket_number: ticketNum,
+        mesa: mesaDestinoFormat,
+        tipo_destino: 'cocina',
+        estado: 'pendiente',
+        pagado: false,
+        camarero_nombre: camareroActivo.nombre,
+        items: itemsCocina.map((i) => ({
+          producto_id: i.id,
+          articulo_inventario_id: i.articulo_inventario_id || null,
+          nombre: i.nombre,
+          precio: Number(i.precio),
+          cantidad: i.cantidad,
+          porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+          tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+          categoria: i.categoria || 'General',
+          destino: esDestinoCocina(i) ? 'cocina' : 'barra',
+          comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
+          es_menu: (i.categoria || '').toLowerCase().includes('menu')
+        }))
+      });
+    }
+
+    if (itemsBarra.length > 0) {
+      comandasInserts.push({
+        ticket_number: ticketNum,
+        mesa: mesaDestinoFormat,
+        tipo_destino: 'barra',
+        estado: 'pendiente',
+        pagado: false,
+        camarero_nombre: camareroActivo.nombre,
+        items: itemsBarra.map((i) => ({
+          producto_id: i.id,
+          articulo_inventario_id: i.articulo_inventario_id || null,
+          nombre: i.nombre,
+          precio: Number(i.precio),
+          cantidad: i.cantidad,
+          porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+          tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+          categoria: i.categoria || 'General',
+          destino: esDestinoCocina(i) ? 'cocina' : 'barra',
+          comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
+        }))
+      });
+    }
+
     try {
-      const esDestinoCocina = (item: Producto) => {
-        const dest = String(item.destino || '').trim().toLowerCase();
-        const cat = String(item.categoria || '').trim().toLowerCase();
-        if (dest === 'cocina') return true;
-        if (
-          !dest &&
-          (cat.includes('cocina') ||
-            cat.includes('tapa') ||
-            cat.includes('comida') ||
-            cat.includes('bocadillo') ||
-            cat.includes('hamburguesa') ||
-            cat.includes('racion') ||
-            cat.includes('ración') ||
-            cat.includes('plato'))
-        ) {
-          return true;
-        }
-        return false;
-      };
-      const itemsCocina = carritoActual.filter((i) => esDestinoCocina(i));
-      const itemsBarra = carritoActual.filter((i) => !esDestinoCocina(i));
-      const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
-      const mesaDestinoFormat = getNombreMesa(mesaSeleccionada);
-
-      const promesas = [];
-
-      if (itemsCocina.length > 0) {
-        promesas.push(
-          supabase.from('comandas_cocina').insert([
-            {
-              ticket_number: ticketNum,
-              mesa: mesaDestinoFormat,
-              tipo_destino: 'cocina',
-              estado: 'pendiente',
-              pagado: false,
-              camarero_nombre: camareroActivo.nombre,
-              items: itemsCocina.map((i) => ({
-                producto_id: i.id,
-                articulo_inventario_id: i.articulo_inventario_id || null,
-                nombre: i.nombre,
-                precio: Number(i.precio),
-                cantidad: i.cantidad,
-                porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                categoria: i.categoria || 'General',
-                destino: esDestinoCocina(i) ? 'cocina' : 'barra',
-                comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
-                es_menu: (i.categoria || '').toLowerCase().includes('menu')
-              }))
-            }
-          ])
-        );
+      if (!navigator.onLine) {
+        throw new Error('Sin conexión a internet (offline)');
       }
 
-      if (itemsBarra.length > 0) {
-        promesas.push(
-          supabase.from('comandas_cocina').insert([
-            {
-              ticket_number: ticketNum,
-              mesa: mesaDestinoFormat,
-              tipo_destino: 'barra',
-              estado: 'pendiente',
-              pagado: false,
-              camarero_nombre: camareroActivo.nombre,
-              items: itemsBarra.map((i) => ({
-                producto_id: i.id,
-                articulo_inventario_id: i.articulo_inventario_id || null,
-                nombre: i.nombre,
-                precio: Number(i.precio),
-                cantidad: i.cantidad,
-                porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                categoria: i.categoria || 'General',
-                destino: esDestinoCocina(i) ? 'cocina' : 'barra',
-                comentarios: `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
-              }))
-            }
-          ])
-        );
-      }
+      const promesas = comandasInserts.map((payload) =>
+        supabase.from('comandas_cocina').insert([payload])
+      );
 
       const resultados = await Promise.all(promesas);
       const errorInsercion = resultados.find((r) => r.error)?.error;
@@ -1306,28 +1402,123 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       await cargarMesasAbiertas();
       mostrarAlerta(`¡Comanda enviada a Cocina/Barra correctamente!`, 'exito');
     } catch (err: any) {
-      mostrarAlerta('Error: ' + err.message, 'error');
+      const itemsNormalizadosOffline: ItemPedido[] = carritoActual.map((i) => ({
+        producto_id: i.id,
+        articulo_inventario_id: i.articulo_inventario_id,
+        nombre: i.nombre,
+        precio: Number(i.precio),
+        cantidad: i.cantidad,
+        destino: esDestinoCocina(i) ? 'cocina' : 'barra',
+        porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+        tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+        stock_descontado: false
+      }));
+
+      guardarEnColaLocalOffline({
+        id_cola: `offline_cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        tipo_operacion: 'comanda',
+        ticket_number: ticketNum,
+        mesa: mesaDestinoFormat,
+        fecha: new Date().toISOString(),
+        vendedor: camareroActivo.nombre,
+        items: itemsNormalizadosOffline,
+        comandas_inserts: comandasInserts,
+        descontar_stock: true
+      });
+
+      const itemsParaMesaLocal = itemsNormalizadosOffline.map((it) => ({
+        ...it,
+        stock_descontado: true
+      }));
+
+      setCuentaMesaActual((prev) => {
+        const combinados = [...prev];
+        itemsParaMesaLocal.forEach((nuevo) => {
+          const existente = combinados.find(
+            (x) => x.nombre === nuevo.nombre && Number(x.precio) === Number(nuevo.precio)
+          );
+          if (existente) {
+            existente.cantidad += nuevo.cantidad;
+          } else {
+            combinados.push({ ...nuevo });
+          }
+        });
+        return combinados;
+      });
+
+      setMesasAbiertas((prev) => {
+        const existeMesa = prev.find((m) => m.mesa === mesaDestinoFormat);
+        if (existeMesa) {
+          return prev.map((m) => {
+            if (m.mesa !== mesaDestinoFormat) return m;
+            const nuevosItems = [...m.items];
+            itemsParaMesaLocal.forEach((nuevo) => {
+              const ex = nuevosItems.find(
+                (x) => x.nombre === nuevo.nombre && Number(x.precio) === Number(nuevo.precio)
+              );
+              if (ex) {
+                ex.cantidad += nuevo.cantidad;
+              } else {
+                nuevosItems.push({ ...nuevo });
+              }
+            });
+            const nuevoTotal = redondearMoneda(
+              nuevosItems.reduce((acc, item) => acc + Number(item.precio) * Number(item.cantidad), 0)
+            );
+            return { ...m, items: nuevosItems, total_ticket: nuevoTotal };
+          });
+        }
+        const nuevoTotal = redondearMoneda(
+          itemsParaMesaLocal.reduce((acc, item) => acc + Number(item.precio) * Number(item.cantidad), 0)
+        );
+        return [
+          ...prev,
+          {
+            id: `offline_${ticketNum}`,
+            mesa: mesaDestinoFormat,
+            ticket_number: ticketNum,
+            items: itemsParaMesaLocal,
+            total_ticket: nuevoTotal,
+            created_at: new Date().toISOString()
+          }
+        ];
+      });
+
+      setCarritoActual([]);
+      mostrarAlerta('📦 Pedido guardado en cola local offline', 'aviso');
+      console.warn('Comanda almacenada en cola local offline:', err);
     } finally {
       setEnviando(false);
     }
   };
 
-  const descontarInventarioSupabase = async (
+  const enviarPedido = enviarPedidoCamarero;
+
+  const descontarStockPedidoOffline = async (
     itemsCarrito: Array<{
       id?: number;
       producto_id?: number;
+      articulo_id?: string;
       articulo_inventario_id?: string;
       nombre: string;
       cantidad: number;
+      stock_descontado?: boolean;
     }>
   ) => {
     try {
-      const itemsValidos = itemsCarrito.filter(
-        (item) => item && !item.nombre.includes('├─') && Number(item.cantidad) > 0
+      const itemsValidos = (itemsCarrito || []).filter(
+        (item) =>
+          item &&
+          !String(item.nombre || '').includes('├─') &&
+          Number(item.cantidad) > 0 &&
+          !item.stock_descontado
       );
 
-      // Iteración secuencial para evitar condiciones de carrera cuando dos líneas comparten artículo
+      // Iteración secuencial para evitar condiciones de carrera cuando dos líneas comparten artículo o ingrediente
       for (const item of itemsValidos) {
+        const cantidadVendida = Number(item.cantidad || 0);
+        if (cantidadVendida <= 0) continue;
+
         const prodLocal = productosCarta.find(
           (p) =>
             (item.producto_id && p.id === item.producto_id) ||
@@ -1336,17 +1527,22 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         );
 
         const prodId = prodLocal?.id || item.producto_id || item.id;
+        const artIdItem = item.articulo_inventario_id || item.articulo_id || prodLocal?.articulo_inventario_id;
 
         let productoDB: {
           id: number;
+          nombre?: string;
           stock_actual: number | null;
+          controla_stock?: boolean | null;
+          es_compuesto?: boolean | null;
+          escandallo_json?: any[] | null;
           articulo_inventario_id?: string | null;
         } | null = null;
 
-        if (prodId) {
+        if (prodId && typeof prodId === 'number') {
           const { data, error } = await supabase
             .from('productos_carta')
-            .select('id, stock_actual, articulo_inventario_id')
+            .select('id, nombre, stock_actual, controla_stock, es_compuesto, escandallo_json, articulo_inventario_id')
             .eq('id', prodId)
             .maybeSingle();
 
@@ -1354,10 +1550,19 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           productoDB = data;
         }
 
+        if (!productoDB && artIdItem) {
+          const { data } = await supabase
+            .from('productos_carta')
+            .select('id, nombre, stock_actual, controla_stock, es_compuesto, escandallo_json, articulo_inventario_id')
+            .eq('articulo_inventario_id', artIdItem)
+            .maybeSingle();
+          productoDB = data;
+        }
+
         if (!productoDB) {
           const { data, error } = await supabase
             .from('productos_carta')
-            .select('id, stock_actual, articulo_inventario_id')
+            .select('id, nombre, stock_actual, controla_stock, es_compuesto, escandallo_json, articulo_inventario_id')
             .eq('nombre', item.nombre.trim())
             .maybeSingle();
 
@@ -1365,32 +1570,134 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           productoDB = data;
         }
 
-        if (!productoDB) continue;
+        let artInvId: string | null = artIdItem || productoDB?.articulo_inventario_id || null;
+        let articuloMaestroDB: {
+          id: string;
+          nombre: string;
+          stock_actual: number | null;
+          controla_stock?: boolean | null;
+          es_compuesto?: boolean | null;
+          unidad_medida?: string | null;
+          coste_unitario?: number | null;
+        } | null = null;
 
-        const stockActual = Number(productoDB.stock_actual ?? 0);
-        const nuevoStock = stockActual - Number(item.cantidad);
-
-        const { error: updateError } = await supabase
-          .from('productos_carta')
-          .update({ stock_actual: nuevoStock })
-          .eq('id', productoDB.id);
-
-        if (updateError) throw updateError;
-
-        const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
         if (artInvId) {
-          const { error: updateMaestroError } = await supabase
+          const { data } = await supabase
             .from('articulos_cafeteria')
-            .update({ stock_actual: nuevoStock })
-            .eq('id', artInvId);
+            .select('id, nombre, stock_actual, controla_stock, es_compuesto, unidad_medida, coste_unitario')
+            .eq('id', artInvId)
+            .maybeSingle();
+          articuloMaestroDB = data;
+        }
 
-          if (updateMaestroError) throw updateMaestroError;
+        if (!articuloMaestroDB && item.nombre) {
+          const { data } = await supabase
+            .from('articulos_cafeteria')
+            .select('id, nombre, stock_actual, controla_stock, es_compuesto, unidad_medida, coste_unitario')
+            .eq('nombre', item.nombre.trim())
+            .maybeSingle();
+          articuloMaestroDB = data;
+          if (articuloMaestroDB && !artInvId) {
+            artInvId = articuloMaestroDB.id;
+          }
+        }
+
+        // 1. Descontar stock del artículo directo
+        if (productoDB) {
+          const stockActual = Number(productoDB.stock_actual ?? articuloMaestroDB?.stock_actual ?? 0);
+          const nuevoStock = Number((stockActual - cantidadVendida).toFixed(4));
+
+          const { error: updateError } = await supabase
+            .from('productos_carta')
+            .update({ stock_actual: nuevoStock })
+            .eq('id', productoDB.id);
+
+          if (updateError) throw updateError;
+
+          if (artInvId) {
+            const stockBaseMaestro = Number(articuloMaestroDB?.stock_actual ?? productoDB.stock_actual ?? 0);
+            const nuevoStockMaestro = Number((stockBaseMaestro - cantidadVendida).toFixed(4));
+            const { error: updateMaestroError } = await supabase
+              .from('articulos_cafeteria')
+              .update({ stock_actual: nuevoStockMaestro })
+              .eq('id', artInvId);
+
+            if (updateMaestroError) throw updateMaestroError;
+          }
+        } else if (articuloMaestroDB) {
+          const nuevoStockMaestro = Number((Number(articuloMaestroDB.stock_actual ?? 0) - cantidadVendida).toFixed(4));
+          await supabase
+            .from('articulos_cafeteria')
+            .update({ stock_actual: nuevoStockMaestro })
+            .eq('id', articuloMaestroDB.id);
+        }
+
+        // 2. Descontar stock de los ingredientes del escandallo / receta si existen
+        let lineasEscandallo: Array<{
+          ingrediente_id: string;
+          cantidad: number;
+          unidad_uso?: string;
+          merma_porcentaje?: number;
+        }> = [];
+
+        if (artInvId) {
+          const { data: escData } = await supabase
+            .from('escandallos_cafeteria')
+            .select('ingrediente_id, cantidad, unidad_uso, merma_porcentaje')
+            .eq('articulo_padre_id', artInvId);
+          if (escData && escData.length > 0) {
+            lineasEscandallo = escData;
+          }
+        }
+
+        if (
+          lineasEscandallo.length === 0 &&
+          Array.isArray(productoDB?.escandallo_json) &&
+          productoDB.escandallo_json.length > 0
+        ) {
+          lineasEscandallo = productoDB.escandallo_json;
+        }
+
+        for (const lineaIng of lineasEscandallo) {
+          if (!lineaIng?.ingrediente_id) continue;
+
+          const { data: ingDB } = await supabase
+            .from('articulos_cafeteria')
+            .select('id, nombre, stock_actual, unidad_medida, controla_stock, coste_unitario')
+            .eq('id', lineaIng.ingrediente_id)
+            .maybeSingle();
+
+          if (!ingDB || ingDB.controla_stock === false) continue;
+
+          const unidadBase = (ingDB.unidad_medida || 'ud') as UnidadMedida;
+          const unidadUso = (lineaIng.unidad_uso || unidadBase) as UnidadMedida;
+          const factorConversion = obtenerFactorConversion(unidadBase, unidadUso);
+          const factorMerma = 1 + Number(lineaIng.merma_porcentaje || 0) / 100;
+          const consumoTotalIngrediente = Number(
+            (cantidadVendida * Number(lineaIng.cantidad || 0) * factorConversion * factorMerma).toFixed(4)
+          );
+
+          if (consumoTotalIngrediente <= 0) continue;
+
+          const nuevoStockIng = Number((Number(ingDB.stock_actual ?? 0) - consumoTotalIngrediente).toFixed(4));
+
+          await supabase
+            .from('articulos_cafeteria')
+            .update({ stock_actual: nuevoStockIng })
+            .eq('id', ingDB.id);
+
+          await supabase
+            .from('productos_carta')
+            .update({ stock_actual: nuevoStockIng })
+            .eq('articulo_inventario_id', ingDB.id);
         }
       }
     } catch (invError) {
       console.error('Error al descontar inventario en Supabase:', invError);
     }
   };
+
+  const descontarInventarioSupabase = descontarStockPedidoOffline;
 
   // Función auxiliar VeriFactu: calcula el hash SHA-256 (NumeroTicket + FechaExpedicion + Total + HashAnterior)
   // y actualiza/inserta en facturas_tickets con tipo_factura: 'F2', hash_anterior y hash_actual dentro de try/catch
@@ -1505,7 +1812,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const cobrarMesaLegal = async (
     mesaNombre: string,
     metodo: 'efectivo' | 'tarjeta',
-    itemsOverride?: ItemPedido[]
+    itemsOverride?: ItemPedido[],
+    comandasInsertsOffline?: any[]
   ) => {
     if (cobrandoMesa) return;
 
@@ -1635,42 +1943,36 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       await Promise.all([cargarMesasAbiertas(), cargarCaja(), cargarProductosCarta()]);
     } catch (err: any) {
-      try {
-        const pedidoOffline = {
-          id_cola: `offline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          mesa: mesaNombre,
-          fecha: new Date().toISOString(),
-          metodo,
-          vendedor: camareroActivo.nombre,
-          caja_id: cajaHoy.id,
-          autorizado_por: autorizadorDescuentoMesa[mesaNombre] || null,
-          tipo_iva: cfgFallback.iva_defecto || 10,
-          items: itemsACobrar,
-          totales: {
-            subtotalBruto: desglose.subtotalBruto,
-            dtoGeneralPorc: desglose.dtoGeneralPorc,
-            descuentoTotalImporte: desglose.descuentoTotalImporte,
-            base_imponible_10: desglose.base_imponible_10,
-            iva_10: desglose.iva_10,
-            base_imponible_21: desglose.base_imponible_21,
-            iva_21: desglose.iva_21,
-            baseImponibleTotal: desglose.baseImponibleTotal,
-            cuotaIvaTotal: desglose.cuotaIvaTotal,
-            totalFinal: desglose.totalFinal,
-            importeEfectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
-            importeTarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0
-          },
-          lineas: desglose.lineasCalculadas
-        };
+      const pedidoOffline = {
+        id_cola: `offline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        tipo_operacion: 'cobro',
+        mesa: mesaNombre,
+        fecha: new Date().toISOString(),
+        metodo,
+        vendedor: camareroActivo.nombre,
+        caja_id: cajaHoy.id,
+        autorizado_por: autorizadorDescuentoMesa[mesaNombre] || null,
+        tipo_iva: cfgFallback.iva_defecto || 10,
+        items: itemsACobrar,
+        comandas_inserts: comandasInsertsOffline || [],
+        totales: {
+          subtotalBruto: desglose.subtotalBruto,
+          dtoGeneralPorc: desglose.dtoGeneralPorc,
+          descuentoTotalImporte: desglose.descuentoTotalImporte,
+          base_imponible_10: desglose.base_imponible_10,
+          iva_10: desglose.iva_10,
+          base_imponible_21: desglose.base_imponible_21,
+          iva_21: desglose.iva_21,
+          baseImponibleTotal: desglose.baseImponibleTotal,
+          cuotaIvaTotal: desglose.cuotaIvaTotal,
+          totalFinal: desglose.totalFinal,
+          importeEfectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
+          importeTarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0
+        },
+        lineas: desglose.lineasCalculadas
+      };
 
-        const rawCola = localStorage.getItem('pedidos_offline');
-        const colaActual = rawCola ? JSON.parse(rawCola) : [];
-        const listaPedidos = Array.isArray(colaActual) ? colaActual : [];
-        listaPedidos.push(pedidoOffline);
-        localStorage.setItem('pedidos_offline', JSON.stringify(listaPedidos));
-      } catch (storageErr) {
-        console.error('Error guardando en pedidos_offline de localStorage:', storageErr);
-      }
+      guardarEnColaLocalOffline(pedidoOffline);
 
       // Limpiar carrito y cerrar la mesa visualmente sin bloquear el TPV
       setCarritoActual([]);
@@ -1684,7 +1986,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         return copia;
       });
 
-      mostrarAlerta('Sin conexión. Pedido guardado en cola local', 'aviso');
+      mostrarAlerta('📦 Pedido guardado en cola local offline', 'aviso');
       console.warn('Venta almacenada en cola offline:', err);
     } finally {
       setCobrandoMesa(null);
@@ -1725,96 +2027,99 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       );
       if (existente) {
         existente.cantidad += Number(it.cantidad) || 1;
+        if (it.stock_descontado) existente.stock_descontado = true;
       } else {
         itemsCombinados.push({ ...it });
       }
     });
 
-    if (carritoActual.length > 0 && navigator.onLine) {
+    const esDestinoCocina = (item: Producto) => {
+      const dest = String(item.destino || '').trim().toLowerCase();
+      const cat = String(item.categoria || '').trim().toLowerCase();
+      if (dest === 'cocina') return true;
+      if (
+        !dest &&
+        (cat.includes('cocina') ||
+          cat.includes('tapa') ||
+          cat.includes('comida') ||
+          cat.includes('bocadillo') ||
+          cat.includes('hamburguesa') ||
+          cat.includes('racion') ||
+          cat.includes('ración') ||
+          cat.includes('plato'))
+      ) {
+        return true;
+      }
+      return false;
+    };
+
+    let comandasInsertsPendientes: any[] = [];
+    if (carritoActual.length > 0) {
+      const itemsCocina = carritoActual.filter((i) => esDestinoCocina(i));
+      const itemsBarra = carritoActual.filter((i) => !esDestinoCocina(i));
+      const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
+
+      if (itemsCocina.length > 0) {
+        comandasInsertsPendientes.push({
+          ticket_number: ticketNum,
+          mesa: mesaDestinoFormat,
+          tipo_destino: 'cocina',
+          estado: 'pendiente',
+          pagado: false,
+          camarero_nombre: camareroActivo.nombre,
+          items: itemsCocina.map((i) => ({
+            producto_id: i.id,
+            articulo_inventario_id: i.articulo_inventario_id || null,
+            nombre: i.nombre,
+            precio: Number(i.precio),
+            cantidad: i.cantidad,
+            porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+            tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+            categoria: i.categoria || 'General',
+            destino: 'cocina',
+            comentarios:
+              `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
+            es_menu: (i.categoria || '').toLowerCase().includes('menu')
+          }))
+        });
+      }
+
+      if (itemsBarra.length > 0) {
+        comandasInsertsPendientes.push({
+          ticket_number: ticketNum,
+          mesa: mesaDestinoFormat,
+          tipo_destino: 'barra',
+          estado: 'pendiente',
+          pagado: false,
+          camarero_nombre: camareroActivo.nombre,
+          items: itemsBarra.map((i) => ({
+            producto_id: i.id,
+            articulo_inventario_id: i.articulo_inventario_id || null,
+            nombre: i.nombre,
+            precio: Number(i.precio),
+            cantidad: i.cantidad,
+            porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+            tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+            categoria: i.categoria || 'General',
+            destino: esDestinoCocina(i) ? 'cocina' : 'barra',
+            comentarios:
+              `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
+          }))
+        });
+      }
+    }
+
+    if (comandasInsertsPendientes.length > 0 && navigator.onLine) {
       setEnviando(true);
       try {
-        const esDestinoCocina = (item: Producto) => {
-          const dest = String(item.destino || '').trim().toLowerCase();
-          const cat = String(item.categoria || '').trim().toLowerCase();
-          if (dest === 'cocina') return true;
-          if (
-            !dest &&
-            (cat.includes('cocina') ||
-              cat.includes('tapa') ||
-              cat.includes('comida') ||
-              cat.includes('bocadillo') ||
-              cat.includes('hamburguesa') ||
-              cat.includes('racion') ||
-              cat.includes('ración') ||
-              cat.includes('plato'))
-          ) {
-            return true;
-          }
-          return false;
-        };
-        const itemsCocina = carritoActual.filter((i) => esDestinoCocina(i));
-        const itemsBarra = carritoActual.filter((i) => !esDestinoCocina(i));
-        const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
-        const promesas = [];
-
-        if (itemsCocina.length > 0) {
-          promesas.push(
-            supabase.from('comandas_cocina').insert([
-              {
-                ticket_number: ticketNum,
-                mesa: mesaDestinoFormat,
-                tipo_destino: 'cocina',
-                estado: 'pendiente',
-                pagado: false,
-                camarero_nombre: camareroActivo.nombre,
-                items: itemsCocina.map((i) => ({
-                  producto_id: i.id,
-                  articulo_inventario_id: i.articulo_inventario_id || null,
-                  nombre: i.nombre,
-                  precio: Number(i.precio),
-                  cantidad: i.cantidad,
-                  porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                  tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                  categoria: i.categoria || 'General',
-                  destino: 'cocina',
-                  comentarios:
-                    `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
-                  es_menu: (i.categoria || '').toLowerCase().includes('menu')
-                }))
-              }
-            ])
-          );
+        const promesas = comandasInsertsPendientes.map((payload) =>
+          supabase.from('comandas_cocina').insert([payload])
+        );
+        const resultados = await Promise.all(promesas);
+        const huboError = resultados.some((r) => Boolean(r.error));
+        if (!huboError) {
+          comandasInsertsPendientes = [];
         }
-
-        if (itemsBarra.length > 0) {
-          promesas.push(
-            supabase.from('comandas_cocina').insert([
-              {
-                ticket_number: ticketNum,
-                mesa: mesaDestinoFormat,
-                tipo_destino: 'barra',
-                estado: 'pendiente',
-                pagado: false,
-                camarero_nombre: camareroActivo.nombre,
-                items: itemsBarra.map((i) => ({
-                  producto_id: i.id,
-                  articulo_inventario_id: i.articulo_inventario_id || null,
-                  nombre: i.nombre,
-                  precio: Number(i.precio),
-                  cantidad: i.cantidad,
-                  porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                  tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
-                  categoria: i.categoria || 'General',
-                  destino: esDestinoCocina(i) ? 'cocina' : 'barra',
-                  comentarios:
-                    `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
-                }))
-              }
-            ])
-          );
-        }
-
-        await Promise.all(promesas);
       } catch (err) {
         console.warn('Aviso al registrar comanda previa al cobro express:', err);
       } finally {
@@ -1822,7 +2127,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }
     }
 
-    await cobrarMesaLegal(mesaDestinoFormat, metodo, itemsCombinados);
+    await cobrarMesaLegal(mesaDestinoFormat, metodo, itemsCombinados, comandasInsertsPendientes);
   };
 
   const confirmarFacturaRectificativa = async (e: React.FormEvent) => {
@@ -2415,6 +2720,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   return (
     <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between selection:bg-cyan-500 selection:text-black relative">
+      {!isOnline && (
+        <div className="fixed top-2 left-1/2 -translate-x-1/2 z-[10000] px-5 py-2.5 rounded-full bg-rose-600/95 border border-rose-400/50 text-white text-xs sm:text-sm font-black shadow-[0_0_25px_rgba(225,29,72,0.6)] backdrop-blur-md flex items-center gap-2.5 animate-pulse print:hidden">
+          <WifiOff className="h-4 w-4 shrink-0" />
+          <span>🔴 Sin conexión · Modo Offline activo</span>
+          {colaOfflineCount > 0 && (
+            <span className="ml-1 px-2 py-0.5 rounded-full bg-black/30 text-[11px] font-mono">
+              {colaOfflineCount} en cola
+            </span>
+          )}
+        </div>
+      )}
+
       {alertaFlotante && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[9999] animate-slide-down">
           <div
@@ -3172,7 +3489,28 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <Utensils className="h-7 w-7" />
             </div>
             <div>
-              <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · TPV CAFETERÍA</h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-lg sm:text-xl font-black tracking-wide text-white">NEXUS · TPV CAFETERÍA</h1>
+                <div
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black border transition-all ${
+                    isOnline
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'bg-rose-500/20 border-rose-500/50 text-rose-200 animate-pulse'
+                  }`}
+                >
+                  {isOnline ? <Wifi className="h-3.5 w-3.5 text-emerald-400" /> : <WifiOff className="h-3.5 w-3.5 text-rose-400" />}
+                  <span>{isOnline ? 'En línea' : '🔴 Sin conexión · Modo Offline activo'}</span>
+                </div>
+                {colaOfflineCount > 0 && (
+                  <div
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[11px] font-black"
+                    title="Pedidos pendientes en cola local offline"
+                  >
+                    <Package className="h-3.5 w-3.5" />
+                    <span>📦 {colaOfflineCount} en cola offline</span>
+                  </div>
+                )}
+              </div>
               <p className="text-xs text-slate-400 flex items-center gap-1">
                 Sesión: <strong className="text-amber-400">{camareroActivo.nombre}</strong>
                 {camareroActivo.rol === 'admin' && (
@@ -3765,7 +4103,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     </button>
                     <button
                       disabled={enviando}
-                      onClick={enviarPedidoCamarero}
+                      onClick={enviarPedido}
                       className="py-3 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg active:scale-95 disabled:opacity-50"
                     >
                       <Send className="h-4 w-4" /> {enviando ? 'Enviando...' : 'Enviar'}
