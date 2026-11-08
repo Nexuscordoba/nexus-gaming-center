@@ -19,6 +19,7 @@ interface Producto {
   precio: number;
   categoria: string;
   destino: 'cocina' | 'barra';
+  imagen_url?: string;
   es_combo?: boolean;
   opciones_combo?: PasoCombo[];
   loyverse_variant_id?: string;
@@ -27,12 +28,15 @@ interface Producto {
   tipo_iva?: number;
 }
 
+type EstadoLineaPedido = 'recibido' | 'preparando' | 'servido';
+
 interface ItemPedido {
   id: number;
   nombre: string;
   precio: number;
   cantidad: number;
   destino: 'cocina' | 'barra';
+  estado: EstadoLineaPedido;
   porcentaje_iva?: number;
   tipo_iva?: number;
 }
@@ -197,9 +201,9 @@ export default function TableOrder() {
         .from('comandas_cocina')
         .select('*')
         .eq('mesa', `MESA ${mNum}`)
-        .neq('estado', 'servido')
         .neq('tipo_destino', 'cuenta')
-        .eq('pagado', false);
+        .eq('pagado', false)
+        .order('created_at', { ascending: true });
 
       if (error) {
         console.error('Error al cargar cuenta de la mesa:', error);
@@ -211,9 +215,36 @@ export default function TableOrder() {
         data.forEach((comanda: any) => {
           if (comanda.items && Array.isArray(comanda.items)) {
             comanda.items.forEach((it: any) => {
-              const existente = itemsAcumulados.find(x => x.nombre === it.nombre && Number(x.precio) === Number(it.precio || 0));
+              const nombreItem = String(it.nombre || '');
+              if (nombreItem.startsWith('🍲 LISTO PARA RECOGER:')) {
+                return;
+              }
+
+              const esServido =
+                Boolean(it.entregado) ||
+                it.estado_cocina === 'servido' ||
+                comanda.estado === 'servido';
+              const esPreparando =
+                !esServido &&
+                (Boolean(it.listo) ||
+                  it.estado_cocina === 'listo' ||
+                  it.estado_cocina === 'en_preparacion' ||
+                  comanda.estado === 'listo' ||
+                  comanda.estado === 'en_preparacion');
+              const estadoItem: EstadoLineaPedido = esServido
+                ? 'servido'
+                : esPreparando
+                ? 'preparando'
+                : 'recibido';
+
+              const existente = itemsAcumulados.find(
+                (x) =>
+                  x.nombre === it.nombre &&
+                  Number(x.precio) === Number(it.precio || 0) &&
+                  x.estado === estadoItem
+              );
               if (existente) {
-                existente.cantidad += (Number(it.cantidad) || 1);
+                existente.cantidad += Number(it.cantidad) || 1;
               } else {
                 const ivaItem = Number(it.porcentaje_iva ?? it.tipo_iva ?? 10) === 21 ? 21 : 10;
                 itemsAcumulados.push({
@@ -222,6 +253,7 @@ export default function TableOrder() {
                   precio: Number(it.precio || 0),
                   cantidad: Number(it.cantidad) || 1,
                   destino: comanda.tipo_destino === 'cocina' ? 'cocina' : 'barra',
+                  estado: estadoItem,
                   porcentaje_iva: ivaItem,
                   tipo_iva: ivaItem,
                 });
@@ -292,15 +324,60 @@ export default function TableOrder() {
   };
 
   const cambiarCantidadCarrito = (id: number, delta: number) => {
-    setCarritoActual(prev => {
-      return prev.map(p => {
-        if (p.id === id) {
-          const nuevaCant = p.cantidad + delta;
-          return nuevaCant > 0 ? { ...p, cantidad: nuevaCant } : null;
+    setCarritoActual((prev) => {
+      const idx = prev.findIndex((p) => p.id === id);
+      if (idx === -1) return prev;
+
+      const item = prev[idx];
+      const nuevaCant = item.cantidad + delta;
+
+      if (nuevaCant > 0) {
+        return prev.map((p, i) => (i === idx ? { ...p, cantidad: nuevaCant } : p));
+      }
+
+      // Si se elimina un combo padre, eliminamos también sus sub-líneas "├─" asociadas
+      const resultado: Array<Producto & { cantidad: number }> = [];
+      let saltandoHijosCombo = false;
+      for (let i = 0; i < prev.length; i++) {
+        if (i === idx) {
+          saltandoHijosCombo = !prev[i].nombre.includes('├─');
+          continue;
         }
-        return p;
-      }).filter(Boolean) as Array<Producto & { cantidad: number }>;
+        if (saltandoHijosCombo) {
+          if (prev[i].nombre.includes('├─')) {
+            continue;
+          } else {
+            saltandoHijosCombo = false;
+          }
+        }
+        resultado.push(prev[i]);
+      }
+      return resultado;
     });
+  };
+
+  const obtenerCantidadEnCarrito = (prod: Producto): number => {
+    if (prod.es_combo) {
+      return carritoActual
+        .filter((p) => !p.nombre.includes('├─') && p.nombre === prod.nombre)
+        .reduce((acc, p) => acc + p.cantidad, 0);
+    }
+    const item = carritoActual.find((p) => p.id === prod.id);
+    return item ? item.cantidad : 0;
+  };
+
+  const restarProductoDesdeCarta = (prod: Producto) => {
+    if (prod.es_combo) {
+      const padresCombo = carritoActual.filter(
+        (p) => !p.nombre.includes('├─') && p.nombre === prod.nombre
+      );
+      const ultimoPadre = padresCombo[padresCombo.length - 1];
+      if (ultimoPadre) {
+        cambiarCantidadCarrito(ultimoPadre.id, -1);
+      }
+      return;
+    }
+    cambiarCantidadCarrito(prod.id, -1);
   };
 
   const totalCarritoActual = redondearMoneda(
@@ -538,22 +615,49 @@ export default function TableOrder() {
               <span className="font-mono text-sm">{totalCuentaAcumulada.toFixed(2)} €</span>
             </div>
             <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-              {cuentaMesa.map((item, idx) => (
-                <div 
-                  key={idx} 
-                  className={`flex items-center justify-between text-xs bg-black/40 px-3 py-2 rounded-xl border border-white/5 ${
-                    item.nombre.includes('├─') ? 'opacity-70 pl-6' : ''
-                  }`}
-                >
-                  <span className="text-white font-medium">
-                    <span className="text-cyan-400 font-mono font-bold mr-2">{item.cantidad}x</span>
-                    {item.nombre}
-                  </span>
-                  <span className="font-mono text-slate-300">
-                    {item.nombre.includes('├─') ? '' : `${redondearMoneda(Number(item.precio) * item.cantidad).toFixed(2)} €`}
-                  </span>
-                </div>
-              ))}
+              {cuentaMesa.map((item, idx) => {
+                const badgeConfig =
+                  item.estado === 'servido'
+                    ? {
+                        label: '✅ Servido',
+                        className: 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                      }
+                    : item.estado === 'preparando'
+                    ? {
+                        label: '🔥 Preparando',
+                        className: 'bg-amber-950/60 text-amber-300 border-amber-500/40 animate-pulse'
+                      }
+                    : {
+                        label: '🕒 Recibido',
+                        className: 'bg-cyan-950/60 text-cyan-300 border-cyan-500/30'
+                      };
+
+                return (
+                  <div
+                    key={idx}
+                    className={`flex items-center justify-between gap-2 text-xs bg-black/40 px-3 py-2 rounded-xl border border-white/5 ${
+                      item.nombre.includes('├─') ? 'opacity-70 pl-6' : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                      <span className="text-white font-medium break-words">
+                        <span className="text-cyan-400 font-mono font-bold mr-2">{item.cantidad}x</span>
+                        {item.nombre}
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border shrink-0 ${badgeConfig.className}`}
+                      >
+                        {badgeConfig.label}
+                      </span>
+                    </div>
+                    <span className="font-mono text-slate-300 shrink-0">
+                      {item.nombre.includes('├─')
+                        ? ''
+                        : `${redondearMoneda(Number(item.precio) * item.cantidad).toFixed(2)} €`}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -602,35 +706,82 @@ export default function TableOrder() {
                 if (!catProd) return true;
                 return catProd === catActiva || catProd.includes(catActiva) || catActiva.includes(catProd);
               })
-              .map((prod) => (
-                <div 
-                  key={prod.id} 
-                  className={`p-4 rounded-2xl bg-[#0d0f17] border flex items-center justify-between gap-3 shadow-md ${
-                    prod.es_combo ? 'border-cyan-500/40 bg-cyan-950/20' : 'border-white/10'
-                  }`}
-                >
-                  <div>
-                    <h4 className="font-bold text-white text-sm flex items-center gap-1.5">
-                      {prod.nombre}
-                      {prod.es_combo && (
-                        <span className="text-[9px] bg-cyan-500 text-slate-950 px-1.5 py-0.5 rounded font-black uppercase">
-                          Opciones
-                        </span>
-                      )}
-                    </h4>
-                    <span className="font-mono text-cyan-400 font-bold text-xs mt-1 block">
-                      {Number(prod.precio).toFixed(2)} €
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => clickAgregarAlCarrito(prod)}
-                    className="h-10 w-10 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center shrink-0 active:scale-95 transition-transform cursor-pointer shadow-md font-bold"
+              .map((prod) => {
+                const cantidadEnCarrito = obtenerCantidadEnCarrito(prod);
+
+                return (
+                  <div
+                    key={prod.id}
+                    className={`p-3.5 rounded-2xl bg-[#0d0f17] border flex items-center justify-between gap-3 shadow-md transition-all ${
+                      cantidadEnCarrito > 0
+                        ? 'border-cyan-500/60 bg-cyan-950/25 shadow-[0_0_15px_rgba(6,182,212,0.12)]'
+                        : prod.es_combo
+                        ? 'border-cyan-500/40 bg-cyan-950/20'
+                        : 'border-white/10'
+                    }`}
                   >
-                    <Plus className="h-5 w-5" />
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-center gap-3 min-w-0">
+                      {prod.imagen_url ? (
+                        <img
+                          src={prod.imagen_url}
+                          alt={prod.nombre}
+                          className="h-14 w-14 rounded-xl object-cover border border-white/10 shrink-0"
+                        />
+                      ) : null}
+                      <div className="min-w-0">
+                        <h4 className="font-bold text-white text-sm flex items-center gap-1.5 flex-wrap leading-tight">
+                          <span className="break-words">{prod.nombre}</span>
+                          {prod.es_combo && (
+                            <span className="text-[9px] bg-cyan-500 text-slate-950 px-1.5 py-0.5 rounded font-black uppercase shrink-0">
+                              Opciones
+                            </span>
+                          )}
+                        </h4>
+                        <span className="font-mono text-cyan-400 font-bold text-xs mt-1 block">
+                          {Number(prod.precio).toFixed(2)} €
+                        </span>
+                      </div>
+                    </div>
+
+                    <div
+                      className={`flex items-center gap-1.5 rounded-xl p-1 border shrink-0 transition-colors ${
+                        cantidadEnCarrito > 0
+                          ? 'bg-cyan-950/60 border-cyan-500/50'
+                          : 'bg-black/40 border-white/10'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        disabled={cantidadEnCarrito === 0}
+                        onClick={() => restarProductoDesdeCarta(prod)}
+                        className={`h-8 w-8 rounded-lg flex items-center justify-center transition-all ${
+                          cantidadEnCarrito > 0
+                            ? 'bg-white/10 hover:bg-white/20 text-white active:scale-95 cursor-pointer'
+                            : 'text-slate-600 cursor-not-allowed opacity-40'
+                        }`}
+                      >
+                        <Minus className="h-4 w-4" />
+                      </button>
+
+                      <span
+                        className={`font-mono font-black text-sm w-6 text-center ${
+                          cantidadEnCarrito > 0 ? 'text-cyan-300' : 'text-slate-500'
+                        }`}
+                      >
+                        {cantidadEnCarrito}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => clickAgregarAlCarrito(prod)}
+                        className="h-8 w-8 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center active:scale-95 transition-transform cursor-pointer shadow-sm font-bold"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         )}
 

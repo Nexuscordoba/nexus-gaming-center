@@ -177,6 +177,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mesasAbiertas, setMesasAbiertas] = useState<MesaAbierta[]>([]);
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
   const [platosEnviadosCocina, setPlatosEnviadosCocina] = useState<PlatoCocinaActivo[]>([]);
+  const [mesasCuentaSolicitada, setMesasCuentaSolicitada] = useState<string[]>([]);
 
   const [descuentosLineas, setDescuentosLineas] = useState<Record<string, number>>({});
   const [descuentoGeneralMesa, setDescuentoGeneralMesa] = useState<Record<string, number>>({});
@@ -603,9 +604,17 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       if (data) {
         const mapMesas: Record<string, MesaAbierta> = {};
         const listaPlatosCocina: PlatoCocinaActivo[] = [];
+        const cuentasPedidasSet = new Set<string>();
 
         data.forEach((row: any) => {
           const mKey = row.mesa;
+
+          if (row.tipo_destino === 'cuenta') {
+            if (row.estado !== 'servido') {
+              cuentasPedidasSet.add(mKey);
+            }
+            return;
+          }
 
           if (!mapMesas[mKey]) {
             mapMesas[mKey] = {
@@ -624,9 +633,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               if (nombreItem.startsWith('🍲 LISTO PARA RECOGER:')) {
                 return;
               }
-              const esPlatoListo = Boolean(it.listo || row.estado === 'listo' || row.estado === 'servido');
+              const esPlatoServido = Boolean(
+                it.entregado || it.estado_cocina === 'servido' || row.estado === 'servido'
+              );
+              const esPlatoListo = Boolean(
+                it.listo || it.estado_cocina === 'listo' || row.estado === 'listo' || esPlatoServido
+              );
               const estadoPlato: 'pendiente' | 'en_preparacion' | 'listo' | 'servido' =
-                row.estado === 'servido'
+                esPlatoServido
                   ? 'servido'
                   : esPlatoListo
                   ? 'listo'
@@ -670,6 +684,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           }
         });
 
+        setMesasCuentaSolicitada(Array.from(cuentasPedidasSet));
         setPlatosEnviadosCocina(listaPlatosCocina);
         const listado = Object.values(mapMesas).map((m) => {
           const total = redondearMoneda(m.items.reduce((acc, i) => acc + Number(i.precio) * Number(i.cantidad), 0));
@@ -1487,7 +1502,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  const cobrarMesaLegal = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
+  const cobrarMesaLegal = async (
+    mesaNombre: string,
+    metodo: 'efectivo' | 'tarjeta',
+    itemsOverride?: ItemPedido[]
+  ) => {
     if (cobrandoMesa) return;
 
     if (cajaAtrasada) {
@@ -1501,11 +1520,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
 
     const mesaObj = mesasAbiertas.find((m) => m.mesa === mesaNombre);
-    if (!mesaObj || !camareroActivo) return;
+    const itemsACobrar = itemsOverride && itemsOverride.length > 0 ? itemsOverride : mesaObj?.items;
+    if (!itemsACobrar || itemsACobrar.length === 0 || !camareroActivo) return;
 
     setCobrandoMesa(mesaNombre);
 
-    const desglose = calcularDesgloseMesa(mesaNombre, mesaObj.items);
+    const desglose = calcularDesgloseMesa(mesaNombre, itemsACobrar);
     const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
     const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
@@ -1595,7 +1615,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         imprimirDocumentoFiscalHTML(facturaCompleta, cfg);
       }
 
-      await descontarInventarioSupabase(mesaObj.items);
+      await descontarInventarioSupabase(itemsACobrar);
 
       setCarritoActual([]);
       if (getNombreMesa(mesaSeleccionada) === mesaNombre) {
@@ -1625,7 +1645,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           caja_id: cajaHoy.id,
           autorizado_por: autorizadorDescuentoMesa[mesaNombre] || null,
           tipo_iva: cfgFallback.iva_defecto || 10,
-          items: mesaObj.items,
+          items: itemsACobrar,
           totales: {
             subtotalBruto: desglose.subtotalBruto,
             dtoGeneralPorc: desglose.dtoGeneralPorc,
@@ -1669,6 +1689,140 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     } finally {
       setCobrandoMesa(null);
     }
+  };
+
+  const enviarYCobrarExpress = async (metodo: 'efectivo' | 'tarjeta') => {
+    if (!camareroActivo || enviando || cobrandoMesa !== null) return;
+    if (cuentaMesaActual.length === 0 && carritoActual.length === 0) return;
+
+    if (cajaAtrasada) {
+      mostrarAlerta('¡ATENCIÓN! Cierra primero la caja del día anterior antes de cobrar.', 'aviso');
+      return;
+    }
+
+    if (!cajaHoy || cajaHoy.estado === 'cerrada') {
+      mostrarAlerta('¡ATENCIÓN! Abre la caja de hoy primero en la pestaña Caja.', 'aviso');
+      return;
+    }
+
+    const mesaDestinoFormat = getNombreMesa(mesaSeleccionada);
+    const itemsCarritoNormalizados: ItemPedido[] = carritoActual.map((c) => ({
+      producto_id: c.id,
+      articulo_inventario_id: c.articulo_inventario_id,
+      nombre: c.nombre,
+      precio: Number(c.precio),
+      cantidad: c.cantidad,
+      destino: c.destino,
+      porcentaje_iva: c.porcentaje_iva ?? c.tipo_iva,
+      tipo_iva: c.porcentaje_iva ?? c.tipo_iva
+    }));
+
+    // Combinar cuenta acumulada previa con el carrito actual para el cobro 1-Tap
+    const itemsCombinados: ItemPedido[] = [];
+    cuentaMesaActual.concat(itemsCarritoNormalizados).forEach((it) => {
+      const existente = itemsCombinados.find(
+        (x) => x.nombre === it.nombre && Number(x.precio) === Number(it.precio)
+      );
+      if (existente) {
+        existente.cantidad += Number(it.cantidad) || 1;
+      } else {
+        itemsCombinados.push({ ...it });
+      }
+    });
+
+    if (carritoActual.length > 0 && navigator.onLine) {
+      setEnviando(true);
+      try {
+        const esDestinoCocina = (item: Producto) => {
+          const dest = String(item.destino || '').trim().toLowerCase();
+          const cat = String(item.categoria || '').trim().toLowerCase();
+          if (dest === 'cocina') return true;
+          if (
+            !dest &&
+            (cat.includes('cocina') ||
+              cat.includes('tapa') ||
+              cat.includes('comida') ||
+              cat.includes('bocadillo') ||
+              cat.includes('hamburguesa') ||
+              cat.includes('racion') ||
+              cat.includes('ración') ||
+              cat.includes('plato'))
+          ) {
+            return true;
+          }
+          return false;
+        };
+        const itemsCocina = carritoActual.filter((i) => esDestinoCocina(i));
+        const itemsBarra = carritoActual.filter((i) => !esDestinoCocina(i));
+        const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
+        const promesas = [];
+
+        if (itemsCocina.length > 0) {
+          promesas.push(
+            supabase.from('comandas_cocina').insert([
+              {
+                ticket_number: ticketNum,
+                mesa: mesaDestinoFormat,
+                tipo_destino: 'cocina',
+                estado: 'pendiente',
+                pagado: false,
+                camarero_nombre: camareroActivo.nombre,
+                items: itemsCocina.map((i) => ({
+                  producto_id: i.id,
+                  articulo_inventario_id: i.articulo_inventario_id || null,
+                  nombre: i.nombre,
+                  precio: Number(i.precio),
+                  cantidad: i.cantidad,
+                  porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                  tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                  categoria: i.categoria || 'General',
+                  destino: 'cocina',
+                  comentarios:
+                    `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : ''),
+                  es_menu: (i.categoria || '').toLowerCase().includes('menu')
+                }))
+              }
+            ])
+          );
+        }
+
+        if (itemsBarra.length > 0) {
+          promesas.push(
+            supabase.from('comandas_cocina').insert([
+              {
+                ticket_number: ticketNum,
+                mesa: mesaDestinoFormat,
+                tipo_destino: 'barra',
+                estado: 'pendiente',
+                pagado: false,
+                camarero_nombre: camareroActivo.nombre,
+                items: itemsBarra.map((i) => ({
+                  producto_id: i.id,
+                  articulo_inventario_id: i.articulo_inventario_id || null,
+                  nombre: i.nombre,
+                  precio: Number(i.precio),
+                  cantidad: i.cantidad,
+                  porcentaje_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                  tipo_iva: Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10,
+                  categoria: i.categoria || 'General',
+                  destino: esDestinoCocina(i) ? 'cocina' : 'barra',
+                  comentarios:
+                    `Anotado por ${camareroActivo.nombre}` + (i.notaExtra ? ` | NOTA: ${i.notaExtra}` : '')
+                }))
+              }
+            ])
+          );
+        }
+
+        await Promise.all(promesas);
+      } catch (err) {
+        console.warn('Aviso al registrar comanda previa al cobro express:', err);
+      } finally {
+        setEnviando(false);
+      }
+    }
+
+    await cobrarMesaLegal(mesaDestinoFormat, metodo, itemsCombinados);
   };
 
   const confirmarFacturaRectificativa = async (e: React.FormEvent) => {
@@ -3124,55 +3278,129 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       {vistaSeccion === 'tomar_nota' && (
         <main className="flex-1 max-w-5xl w-full mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 pb-24">
           <div className="md:col-span-2 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
-              <div className="flex items-center gap-2">
-                <MapPin className="h-5 w-5 text-amber-400" />
-                <span className="text-xs font-bold uppercase text-slate-300">Origen:</span>
-                <select
-                  value={mesaSeleccionada}
-                  onChange={(e) => setMesaSeleccionada(e.target.value)}
-                  className="bg-black/80 border border-amber-500/50 rounded-xl px-3 py-2 text-sm font-black text-amber-400 outline-none cursor-pointer"
-                >
-                  <option value="BARRA">Servicio en Barra</option>
-                  {Array.from({ length: 20 }, (_, i) => String(i + 1)).map((m) => (
-                    <option key={m} value={m}>
-                      Mesa {m}
-                    </option>
-                  ))}
-                </select>
+            <div className="bg-[#0d0f17] p-4 rounded-2xl border border-white/10 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <MapPin className="h-5 w-5 text-amber-400" />
+                  <span className="text-xs font-bold uppercase text-slate-300">Origen:</span>
+                  <select
+                    value={mesaSeleccionada}
+                    onChange={(e) => setMesaSeleccionada(e.target.value)}
+                    className="bg-black/80 border border-amber-500/50 rounded-xl px-3 py-2 text-sm font-black text-amber-400 outline-none cursor-pointer"
+                  >
+                    <option value="BARRA">Servicio en Barra</option>
+                    {Array.from({ length: 20 }, (_, i) => String(i + 1)).map((m) => (
+                      <option key={m} value={m}>
+                        Mesa {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <form onSubmit={manejarEscaneoCodigoBarras} className="flex items-center gap-1.5 flex-1 max-w-xs">
+                  <div className="relative flex-1">
+                    <Barcode className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      placeholder="Código de barras..."
+                      value={busquedaCodigoBarras}
+                      onChange={(e) => setBusquedaCodigoBarras(e.target.value)}
+                      className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none focus:border-amber-400"
+                    />
+                  </div>
+                </form>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModalCuentasAparcadas(true)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-lg transition-all cursor-pointer"
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                    <span className="hidden sm:inline">Aparcadas</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={imprimirPreTicketCuenta}
+                    disabled={imprimiendoPreTicket || (cuentaMesaActual.length === 0 && carritoActual.length === 0)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <Printer className="h-4 w-4" />
+                    <span className="hidden sm:inline">Pre-Ticket</span>
+                  </button>
+                </div>
               </div>
 
-              <form onSubmit={manejarEscaneoCodigoBarras} className="flex items-center gap-1.5 flex-1 max-w-xs">
-                <div className="relative flex-1">
-                  <Barcode className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
-                  <input
-                    type="text"
-                    placeholder="Código de barras..."
-                    value={busquedaCodigoBarras}
-                    onChange={(e) => setBusquedaCodigoBarras(e.target.value)}
-                    className="w-full bg-black/60 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none focus:border-amber-400"
-                  />
+              {/* BARRA HORIZONTAL DE PÍLDORAS SEMAFÓRICAS DE MESAS */}
+              <div className="pt-2 border-t border-white/5 space-y-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap text-[10px] font-bold text-slate-400">
+                  <span className="uppercase tracking-wider">Mapa Rápido de Mesas:</span>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full bg-slate-500 inline-block" /> Libre
+                    </span>
+                    <span className="flex items-center gap-1 text-amber-300">
+                      <span className="h-2 w-2 rounded-full bg-amber-400 inline-block" /> Ocupada
+                    </span>
+                    <span className="flex items-center gap-1 text-emerald-300">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400 inline-block" /> Plato Listo
+                    </span>
+                    <span className="flex items-center gap-1 text-rose-300">
+                      <span className="h-2 w-2 rounded-full bg-rose-500 inline-block" /> Pide Cuenta
+                    </span>
+                  </div>
                 </div>
-              </form>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setModalCuentasAparcadas(true)}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-lg transition-all cursor-pointer"
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  <span className="hidden sm:inline">Aparcadas</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={imprimirPreTicketCuenta}
-                  disabled={imprimiendoPreTicket || (cuentaMesaActual.length === 0 && carritoActual.length === 0)}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
-                >
-                  <Printer className="h-4 w-4" />
-                  <span className="hidden sm:inline">Pre-Ticket</span>
-                </button>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1.5 pt-1 scrollbar-none">
+                  {['BARRA', ...Array.from({ length: 20 }, (_, i) => String(i + 1))].map((val) => {
+                    const nombreMesa = getNombreMesa(val);
+                    const activa = mesaSeleccionada === val;
+                    const mesaAbiertaObj = mesasAbiertas.find((m) => m.mesa === nombreMesa);
+                    const importeMesa = mesaAbiertaObj
+                      ? calcularDesgloseMesa(nombreMesa, mesaAbiertaObj.items).totalFinal
+                      : 0;
+                    const estaOcupada = Boolean(mesaAbiertaObj && importeMesa > 0);
+                    const tienePlatoListo = platosEnviadosCocina.some(
+                      (p) => p.mesa === nombreMesa && p.estado === 'listo'
+                    );
+                    const pideCuentaQR = mesasCuentaSolicitada.includes(nombreMesa);
+
+                    let colorClasses =
+                      'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:bg-white/10';
+                    if (pideCuentaQR) {
+                      colorClasses =
+                        'bg-rose-600/30 border-rose-500 text-rose-200 shadow-[0_0_12px_rgba(244,63,94,0.35)]';
+                    } else if (tienePlatoListo) {
+                      colorClasses =
+                        'bg-emerald-500/25 border-emerald-400 text-emerald-200 animate-bounce shadow-[0_0_12px_rgba(16,185,129,0.35)]';
+                    } else if (estaOcupada) {
+                      colorClasses =
+                        'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.15)]';
+                    }
+
+                    return (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setMesaSeleccionada(val)}
+                        className={`px-3 py-1.5 rounded-xl border text-xs font-black shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${colorClasses} ${
+                          activa ? 'ring-2 ring-cyan-400 scale-[1.03]' : ''
+                        }`}
+                      >
+                        <span>{val === 'BARRA' ? 'BARRA' : `M${val}`}</span>
+                        {pideCuentaQR && <span title="¡Cuenta solicitada desde el QR!">🔔 Cuenta</span>}
+                        {!pideCuentaQR && tienePlatoListo && (
+                          <span title="¡Plato listo en cocina para llevar a mesa!">🍲 Listo</span>
+                        )}
+                        {estaOcupada && (
+                          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-white">
+                            {importeMesa.toFixed(2)}€
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
@@ -3545,6 +3773,40 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* COBRO EXPRESS "1-TAP" DIRECTAMENTE DEBAJO DEL BLOQUE RESUMEN MESA */}
+            <div className="p-4 rounded-3xl bg-[#0d0f17] border border-emerald-500/30 space-y-2.5 shadow-xl">
+              <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-emerald-400">
+                <span>Cobro Express 1-Tap ({getNombreMesa(mesaSeleccionada)})</span>
+                <span className="font-mono text-white">{desgloseMesaSeleccionada.totalFinal.toFixed(2)} €</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={
+                    enviando ||
+                    cobrandoMesa !== null ||
+                    (cuentaMesaActual.length === 0 && carritoActual.length === 0)
+                  }
+                  onClick={() => enviarYCobrarExpress('efectivo')}
+                  className="py-3.5 px-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span>⚡ Enviar y Cobrar Efectivo</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    enviando ||
+                    cobrandoMesa !== null ||
+                    (cuentaMesaActual.length === 0 && carritoActual.length === 0)
+                  }
+                  onClick={() => enviarYCobrarExpress('tarjeta')}
+                  className="py-3.5 px-3 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span>💳 Enviar y Cobrar Tarjeta</span>
+                </button>
+              </div>
             </div>
           </div>
         </main>

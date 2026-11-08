@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './supabase';
 import {
   Coffee,
@@ -53,6 +53,11 @@ interface MesaAgrupada {
   items: ItemAgrupado[];
   itemsBarra: ItemAgrupado[];
   itemsCocina: ItemAgrupado[];
+  totalBarra: number;
+  listosBarra: number;
+  totalCocina: number;
+  listosCocina: number;
+  esComandaMixta: boolean;
 }
 
 export default function BarDisplay() {
@@ -61,6 +66,49 @@ export default function BarDisplay() {
   const [loading, setLoading] = useState(true);
   const [filtroVista, setFiltroVista] = useState<'general' | 'barra' | 'cocina'>('general');
   const [procesandoKey, setProcesandoKey] = useState<string | null>(null);
+
+  const platosCocinaListosPreviosRef = useRef<Set<string>>(new Set());
+  const audioInicializadoRef = useRef<boolean>(false);
+
+  const reproducirDingPlatoListo = useCallback(() => {
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+
+      // Primer tono armónico (B5)
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(987.77, now);
+      gain1.gain.setValueAtTime(0.12, now);
+      gain1.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.45);
+
+      // Segundo tono armónico ("ding" brillante en E6)
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(1318.51, now + 0.09);
+      gain2.gain.setValueAtTime(0.0001, now);
+      gain2.gain.setValueAtTime(0.15, now + 0.09);
+      gain2.gain.exponentialRampToValueAtTime(0.0001, now + 0.7);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.09);
+      osc2.stop(now + 0.7);
+
+      setTimeout(() => {
+        ctx.close().catch(() => {});
+      }, 800);
+    } catch (err) {
+      console.warn('AudioContext no disponible o bloqueado por el navegador:', err);
+    }
+  }, []);
 
   const resolverDestinoItem = useCallback((it: ItemComanda, comandaDestino?: string): 'barra' | 'cocina' => {
     const destRaw = String(it.destino || comandaDestino || 'barra').trim().toLowerCase();
@@ -105,6 +153,8 @@ export default function BarDisplay() {
   const agruparPorMesa = useCallback(
     (data: Comanda[], filtroActual: 'general' | 'barra' | 'cocina') => {
       const grupos: Record<string, MesaAgrupada> = {};
+      const nuevosPlatosListosSet = new Set<string>();
+      let huboNuevoPlatoListo = false;
 
       data.forEach((comanda) => {
         if (!grupos[comanda.mesa]) {
@@ -113,20 +163,25 @@ export default function BarDisplay() {
             created_at: comanda.created_at,
             items: [],
             itemsBarra: [],
-            itemsCocina: []
+            itemsCocina: [],
+            totalBarra: 0,
+            listosBarra: 0,
+            totalCocina: 0,
+            listosCocina: 0,
+            esComandaMixta: false
           };
+        } else if (new Date(comanda.created_at).getTime() < new Date(grupos[comanda.mesa].created_at).getTime()) {
+          grupos[comanda.mesa].created_at = comanda.created_at;
         }
 
         if (Array.isArray(comanda.items)) {
           comanda.items.forEach((it, idx) => {
-            if (String(it.nombre || '').startsWith('🍲 LISTO PARA RECOGER:')) {
+            const nombreIt = String(it.nombre || '');
+            if (nombreIt.startsWith('🍲 LISTO PARA RECOGER:')) {
               return;
             }
 
             const destItem = resolverDestinoItem(it, comanda.tipo_destino);
-            if (filtroActual === 'barra' && destItem !== 'barra') return;
-            if (filtroActual === 'cocina' && destItem !== 'cocina') return;
-
             const esCocina = destItem === 'cocina';
             const listoEnCocina = esCocina
               ? Boolean(it.listo || it.estado_cocina === 'listo' || comanda.estado === 'listo')
@@ -135,12 +190,38 @@ export default function BarDisplay() {
               ? Boolean(it.entregado || it.estado_cocina === 'servido')
               : Boolean(it.entregado ?? it.listo);
 
+            const platoUid = `${comanda.id}_item_${it.id ?? it.producto_id ?? idx}_${idx}`;
+
+            // Contabilizar progreso total de la mesa (Barra vs Cocina) excluyendo sub-líneas de combo
+            if (!nombreIt.includes('├─')) {
+              const cant = Number(it.cantidad) || 1;
+              if (esCocina) {
+                grupos[comanda.mesa].totalCocina += cant;
+                if (listoEnCocina || entregadoEnBarra) {
+                  grupos[comanda.mesa].listosCocina += cant;
+                }
+              } else {
+                grupos[comanda.mesa].totalBarra += cant;
+                if (listoEnCocina || entregadoEnBarra) {
+                  grupos[comanda.mesa].listosBarra += cant;
+                }
+              }
+            }
+
+            if (esCocina && listoEnCocina && !entregadoEnBarra) {
+              nuevosPlatosListosSet.add(platoUid);
+              if (audioInicializadoRef.current && !platosCocinaListosPreviosRef.current.has(platoUid)) {
+                huboNuevoPlatoListo = true;
+              }
+            }
+
+            if (filtroActual === 'barra' && destItem !== 'barra') return;
+            if (filtroActual === 'cocina' && destItem !== 'cocina') return;
+
             // Solo desaparece definitivamente del KDS cuando el camarero lo ha marcado como entregado
             if (entregadoEnBarra) {
               return;
             }
-
-            const platoUid = `${comanda.id}_item_${it.id ?? it.producto_id ?? idx}_${idx}`;
 
             const itemConstruido: ItemAgrupado = {
               ...it,
@@ -164,9 +245,43 @@ export default function BarDisplay() {
         }
       });
 
-      setMesasAgrupadas(Object.values(grupos).filter((g) => g.items.length > 0));
+      platosCocinaListosPreviosRef.current = nuevosPlatosListosSet;
+      if (!audioInicializadoRef.current) {
+        audioInicializadoRef.current = true;
+      } else if (huboNuevoPlatoListo) {
+        reproducirDingPlatoListo();
+      }
+
+      const ahoraMs = Date.now();
+      const listaOrdenada = Object.values(grupos)
+        .map((g) => ({
+          ...g,
+          esComandaMixta:
+            (g.totalBarra > 0 && g.totalCocina > 0) ||
+            (g.itemsBarra.length > 0 && g.itemsCocina.length > 0)
+        }))
+        .filter((g) => g.items.length > 0)
+        .sort((a, b) => {
+          const aTieneCocinaLista = a.itemsCocina.some((it) => it.listoEnCocina);
+          const bTieneCocinaLista = b.itemsCocina.some((it) => it.listoEnCocina);
+          if (aTieneCocinaLista !== bTieneCocinaLista) {
+            return aTieneCocinaLista ? -1 : 1;
+          }
+
+          const minA = Math.floor((ahoraMs - new Date(a.created_at).getTime()) / 60000);
+          const minB = Math.floor((ahoraMs - new Date(b.created_at).getTime()) / 60000);
+          const aUrgente = minA >= 7;
+          const bUrgente = minB >= 7;
+          if (aUrgente !== bUrgente) {
+            return aUrgente ? -1 : 1;
+          }
+
+          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        });
+
+      setMesasAgrupadas(listaOrdenada);
     },
-    [resolverDestinoItem]
+    [resolverDestinoItem, reproducirDingPlatoListo]
   );
 
   useEffect(() => {
@@ -517,7 +632,7 @@ export default function BarDisplay() {
                   }`}
                 >
                   <div className="space-y-4">
-                    <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                    <div className="flex items-center justify-between pb-3 border-b border-white/10 gap-2 flex-wrap">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span
                           className={`text-xs font-black px-3 py-1 rounded-xl uppercase shadow-md ${
@@ -529,6 +644,20 @@ export default function BarDisplay() {
                         <span className="text-[10px] text-slate-400 font-bold bg-white/5 px-2 py-0.5 rounded-md">
                           {mesaGrupo.items.length} Ítems pendientes
                         </span>
+                        {mesaGrupo.esComandaMixta && (
+                          <span
+                            className={`text-[11px] font-mono font-black px-2.5 py-1 rounded-xl border flex items-center gap-1.5 ${
+                              mesaGrupo.listosCocina === mesaGrupo.totalCocina
+                                ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
+                                : 'bg-amber-950/40 border-amber-500/40 text-amber-200'
+                            }`}
+                          >
+                            <span>
+                              🥤 {mesaGrupo.listosBarra}/{mesaGrupo.totalBarra} Barra | 🍳 {mesaGrupo.listosCocina}/
+                              {mesaGrupo.totalCocina} Cocina
+                            </span>
+                          </span>
+                        )}
                       </div>
 
                       <div
