@@ -324,8 +324,19 @@ export default function BarDisplay() {
       const comanda = comandasOriginales.find((c) => String(c.id) === String(item.comandaId));
       if (!comanda || !Array.isArray(comanda.items)) return;
 
+      const indicesAEntregar = new Set<number>([item.itemIdx]);
+      if (!String(item.nombre || '').includes('├─')) {
+        for (let i = item.itemIdx + 1; i < comanda.items.length; i++) {
+          if (String(comanda.items[i]?.nombre || '').includes('├─')) {
+            indicesAEntregar.add(i);
+          } else {
+            break;
+          }
+        }
+      }
+
       const nuevosItems: ItemComanda[] = comanda.items.map((it, idx) => {
-        if (idx !== item.itemIdx) return { ...it };
+        if (!indicesAEntregar.has(idx)) return { ...it };
         return {
           ...it,
           listo: true,
