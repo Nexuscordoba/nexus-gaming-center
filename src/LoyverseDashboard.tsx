@@ -1,5 +1,5 @@
 // src/LoyverseDashboard.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from './supabase';
 import HistorialCajas from './HistorialCajas';
 import {
@@ -10,19 +10,12 @@ import {
   exportarTicketsAExcelCSV,
   exportarTicketsAPDF,
   calcularCosteIngredienteEscandallo,
+  obtenerFactorConversion,
   redondearMoneda,
   type ConfiguracionFiscal,
   type LineaTicketFiscal,
   type UnidadMedida
 } from './fiscalService';
-import {
-  TrendingUp, DollarSign, CreditCard, Wallet, ArrowLeft, CheckCircle2,
-  Receipt, Package, BarChart3, Clock, Search, Users, Plus, Trash2, Edit3,
-  FileSpreadsheet, FileText, Printer, ShieldAlert, ShoppingCart, Layers,
-  Scale, Barcode, Image as ImageIcon, Save, Building2, Upload, Download,
-  UtensilsCrossed, X, Target, ListPlus, RotateCcw, CornerDownRight,
-  UserCog, Check, Ban, Truck, Lock, LockOpen, EyeOff, Calculator, AlertTriangle, RefreshCw
-} from 'lucide-react';
 
 interface BackofficeProps {
   onBack?: () => void;
@@ -39,6 +32,15 @@ interface IngredienteEscandalloUI {
   coste_calculado: number;
 }
 
+interface IngredienteElaboracionUI {
+  ingrediente_id: string;
+  nombre: string;
+  cantidad: number;
+  unidad_uso: UnidadMedida;
+  unidad_base: UnidadMedida;
+  coste_calculado: number;
+}
+
 interface OpcionComboUI {
   nombre: string;
   destino: 'barra' | 'cocina';
@@ -49,63 +51,27 @@ interface PasoComboUI {
   opciones: OpcionComboUI[];
 }
 
-const agruparFacturas = (lista: any[]) => {
-  const mapa = new Map();
-  lista.forEach(f => mapa.set(f.id, { ...f, hijos: [] }));
-  const raices: any[] = [];
-  mapa.forEach(f => {
-    if (f.ticket_origen_id && mapa.has(f.ticket_origen_id)) {
-      mapa.get(f.ticket_origen_id).hijos.push(f);
-    } else {
-      raices.push(f);
-    }
-  });
-  return raices;
-};
-
-const formatearFechaHoraCaja = (c: any): string => {
-  const rawTimestamp = c?.created_at || c?.fecha_apertura || c?.fecha_cierre || c?.fecha;
-  if (!rawTimestamp) return '-';
-
-  if (typeof rawTimestamp === 'string' && (rawTimestamp.includes('T') || rawTimestamp.includes(':'))) {
-    const d = new Date(rawTimestamp);
-    if (!isNaN(d.getTime())) {
-      const dia = String(d.getDate()).padStart(2, '0');
-      const mes = String(d.getMonth() + 1).padStart(2, '0');
-      const anio = d.getFullYear();
-      const horas = String(d.getHours()).padStart(2, '0');
-      const minutos = String(d.getMinutes()).padStart(2, '0');
-      return `${dia}/${mes}/${anio} - ${horas}:${minutos}h`;
-    }
-  }
-
-  if (typeof c?.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(c.fecha)) {
-    const [anio, mes, dia] = c.fecha.split('-');
-    const horaExtra = c?.hora_apertura || c?.hora || '00:00';
-    return `${dia}/${mes}/${anio} - ${horaExtra}h`;
-  }
-
-  const d = new Date(rawTimestamp);
-  if (!isNaN(d.getTime())) {
-    const dia = String(d.getDate()).padStart(2, '0');
-    const mes = String(d.getMonth() + 1).padStart(2, '0');
-    const anio = d.getFullYear();
-    const horas = String(d.getHours()).padStart(2, '0');
-    const minutos = String(d.getMinutes()).padStart(2, '0');
-    return `${dia}/${mes}/${anio} - ${horas}:${minutos}h`;
-  }
-
-  return String(rawTimestamp);
+const factorConversionUnidades = (unidadUso: UnidadMedida, unidadBase: UnidadMedida): number => {
+  if (unidadUso === unidadBase) return 1;
+  if (unidadUso === 'g' && unidadBase === 'kg') return 0.001;
+  if (unidadUso === 'kg' && unidadBase === 'g') return 1000;
+  if (unidadUso === 'ml' && unidadBase === 'l') return 0.001;
+  if (unidadUso === 'l' && unidadBase === 'ml') return 1000;
+  if (unidadUso === 'cl' && unidadBase === 'l') return 0.01;
+  if (unidadUso === 'l' && unidadBase === 'cl') return 100;
+  if (unidadUso === 'cl' && unidadBase === 'ml') return 10;
+  if (unidadUso === 'ml' && unidadBase === 'cl') return 0.1;
+  return obtenerFactorConversion(unidadBase, unidadUso);
 };
 
 export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
-  const [pinAdminLogin, setPinAdminLogin] = useState('');
-  const [errorLoginAdmin, setErrorLoginAdmin] = useState('');
+  const [pinAcceso, setPinAcceso] = useState('');
+  const [errorPin, setErrorPin] = useState('');
 
-  const [pestanaActiva, setPestanaActiva] = useState<
-    'ventas_dia' | 'historial_cajas' | 'historico_tickets' | 'articulos_escandallos' | 'inventario_compras' | 'proveedores' | 'datos_fiscales' | 'empleados'
-  >('ventas_dia');
+  const [tabActiva, setTabActiva] = useState<
+    'resumen' | 'tickets' | 'articulos' | 'inventario' | 'empleados' | 'configuracion'
+  >('resumen');
 
   const [configFiscal, setConfigFiscal] = useState<ConfiguracionFiscal>({
     razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
@@ -117,21 +83,26 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     pin_administrador: '1234'
   });
 
-  const [mensajeAlerta, setMensajeAlerta] = useState<{ texto: string; tipo: 'ok' | 'error' | 'info' } | null>(null);
+  const [mensajeToast, setMensajeToast] = useState<{ texto: string; tipo: 'ok' | 'error' | 'info' } | null>(null);
   const alertaTimeoutRef = useRef<number | null>(null);
 
   const [ticketsHistorico, setTicketsHistorico] = useState<any[]>([]);
-  const [fechaFiltroInicio, setFechaFiltroInicio] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [fechaFiltroFin, setFechaFiltroFin] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [filtroFechaInicio, setFiltroFechaInicio] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [filtroFechaFin, setFiltroFechaFin] = useState<string>(new Date().toISOString().split('T')[0]);
   const [busquedaTicket, setBusquedaTicket] = useState('');
-  const [filtroSerie, setFiltroSerie] = useState<string>('TODAS');
+  const [filtroSerieTicket, setFiltroSerieTicket] = useState<'TODAS' | 'T' | 'R' | 'F'>('TODAS');
   const [cajaHoy, setCajaHoy] = useState<any | null>(null);
-  const [cierresTrabajadores, setCierresTrabajadores] = useState<any[]>([]);
 
   const [articulosMaestro, setArticulosMaestro] = useState<any[]>([]);
-  const [categorias, setCategorias] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas', 'Materia Prima (Interno)']);
+  const [categorias, setCategorias] = useState<string[]>([
+    'Cafetería',
+    'Tapas',
+    'Menús/Combos',
+    'Bebidas',
+    'Materia Prima (Interno)'
+  ]);
   const [nuevaCategoriaInput, setNuevaCategoriaInput] = useState('');
-  const [filtroArticulos, setFiltroArticulos] = useState('');
+  const [busquedaArticulo, setBusquedaArticulo] = useState('');
 
   const [editandoArticuloId, setEditandoArticuloId] = useState<string | null>(null);
   const [artNombre, setArtNombre] = useState('');
@@ -159,8 +130,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [ingredienteMerma, setIngredienteMerma] = useState('0');
 
   const [movimientosStock, setMovimientosStock] = useState<any[]>([]);
-  const [pageMovimientos, setPageMovimientos] = useState(0); 
+  const [pageMovimientos, setPageMovimientos] = useState(0);
   const ITEMS_PER_PAGE = 40;
+  const hayMasMovimientos = movimientosStock.length >= ITEMS_PER_PAGE;
 
   const [compraArticuloId, setCompraArticuloId] = useState('');
   const [compraCantidad, setCompraCantidad] = useState('');
@@ -170,7 +142,15 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   // Estados para Proveedores
   const [listaProveedores, setListaProveedores] = useState<any[]>([]);
-  const [filtroArticuloProveedor, setFiltroArticuloProveedor] = useState('');
+  const proveedoresSugeridos: string[] = useMemo(() => {
+    return Array.from(
+      new Set(
+        listaProveedores
+          .map((p: any) => String(typeof p === 'string' ? p : p?.nombre || '').trim())
+          .filter(Boolean)
+      )
+    );
+  }, [listaProveedores]);
 
   const [isImportingCSV, setIsImportingCSV] = useState(false);
   const [refrescandoStock, setRefrescandoStock] = useState<boolean>(false);
@@ -183,25 +163,25 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const [creandoCategoria, setCreandoCategoria] = useState<boolean>(false);
 
   const [empleados, setEmpleados] = useState<any[]>([]);
-  const [modalEmpleado, setModalEmpleado] = useState<{ id?: string, nombre: string, apellidos: string, pin: string, rol: string, activo: boolean } | null>(null);
+  const [empNombre, setEmpNombre] = useState<string>('');
+  const [empPin, setEmpPin] = useState<string>('');
+  const [empRol, setEmpRol] = useState<'camarero' | 'encargado' | 'admin'>('camarero');
 
   const [modalElaboracion, setModalElaboracion] = useState<{
-    abierto: boolean;
     articuloDestinoId: string;
-    cantidadGenerada: string;
-    ingredientes: Array<{ id: string; articulo_id: string; nombre: string; cantidad: number; costeBase: number; unidad: string }>;
-    ingSelId: string;
-    ingSelCant: string;
-    ingSelCoste: string;
+    cantidadResultante: string;
+    ingredientesUsados: IngredienteElaboracionUI[];
+    observaciones?: string;
     procesando: boolean;
   } | null>(null);
+  const [elabIngSelId, setElabIngSelId] = useState<string>('');
+  const [elabIngCant, setElabIngCant] = useState<string>('1');
+  const [elabIngUnidad, setElabIngUnidad] = useState<UnidadMedida>('g');
 
   const [modalAjusteStock, setModalAjusteStock] = useState<{
-    articuloId: string;
-    nombre: string;
-    stockActual: number;
-    nuevoStock: string;
-    unidad: string;
+    articulo: any;
+    tipo: 'MERMA' | 'RECUENTO_FISICO';
+    cantidad: string;
     motivo: string;
     procesando: boolean;
   } | null>(null);
@@ -220,36 +200,134 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     procesando: boolean;
   } | null>(null);
 
-  const [modalCierreCaja, setModalCierreCaja] = useState<{
+  const [modalCierreZ, setModalCierreZ] = useState<{
     id: number | string;
     fecha?: string;
-    remanente_apertura: number;
-    total_efectivo: number;
-    total_tarjeta: number;
+    fondoInicial: number;
+    ventasEfectivo: number;
+    ventasTarjeta: number;
+    entradasManuales: number;
+    salidasManuales: number;
+    cambiosMetodos: number;
+    efectivoEsperado: number;
+    efectivoRealInput: string;
     procesando: boolean;
   } | null>(null);
-  const [showModalArqueo, setShowModalArqueo] = useState<boolean>(false);
-  const [showModalApertura, setShowModalApertura] = useState<boolean>(false);
-  const [remanenteAperturaInput, setRemanenteAperturaInput] = useState<string>('50.00');
+  const [fondoInicialInput, setFondoInicialInput] = useState<string>('50.00');
   const [procesandoApertura, setProcesandoApertura] = useState<boolean>(false);
-  const [efectivoRealCierreInput, setEfectivoRealCierreInput] = useState<string>('');
-  const [alertaResumenCierre, setAlertaResumenCierre] = useState<{
-    cuadrada: boolean;
-    efectivo_real: number;
-    efectivo_esperado: number;
-    total_tarjeta: number;
-    descuadre: number;
-    remanente_cierre: number;
-    efectivo_retirado: number;
-  } | null>(null);
 
   const notificar = (texto: string, tipo: 'ok' | 'error' | 'info' = 'ok') => {
-    setMensajeAlerta({ texto, tipo });
+    setMensajeToast({ texto, tipo });
     if (alertaTimeoutRef.current !== null) {
       window.clearTimeout(alertaTimeoutRef.current);
     }
-    alertaTimeoutRef.current = window.setTimeout(() => setMensajeAlerta(null), 4500);
+    alertaTimeoutRef.current = window.setTimeout(() => setMensajeToast(null), 4500);
   };
+
+  const obtenerDesgloseTicketSeguro = (t: any) => {
+    const desgloseCalc = calcularDesgloseImpuestosLineas(
+      Array.isArray(t.lineas) ? t.lineas : [],
+      Number(t.descuento_general_porcentaje || 0),
+      t.total_final !== undefined ? Number(t.total_final) : undefined
+    );
+    const base_imponible_10 = redondearMoneda(Number(t.base_imponible_10 ?? desgloseCalc.base_imponible_10));
+    const iva_10 = redondearMoneda(Number(t.iva_10 ?? desgloseCalc.iva_10));
+    const base_imponible_21 = redondearMoneda(Number(t.base_imponible_21 ?? desgloseCalc.base_imponible_21));
+    const iva_21 = redondearMoneda(Number(t.iva_21 ?? desgloseCalc.iva_21));
+    const baseImponibleTotal = redondearMoneda(
+      Number(t.base_imponible ?? (base_imponible_10 + base_imponible_21))
+    );
+    const cuotaIvaTotal = redondearMoneda(Number(t.cuota_iva ?? (iva_10 + iva_21)));
+    return {
+      base_imponible_10,
+      iva_10,
+      base_imponible_21,
+      iva_21,
+      baseImponibleTotal,
+      cuotaIvaTotal
+    };
+  };
+
+  const ticketsFiltrados = useMemo(() => {
+    return ticketsHistorico.filter((t: any) => {
+      if (filtroSerieTicket !== 'TODAS' && t.serie !== filtroSerieTicket) return false;
+      if (busquedaTicket.trim() !== '') {
+        const q = busquedaTicket.toLowerCase();
+        const matchNum = String(t.numero_completo || '').toLowerCase().includes(q);
+        const matchNif = String(t.cliente_nif || '').toLowerCase().includes(q);
+        const matchNom = String(t.cliente_nombre || t.cliente_nombre_razon || '').toLowerCase().includes(q);
+        const matchMesa = String(t.mesa || '').toLowerCase().includes(q);
+        return matchNum || matchNif || matchNom || matchMesa;
+      }
+      return true;
+    });
+  }, [ticketsHistorico, filtroSerieTicket, busquedaTicket]);
+
+  const metricasResumen = useMemo(() => {
+    let ventasBrutas = 0;
+    let baseImponible = 0;
+    let cuotaIva = 0;
+    let base10 = 0;
+    let iva10 = 0;
+    let base21 = 0;
+    let iva21 = 0;
+    let totalEfectivo = 0;
+    let totalTarjeta = 0;
+
+    for (const t of ticketsHistorico) {
+      if (t.serie === 'F' && t.ticket_origen_id) continue;
+      const total = Number(t.total_final || 0);
+      const d = obtenerDesgloseTicketSeguro(t);
+      ventasBrutas = redondearMoneda(ventasBrutas + total);
+      baseImponible = redondearMoneda(baseImponible + d.baseImponibleTotal);
+      cuotaIva = redondearMoneda(cuotaIva + d.cuotaIvaTotal);
+      base10 = redondearMoneda(base10 + d.base_imponible_10);
+      iva10 = redondearMoneda(iva10 + d.iva_10);
+      base21 = redondearMoneda(base21 + d.base_imponible_21);
+      iva21 = redondearMoneda(iva21 + d.iva_21);
+
+      if (t.metodo_pago === 'efectivo') {
+        totalEfectivo = redondearMoneda(totalEfectivo + total);
+      } else if (t.metodo_pago === 'tarjeta') {
+        totalTarjeta = redondearMoneda(totalTarjeta + total);
+      } else {
+        totalEfectivo = redondearMoneda(totalEfectivo + Number(t.importe_efectivo || 0));
+        totalTarjeta = redondearMoneda(totalTarjeta + Number(t.importe_tarjeta || 0));
+      }
+    }
+
+    let valorInventarioCoste = 0;
+    let valorInventarioVenta = 0;
+    const alertasStock: any[] = [];
+
+    for (const art of articulosMaestro) {
+      if (art.controla_stock) {
+        const stock = Math.max(0, Number(art.stock_actual || 0));
+        valorInventarioCoste = redondearMoneda(valorInventarioCoste + stock * Number(art.coste_unitario || 0));
+        if (art.vendible_tpv) {
+          valorInventarioVenta = redondearMoneda(valorInventarioVenta + stock * Number(art.precio_venta || 0));
+        }
+        if (Number(art.stock_actual || 0) <= Number(art.stock_minimo || 0)) {
+          alertasStock.push(art);
+        }
+      }
+    }
+
+    return {
+      ventasBrutas,
+      baseImponible,
+      cuotaIva,
+      base10,
+      iva10,
+      base21,
+      iva21,
+      totalEfectivo,
+      totalTarjeta,
+      valorInventarioCoste,
+      valorInventarioVenta,
+      alertasStock
+    };
+  }, [ticketsHistorico, articulosMaestro]);
 
   const cargarEmpleados = async () => {
     try {
@@ -281,27 +359,23 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const guardarEmpleado = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalEmpleado || guardandoEmpleado) return;
+    if (!empNombre.trim() || !empPin.trim() || guardandoEmpleado) return;
     setGuardandoEmpleado(true);
     try {
       const payload = {
-        nombre: modalEmpleado.nombre.trim(),
-        apellidos: modalEmpleado.apellidos.trim(),
-        pin_acceso: modalEmpleado.pin.trim(),
-        rol: modalEmpleado.rol,
-        activo: modalEmpleado.activo
+        nombre: empNombre.trim(),
+        apellidos: '',
+        pin_acceso: empPin.trim(),
+        rol: empRol,
+        activo: true
       };
 
-      if (modalEmpleado.id) {
-        const { error } = await supabase.from('empleados').update(payload).eq('id', modalEmpleado.id);
-        if (error) throw error;
-        notificar('Empleado actualizado correctamente.');
-      } else {
-        const { error } = await supabase.from('empleados').insert([payload]);
-        if (error) throw error;
-        notificar('Empleado creado correctamente.');
-      }
-      setModalEmpleado(null);
+      const { error } = await supabase.from('empleados').insert([payload]);
+      if (error) throw error;
+      notificar('Empleado registrado correctamente.');
+      setEmpNombre('');
+      setEmpPin('');
+      setEmpRol('camarero');
       await cargarEmpleados();
     } catch (err: any) {
       notificar('Error: ' + err.message, 'error');
@@ -310,10 +384,22 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
+  const alternarEstadoEmpleado = async (emp: any) => {
+    try {
+      const nuevoEstado = !emp.activo;
+      const { error } = await supabase.from('empleados').update({ activo: nuevoEstado }).eq('id', emp.id);
+      if (error) throw error;
+      notificar(`Estado de ${emp.nombre} actualizado a ${nuevoEstado ? 'Activo' : 'Inactivo'}.`);
+      await cargarEmpleados();
+    } catch (err: any) {
+      notificar('Error al actualizar estado del empleado: ' + err.message, 'error');
+    }
+  };
+
   useEffect(() => {
-    if (adminVerificado && pestanaActiva === 'empleados') cargarEmpleados();
-    if (adminVerificado && pestanaActiva === 'proveedores') cargarProveedores();
-  }, [pestanaActiva, adminVerificado]);
+    if (adminVerificado && tabActiva === 'empleados') cargarEmpleados();
+    if (adminVerificado && tabActiva === 'inventario') cargarProveedores();
+  }, [tabActiva, adminVerificado]);
 
   useEffect(() => {
     if (adminVerificado) cargarMovimientosInventario(pageMovimientos);
@@ -328,8 +414,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       if (sesionCamarero) {
         try {
           const parsed = JSON.parse(sesionCamarero);
-          if (parsed.rol === 'admin') {
-            setAdminVerificado({ nombre: parsed.nombre, rol: 'admin' });
+          if (parsed.rol === 'admin' || parsed.rol === 'encargado') {
+            setAdminVerificado({ nombre: parsed.nombre, rol: parsed.rol });
           }
         } catch (err) {
           console.error('Error al parsear sesión admin:', err);
@@ -348,7 +434,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   useEffect(() => {
     if (!adminVerificado) return;
     cargarTodoBackoffice();
-  }, [adminVerificado, fechaFiltroInicio, fechaFiltroFin]);
+  }, [adminVerificado, filtroFechaInicio, filtroFechaFin]);
 
   useEffect(() => {
     if (!adminVerificado) return;
@@ -375,20 +461,20 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [adminVerificado, fechaFiltroInicio, fechaFiltroFin, pageMovimientos]);
+  }, [adminVerificado, filtroFechaInicio, filtroFechaFin, pageMovimientos]);
 
-  const handleLoginAdmin = async (e: React.FormEvent) => {
+  const verificarPinAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (procesandoLoginAdmin) return;
-    setErrorLoginAdmin('');
+    setErrorPin('');
     setProcesandoLoginAdmin(true);
 
     try {
       const { data, error } = await supabase
         .from('empleados')
         .select('id, nombre, apellidos, rol')
-        .eq('pin_acceso', pinAdminLogin.trim())
-        .eq('rol', 'admin')
+        .eq('pin_acceso', pinAcceso.trim())
+        .in('rol', ['admin', 'encargado'])
         .eq('activo', true)
         .maybeSingle();
 
@@ -397,21 +483,25 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       }
 
       if (data) {
-        const userObj = { id: data.id, nombre: `${data.nombre} ${data.apellidos || ''}`.trim(), rol: 'admin' };
+        const userObj = {
+          id: data.id,
+          nombre: `${data.nombre} ${data.apellidos || ''}`.trim(),
+          rol: data.rol || 'admin'
+        };
         setAdminVerificado(userObj);
         sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(userObj));
         return;
       }
 
-      if (pinAdminLogin.trim() === configFiscal.pin_administrador) {
+      if (pinAcceso.trim() === configFiscal.pin_administrador) {
         setAdminVerificado({ nombre: 'Administrador Fiscal', rol: 'admin' });
         return;
       }
 
-      setErrorLoginAdmin('Acceso denegado: El PIN no corresponde a un usuario con rol Administrador.');
+      setErrorPin('Acceso denegado: El PIN no corresponde a un usuario con rol Administrador o Encargado.');
     } catch (err) {
-      console.error('Excepción en handleLoginAdmin:', err);
-      setErrorLoginAdmin('Error al verificar credenciales de Administrador.');
+      console.error('Excepción en verificarPinAdmin:', err);
+      setErrorPin('Error al verificar credenciales de Administrador.');
     } finally {
       setProcesandoLoginAdmin(false);
     }
@@ -432,8 +522,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const cargarTicketsYVentas = async () => {
     try {
-      const inicioISO = `${fechaFiltroInicio}T00:00:00.000Z`;
-      const finISO = `${fechaFiltroFin}T23:59:59.999Z`;
+      const inicioISO = `${filtroFechaInicio}T00:00:00.000Z`;
+      const finISO = `${filtroFechaFin}T23:59:59.999Z`;
 
       const { data: tData, error: errTickets } = await supabase
         .from('facturas_tickets')
@@ -471,31 +561,14 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           .maybeSingle();
         setCajaHoy(ultimaCerradaHoy || null);
       }
-      const { data: historialCajas } = await supabase
-        .from('caja_diaria')
-        .select('*')
-        .order('id', { ascending: false })
-        .order('fecha', { ascending: false })
-        .order('id', { ascending: false })
-        .limit(100);
-
-      if (historialCajas) {
-        setCierresTrabajadores(historialCajas);
-      }
     } catch (err) {
       console.error('Excepción en cargarTicketsYVentas:', err);
     }
   };
 
-  const abrirModalAperturaCaja = () => {
-    setRemanenteAperturaInput('50.00');
-    setShowModalApertura(true);
-  };
-
-  const confirmarAperturaCajaBackoffice = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const abrirCajaDiaria = async () => {
     if (procesandoApertura) return;
-    const remanenteNum = parseFloat(remanenteAperturaInput);
+    const remanenteNum = parseFloat(fondoInicialInput);
     if (isNaN(remanenteNum) || remanenteNum < 0) {
       notificar('Por favor, introduce un fondo de caja inicial válido.', 'error');
       return;
@@ -524,7 +597,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       if (error) throw error;
 
-      setShowModalApertura(false);
       setCajaHoy(nuevaCaja);
       notificar(`¡Caja / Turno abierto con éxito! Fondo inicial confirmado: ${remanente_apertura.toFixed(2)} €.`, 'ok');
       await cargarTicketsYVentas();
@@ -535,13 +607,13 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-  const abrirModalCierreCaja = async () => {
+  const iniciarArqueoYCierreCaja = async () => {
     if (cargandoCierreCaja) return;
     setCargandoCierreCaja(true);
     try {
       const { data, error } = await supabase
         .from('caja_diaria')
-        .select('id, fecha, remanente_apertura, total_efectivo, total_tarjeta, estado')
+        .select('*')
         .eq('estado', 'abierta')
         .order('id', { ascending: false })
         .limit(1)
@@ -554,16 +626,27 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         return;
       }
 
-      const { id, remanente_apertura, total_efectivo, total_tarjeta } = data;
-      setEfectivoRealCierreInput('');
+      const fondoInicial = redondearMoneda(Number(data.remanente_apertura || 0));
+      const ventasEfectivo = redondearMoneda(Number(data.total_efectivo || 0));
+      const ventasTarjeta = redondearMoneda(Number(data.total_tarjeta || 0));
+      const entradasManuales = redondearMoneda(Number(data.entradas_manuales || 0));
+      const salidasManuales = redondearMoneda(Number(data.salidas_manuales || 0));
+      const cambiosMetodos = redondearMoneda(Number(data.cambios_metodos || 0));
+      const efectivoEsperado = redondearMoneda(
+        fondoInicial + ventasEfectivo + entradasManuales + cambiosMetodos - salidasManuales
+      );
 
-      setShowModalArqueo(true);
-      setModalCierreCaja({
-        id,
+      setModalCierreZ({
+        id: data.id,
         fecha: data.fecha,
-        remanente_apertura: redondearMoneda(Number(remanente_apertura || 0)),
-        total_efectivo: redondearMoneda(Number(total_efectivo || 0)),
-        total_tarjeta: redondearMoneda(Number(total_tarjeta || 0)),
+        fondoInicial,
+        ventasEfectivo,
+        ventasTarjeta,
+        entradasManuales,
+        salidasManuales,
+        cambiosMetodos,
+        efectivoEsperado,
+        efectivoRealInput: '',
         procesando: false
       });
     } catch (err: any) {
@@ -573,21 +656,19 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     }
   };
 
-  const confirmarCierreCajaBackoffice = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!modalCierreCaja || modalCierreCaja.procesando) return;
+  const confirmarCerrarCajaZ = async () => {
+    if (!modalCierreZ || modalCierreZ.procesando) return;
 
-    const efectivo_real = redondearMoneda(parseFloat(efectivoRealCierreInput));
+    const efectivo_real = redondearMoneda(parseFloat(modalCierreZ.efectivoRealInput));
     if (isNaN(efectivo_real) || efectivo_real < 0) {
       notificar('Por favor, introduce el importe físico contado en el cajón.', 'error');
       return;
     }
 
-    setModalCierreCaja({ ...modalCierreCaja, procesando: true });
+    setModalCierreZ({ ...modalCierreZ, procesando: true });
 
     try {
-      const { id, remanente_apertura, total_efectivo, total_tarjeta } = modalCierreCaja;
-      const efectivoEsperado = redondearMoneda(total_efectivo + remanente_apertura);
+      const { id, fondoInicial, ventasEfectivo, ventasTarjeta, efectivoEsperado } = modalCierreZ;
       const descuadre = redondearMoneda(efectivo_real - efectivoEsperado);
       const remanente_cierre = 50.00;
       const efectivo_retirado = redondearMoneda(efectivo_real - remanente_cierre);
@@ -609,29 +690,28 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         await supabase.from('cierres_caja').insert([
           {
             usuario_nombre: adminVerificado?.nombre || 'Administrador',
-            fondo_inicial: remanente_apertura,
-            ventas_efectivo_sistema: total_efectivo,
-            ventas_tarjeta_sistema: total_tarjeta,
+            fondo_inicial: fondoInicial,
+            ventas_efectivo_sistema: ventasEfectivo,
+            ventas_tarjeta_sistema: ventasTarjeta,
             efectivo_esperado_caja: efectivoEsperado,
             efectivo_contado_trabajador: efectivo_real,
-            tarjeta_contada_trabajador: total_tarjeta,
+            tarjeta_contada_trabajador: ventasTarjeta,
             descuadre_efectivo: descuadre,
             descuadre_tarjeta: 0,
-            observaciones: `Cierre de Caja desde Backoffice (${modalCierreCaja.fecha || new Date().toISOString().split('T')[0]})`
+            observaciones: `Cierre de Caja desde Backoffice (${modalCierreZ.fecha || new Date().toISOString().split('T')[0]})`
           }
         ]);
       } catch (histErr) {
         console.warn('No se pudo registrar en cierres_caja:', histErr);
       }
 
-      // Actualizar estado local de React inmediatamente para reflejar el turno finalizado
       setCajaHoy((prev: any) => ({
         ...(prev || {}),
         id,
-        fecha: modalCierreCaja.fecha || prev?.fecha || new Date().toISOString().split('T')[0],
-        remanente_apertura,
-        total_efectivo,
-        total_tarjeta,
+        fecha: modalCierreZ.fecha || prev?.fecha || new Date().toISOString().split('T')[0],
+        remanente_apertura: fondoInicial,
+        total_efectivo: ventasEfectivo,
+        total_tarjeta: ventasTarjeta,
         efectivo_real,
         descuadre,
         remanente_cierre,
@@ -639,21 +719,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         estado: 'cerrada'
       }));
 
-      setModalCierreCaja(null);
-      setShowModalArqueo(false);
-      setEfectivoRealCierreInput('');
+      setModalCierreZ(null);
 
       const cuadrada = Math.abs(descuadre) < 0.01;
-      setAlertaResumenCierre({
-        cuadrada,
-        efectivo_real,
-        efectivo_esperado: efectivoEsperado,
-        total_tarjeta,
-        descuadre,
-        remanente_cierre,
-        efectivo_retirado
-      });
-
       const textoResumen = cuadrada
         ? `¡Cierre de caja completado! La caja ha cuadrado a cero (0.00 €). Efectivo retirado: ${efectivo_retirado.toFixed(2)} € (Fondo dejado: 50.00 €).`
         : `Cierre de caja completado con descuadre de ${descuadre > 0 ? '+' : ''}${descuadre.toFixed(2)} €. Contado: ${efectivo_real.toFixed(2)} € | Retirado: ${efectivo_retirado.toFixed(2)} €.`;
@@ -662,7 +730,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       await cargarTicketsYVentas();
     } catch (err: any) {
       notificar('Error al realizar el cierre de caja: ' + err.message, 'error');
-      setModalCierreCaja((prev) => (prev ? { ...prev, procesando: false } : null));
+      setModalCierreZ((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
@@ -709,6 +777,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const cargarMovimientosInventario = async (page: number = 0) => {
     try {
+      setPageMovimientos(page);
       const from = page * ITEMS_PER_PAGE;
       const to = from + ITEMS_PER_PAGE - 1;
       const { data, error } = await supabase
@@ -1811,6 +1880,15 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             >
               {procesandoLoginAdmin ? 'Verificando...' : 'Entrar al Panel de Gestión'}
             </button>
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="w-full bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white font-bold py-3 rounded-2xl border border-slate-800 transition-all text-xs"
+              >
+                ← Volver
+              </button>
+            )}
           </form>
         </div>
       </div>
@@ -2059,7 +2137,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() =>
-                    exportarTicketsAExcelCSV(ticketsFiltrados, configFiscal, `${filtroFechaInicio}_${filtroFechaFin}`)
+                    exportarTicketsAExcelCSV(ticketsFiltrados, `libro_iva_${filtroFechaInicio}_${filtroFechaFin}`)
                   }
                   className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 px-4 py-2.5 rounded-xl font-black text-xs transition-all"
                 >
@@ -2799,19 +2877,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 <button
                   type="button"
                   disabled={refrescandoStock}
-                  onClick={async () => {
-                    if (refrescandoStock) return;
-                    setRefrescandoStock(true);
-                    try {
-                      await Promise.all([
-                        cargarArticulosYCategorias(),
-                        cargarMovimientosInventario(pageMovimientos)
-                      ]);
-                      notificar('Inventario actualizado en tiempo real.', 'ok');
-                    } finally {
-                      setRefrescandoStock(false);
-                    }
-                  }}
+                  onClick={refrescarStockInventario}
                   className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 px-3 py-1.5 rounded-xl font-bold text-xs"
                 >
                   {refrescandoStock ? '⏳ Actualizando...' : '🔄 Refrescar Stock'}
@@ -3003,7 +3069,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                     <div>
                       <p className="font-black text-white">{emp.nombre}</p>
                       <p className="text-xs text-indigo-400 uppercase font-bold">
-                        {emp.rol} · PIN: {emp.codigo_pin}
+                        {emp.rol} · PIN: {emp.pin_acceso || emp.codigo_pin}
                       </p>
                     </div>
                     <button

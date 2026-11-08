@@ -1,7 +1,7 @@
 // src/fiscalService.ts
 import { supabase } from './supabase';
 
-export type UnidadMedida = 'ud' | 'kg' | 'g' | 'l' | 'ml' | 'm' | 'cm';
+export type UnidadMedida = 'ud' | 'kg' | 'g' | 'l' | 'ml' | 'cl' | 'm' | 'cm';
 
 export interface LineaTicketFiscal {
   articulo_id?: string;
