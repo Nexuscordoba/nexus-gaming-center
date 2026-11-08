@@ -79,6 +79,17 @@ export default function HistorialCajas({ refreshTrigger }: HistorialCajasProps) 
 
   useEffect(() => {
     obtenerHistorialCajas();
+
+    const channel = supabase
+      .channel('realtime-historial-cajas')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'caja_diaria' }, () => {
+        obtenerHistorialCajas();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [refreshTrigger]);
 
   const totalPaginas = Math.max(1, Math.ceil(historialCajas.length / filasPorPagina));

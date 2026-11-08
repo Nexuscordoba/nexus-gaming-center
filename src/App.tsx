@@ -22,7 +22,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { supabase } from './supabase';
-import { calcularHashVeriFactu, calcularDesgloseImpuestosLineas } from './fiscalService';
+import { calcularHashVeriFactu, calcularDesgloseImpuestosLineas, redondearMoneda } from './fiscalService';
 import StaffPortal from './StaffPortal';
 import EscapeRooms from './EscapeRooms';
 import LoyverseDashboard from './LoyverseDashboard';
@@ -48,6 +48,7 @@ export default function App() {
 
   useEffect(() => {
     let sincronizando = false;
+    let toastTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const descontarStockPedidoOffline = async (itemsPedido: any[]) => {
       try {
@@ -55,46 +56,45 @@ export default function App() {
           (item) => item && !String(item.nombre || '').includes('├─') && Number(item.cantidad) > 0
         );
 
-        await Promise.all(
-          itemsValidos.map(async (item) => {
-            const prodId = item.producto_id || item.id;
-            let productoDB: { id: number; stock_actual: number | null; articulo_inventario_id?: string | null } | null = null;
+        // Procesar secuencialmente para evitar condiciones de carrera si dos líneas comparten artículo
+        for (const item of itemsValidos) {
+          const prodId = item.producto_id || item.id;
+          let productoDB: { id: number; stock_actual: number | null; articulo_inventario_id?: string | null } | null = null;
 
-            if (prodId) {
-              const { data } = await supabase
-                .from('productos_carta')
-                .select('id, stock_actual, articulo_inventario_id')
-                .eq('id', prodId)
-                .maybeSingle();
-              productoDB = data;
-            }
-
-            if (!productoDB && item.nombre) {
-              const { data } = await supabase
-                .from('productos_carta')
-                .select('id, stock_actual, articulo_inventario_id')
-                .eq('nombre', String(item.nombre).trim())
-                .maybeSingle();
-              productoDB = data;
-            }
-
-            if (!productoDB) return;
-
-            const nuevoStock = Number(productoDB.stock_actual ?? 0) - Number(item.cantidad);
-            await supabase
+          if (prodId) {
+            const { data } = await supabase
               .from('productos_carta')
-              .update({ stock_actual: nuevoStock })
-              .eq('id', productoDB.id);
+              .select('id, stock_actual, articulo_inventario_id')
+              .eq('id', prodId)
+              .maybeSingle();
+            productoDB = data;
+          }
 
-            const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
-            if (artInvId) {
-              await supabase
-                .from('articulos_cafeteria')
-                .update({ stock_actual: nuevoStock })
-                .eq('id', artInvId);
-            }
-          })
-        );
+          if (!productoDB && item.nombre) {
+            const { data } = await supabase
+              .from('productos_carta')
+              .select('id, stock_actual, articulo_inventario_id')
+              .eq('nombre', String(item.nombre).trim())
+              .maybeSingle();
+            productoDB = data;
+          }
+
+          if (!productoDB) continue;
+
+          const nuevoStock = Number((Number(productoDB.stock_actual ?? 0) - Number(item.cantidad)).toFixed(4));
+          await supabase
+            .from('productos_carta')
+            .update({ stock_actual: nuevoStock })
+            .eq('id', productoDB.id);
+
+          const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
+          if (artInvId) {
+            await supabase
+              .from('articulos_cafeteria')
+              .update({ stock_actual: nuevoStock })
+              .eq('id', artInvId);
+          }
+        }
       } catch (stockErr) {
         console.error('Error al descontar stock de pedido offline:', stockErr);
       }
@@ -124,10 +124,10 @@ export default function App() {
       try {
         for (const pedido of cola) {
           try {
-            const totalFinal = Number(pedido?.totales?.totalFinal ?? 0);
-            const subtotalBruto = Number(pedido?.totales?.subtotalBruto ?? totalFinal);
+            const totalFinal = redondearMoneda(Number(pedido?.totales?.totalFinal ?? 0));
+            const subtotalBruto = redondearMoneda(Number(pedido?.totales?.subtotalBruto ?? totalFinal));
             const dtoGeneralPorc = Number(pedido?.totales?.dtoGeneralPorc ?? 0);
-            const descuentoTotalImporte = Number(pedido?.totales?.descuentoTotalImporte ?? 0);
+            const descuentoTotalImporte = redondearMoneda(Number(pedido?.totales?.descuentoTotalImporte ?? 0));
             const metodo = pedido?.metodo === 'tarjeta' ? 'tarjeta' : 'efectivo';
 
             let hash_anterior = '';
@@ -166,13 +166,13 @@ export default function App() {
               const numeroTicket = String(docEmitido?.numero_completo || `T-${docEmitido?.id || Date.now()}`);
               const fechaExp = String(docEmitido?.fecha_expedicion || pedido.fecha || new Date().toISOString());
               const hash_actual = await calcularHashVeriFactu(numeroTicket, fechaExp, totalFinal, hash_anterior);
-              const desgloseOffline = calcularDesgloseImpuestosLineas(pedido.lineas || [], dtoGeneralPorc);
-              const base10 = Number(pedido?.totales?.base_imponible_10 ?? desgloseOffline.base_imponible_10);
-              const iva10 = Number(pedido?.totales?.iva_10 ?? desgloseOffline.iva_10);
-              const base21 = Number(pedido?.totales?.base_imponible_21 ?? desgloseOffline.base_imponible_21);
-              const iva21 = Number(pedido?.totales?.iva_21 ?? desgloseOffline.iva_21);
-              const baseImponible = Number(pedido?.totales?.baseImponibleTotal ?? desgloseOffline.baseImponibleTotal);
-              const cuotaIva = Number(pedido?.totales?.cuotaIvaTotal ?? desgloseOffline.cuotaIvaTotal);
+              const desgloseOffline = calcularDesgloseImpuestosLineas(pedido.lineas || [], dtoGeneralPorc, totalFinal);
+              const base10 = redondearMoneda(Number(pedido?.totales?.base_imponible_10 ?? desgloseOffline.base_imponible_10));
+              const iva10 = redondearMoneda(Number(pedido?.totales?.iva_10 ?? desgloseOffline.iva_10));
+              const base21 = redondearMoneda(Number(pedido?.totales?.base_imponible_21 ?? desgloseOffline.base_imponible_21));
+              const iva21 = redondearMoneda(Number(pedido?.totales?.iva_21 ?? desgloseOffline.iva_21));
+              const baseImponible = redondearMoneda(Number(pedido?.totales?.baseImponibleTotal ?? desgloseOffline.baseImponibleTotal));
+              const cuotaIva = redondearMoneda(Number(pedido?.totales?.cuotaIvaTotal ?? desgloseOffline.cuotaIvaTotal));
               if (docEmitido?.id) {
                 const { error: vfErr } = await supabase
                   .from('facturas_tickets')
@@ -228,8 +228,8 @@ export default function App() {
               : await supabase.from('caja_diaria').select('*').eq('estado', 'abierta').order('id', { ascending: false }).limit(1).maybeSingle();
 
             if (cajaDestino) {
-              const nuevoEfectivo = Number(cajaDestino.total_efectivo || 0) + (metodo === 'efectivo' ? totalFinal : 0);
-              const nuevaTarjeta = Number(cajaDestino.total_tarjeta || 0) + (metodo === 'tarjeta' ? totalFinal : 0);
+              const nuevoEfectivo = redondearMoneda(Number(cajaDestino.total_efectivo || 0) + (metodo === 'efectivo' ? totalFinal : 0));
+              const nuevaTarjeta = redondearMoneda(Number(cajaDestino.total_tarjeta || 0) + (metodo === 'tarjeta' ? totalFinal : 0));
               await supabase
                 .from('caja_diaria')
                 .update({
@@ -267,7 +267,8 @@ export default function App() {
           window.dispatchEvent(
             new CustomEvent('pedidos-offline-sincronizados', { detail: { cantidad: sincronizadosExito } })
           );
-          setTimeout(() => {
+          if (toastTimeoutId) clearTimeout(toastTimeoutId);
+          toastTimeoutId = setTimeout(() => {
             setToastOfflineSync(null);
           }, 5500);
         }
@@ -283,6 +284,7 @@ export default function App() {
 
     return () => {
       window.removeEventListener('online', sincronizarPedidosOffline);
+      if (toastTimeoutId) clearTimeout(toastTimeoutId);
     };
   }, []);
 

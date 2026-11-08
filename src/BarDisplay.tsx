@@ -84,17 +84,22 @@ export default function BarDisplay() {
   }, []);
 
   const cargarComandas = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('comandas_cocina')
-      .select('*')
-      .neq('tipo_destino', 'cuenta')
-      .in('estado', ['pendiente', 'listo'])
-      .order('created_at', { ascending: true });
+    try {
+      const { data, error } = await supabase
+        .from('comandas_cocina')
+        .select('*')
+        .neq('tipo_destino', 'cuenta')
+        .in('estado', ['pendiente', 'listo'])
+        .order('created_at', { ascending: true });
 
-    if (!error && data) {
-      setComandasOriginales(data as Comanda[]);
+      if (!error && data) {
+        setComandasOriginales(data as Comanda[]);
+      }
+    } catch (err) {
+      console.error('Error al cargar comandas en Barra:', err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   const agruparPorMesa = useCallback(
@@ -254,46 +259,56 @@ export default function BarDisplay() {
   };
 
   const archivarMesaCompleta = async (mesaGrupo: MesaAgrupada) => {
-    const comandasDeMesa = comandasOriginales.filter((c) => c.mesa === mesaGrupo.mesa);
+    const lockId = `archivar_${mesaGrupo.mesa}`;
+    if (procesandoKey === lockId) return;
+    setProcesandoKey(lockId);
 
-    const promesas = comandasDeMesa.map((c) => {
-      const nuevosItems: ItemComanda[] = (c.items || []).map((it) => {
-        const dest = resolverDestinoItem(it, c.tipo_destino);
-        const listoCocina =
-          dest === 'cocina'
-            ? Boolean(it.listo || it.estado_cocina === 'listo' || c.estado === 'listo')
-            : true;
+    try {
+      const comandasDeMesa = comandasOriginales.filter((c) => c.mesa === mesaGrupo.mesa);
 
-        if (dest === 'cocina' && !listoCocina) {
-          // Mantener intactos los platos que siguen en cocina pendientes
-          return { ...it };
-        }
-        return {
-          ...it,
-          listo: true,
-          entregado: true,
-          estado_cocina: 'servido'
-        };
+      const promesas = comandasDeMesa.map((c) => {
+        const nuevosItems: ItemComanda[] = (c.items || []).map((it) => {
+          const dest = resolverDestinoItem(it, c.tipo_destino);
+          const listoCocina =
+            dest === 'cocina'
+              ? Boolean(it.listo || it.estado_cocina === 'listo' || c.estado === 'listo')
+              : true;
+
+          if (dest === 'cocina' && !listoCocina) {
+            // Mantener intactos los platos que siguen en cocina pendientes
+            return { ...it };
+          }
+          return {
+            ...it,
+            listo: true,
+            entregado: true,
+            estado_cocina: 'servido'
+          };
+        });
+
+        const todosEntregados = nuevosItems.every((it) => {
+          const dest = resolverDestinoItem(it, c.tipo_destino);
+          return dest === 'cocina'
+            ? Boolean(it.entregado || it.estado_cocina === 'servido')
+            : Boolean(it.entregado ?? it.listo);
+        });
+
+        return supabase
+          .from('comandas_cocina')
+          .update({
+            items: nuevosItems,
+            estado: todosEntregados ? 'servido' : c.estado
+          })
+          .eq('id', c.id);
       });
 
-      const todosEntregados = nuevosItems.every((it) => {
-        const dest = resolverDestinoItem(it, c.tipo_destino);
-        return dest === 'cocina'
-          ? Boolean(it.entregado || it.estado_cocina === 'servido')
-          : Boolean(it.entregado ?? it.listo);
-      });
-
-      return supabase
-        .from('comandas_cocina')
-        .update({
-          items: nuevosItems,
-          estado: todosEntregados ? 'servido' : c.estado
-        })
-        .eq('id', c.id);
-    });
-
-    await Promise.all(promesas);
-    await cargarComandas();
+      await Promise.all(promesas);
+      await cargarComandas();
+    } catch (err) {
+      console.error('Error al archivar mesa completa en Barra:', err);
+    } finally {
+      setProcesandoKey(null);
+    }
   };
 
   const volverAWebPrincipal = () => {
@@ -586,9 +601,9 @@ export default function BarDisplay() {
                   <div className="mt-6 pt-3 border-t border-white/10">
                     <button
                       type="button"
-                      disabled={!hayItemsDisponiblesParaServir}
+                      disabled={!hayItemsDisponiblesParaServir || procesandoKey === `archivar_${mesaGrupo.mesa}`}
                       onClick={() => archivarMesaCompleta(mesaGrupo)}
-                      className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg transition-all ${
+                      className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                         !hayItemsDisponiblesParaServir
                           ? 'bg-slate-900 border border-slate-800 text-slate-500 opacity-60 cursor-not-allowed'
                           : hayCocinaBloqueada
@@ -597,7 +612,9 @@ export default function BarDisplay() {
                       }`}
                     >
                       <CheckCircle2 className="h-4 w-4" />
-                      {!hayItemsDisponiblesParaServir
+                      {procesandoKey === `archivar_${mesaGrupo.mesa}`
+                        ? 'Procesando entrega...'
+                        : !hayItemsDisponiblesParaServir
                         ? 'Esperando a cocina para poder servir'
                         : hayCocinaBloqueada
                         ? 'Entregar disponibles (Cocina aún en preparación)'

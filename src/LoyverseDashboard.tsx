@@ -1,14 +1,18 @@
 // src/LoyverseDashboard.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabase';
 import HistorialCajas from './HistorialCajas';
 import {
   obtenerConfiguracionFiscal,
+  calcularHashVeriFactu,
+  calcularDesgloseImpuestosLineas,
   imprimirDocumentoFiscalHTML,
   exportarTicketsAExcelCSV,
   exportarTicketsAPDF,
   calcularCosteIngredienteEscandallo,
+  redondearMoneda,
   type ConfiguracionFiscal,
+  type LineaTicketFiscal,
   type UnidadMedida
 } from './fiscalService';
 import {
@@ -114,6 +118,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   });
 
   const [mensajeAlerta, setMensajeAlerta] = useState<{ texto: string; tipo: 'ok' | 'error' | 'info' } | null>(null);
+  const alertaTimeoutRef = useRef<number | null>(null);
 
   const [ticketsHistorico, setTicketsHistorico] = useState<any[]>([]);
   const [fechaFiltroInicio, setFechaFiltroInicio] = useState<string>(new Date().toISOString().split('T')[0]);
@@ -169,6 +174,13 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const [isImportingCSV, setIsImportingCSV] = useState(false);
   const [refrescandoStock, setRefrescandoStock] = useState<boolean>(false);
+  const [procesandoLoginAdmin, setProcesandoLoginAdmin] = useState<boolean>(false);
+  const [cargandoCierreCaja, setCargandoCierreCaja] = useState<boolean>(false);
+  const [guardandoArticulo, setGuardandoArticulo] = useState<boolean>(false);
+  const [registrandoCompra, setRegistrandoCompra] = useState<boolean>(false);
+  const [guardandoEmpleado, setGuardandoEmpleado] = useState<boolean>(false);
+  const [guardandoConfigFiscal, setGuardandoConfigFiscal] = useState<boolean>(false);
+  const [creandoCategoria, setCreandoCategoria] = useState<boolean>(false);
 
   const [empleados, setEmpleados] = useState<any[]>([]);
   const [modalEmpleado, setModalEmpleado] = useState<{ id?: string, nombre: string, apellidos: string, pin: string, rol: string, activo: boolean } | null>(null);
@@ -233,31 +245,44 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const notificar = (texto: string, tipo: 'ok' | 'error' | 'info' = 'ok') => {
     setMensajeAlerta({ texto, tipo });
-    setTimeout(() => setMensajeAlerta(null), 4500);
+    if (alertaTimeoutRef.current !== null) {
+      window.clearTimeout(alertaTimeoutRef.current);
+    }
+    alertaTimeoutRef.current = window.setTimeout(() => setMensajeAlerta(null), 4500);
   };
 
   const cargarEmpleados = async () => {
-    const { data } = await supabase.from('empleados').select('*').order('nombre', { ascending: true });
-    if (data) setEmpleados(data);
+    try {
+      const { data, error } = await supabase.from('empleados').select('*').order('nombre', { ascending: true });
+      if (error) throw error;
+      if (data) setEmpleados(data);
+    } catch (err) {
+      console.error('Error al cargar empleados:', err);
+    }
   };
 
   const cargarProveedores = async () => {
-    const { data } = await supabase.from('proveedores').select('*').order('nombre', { ascending: true });
-    if (data) {
-      setListaProveedores(data);
-    } else {
-      // Si la tabla no existe o está vacía, extraemos los proveedores únicos de los movimientos de compra
-      const { data: movs } = await supabase.from('movimientos_stock').select('proveedor').not('proveedor', 'is', null);
-      if (movs) {
-        const unicos = Array.from(new Set(movs.map(m => m.proveedor))).filter(Boolean).map(p => ({ id: p, nombre: p }));
-        setListaProveedores(unicos);
+    try {
+      const { data } = await supabase.from('proveedores').select('*').order('nombre', { ascending: true });
+      if (data && data.length > 0) {
+        setListaProveedores(data);
+      } else {
+        // Si la tabla no existe o está vacía, extraemos los proveedores únicos de los movimientos de compra
+        const { data: movs } = await supabase.from('movimientos_stock').select('proveedor').not('proveedor', 'is', null);
+        if (movs) {
+          const unicos = Array.from(new Set(movs.map(m => m.proveedor))).filter(Boolean).map(p => ({ id: p, nombre: p }));
+          setListaProveedores(unicos);
+        }
       }
+    } catch (err) {
+      console.error('Error al cargar proveedores:', err);
     }
   };
 
   const guardarEmpleado = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalEmpleado) return;
+    if (!modalEmpleado || guardandoEmpleado) return;
+    setGuardandoEmpleado(true);
     try {
       const payload = {
         nombre: modalEmpleado.nombre.trim(),
@@ -268,16 +293,20 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       };
 
       if (modalEmpleado.id) {
-        await supabase.from('empleados').update(payload).eq('id', modalEmpleado.id);
+        const { error } = await supabase.from('empleados').update(payload).eq('id', modalEmpleado.id);
+        if (error) throw error;
         notificar('Empleado actualizado correctamente.');
       } else {
-        await supabase.from('empleados').insert([payload]);
+        const { error } = await supabase.from('empleados').insert([payload]);
+        if (error) throw error;
         notificar('Empleado creado correctamente.');
       }
       setModalEmpleado(null);
-      cargarEmpleados();
+      await cargarEmpleados();
     } catch (err: any) {
       notificar('Error: ' + err.message, 'error');
+    } finally {
+      setGuardandoEmpleado(false);
     }
   };
 
@@ -297,13 +326,23 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       const sesionCamarero = sessionStorage.getItem('nexus_camarero_sesion');
       if (sesionCamarero) {
-        const parsed = JSON.parse(sesionCamarero);
-        if (parsed.rol === 'admin') {
-          setAdminVerificado({ nombre: parsed.nombre, rol: 'admin' });
+        try {
+          const parsed = JSON.parse(sesionCamarero);
+          if (parsed.rol === 'admin') {
+            setAdminVerificado({ nombre: parsed.nombre, rol: 'admin' });
+          }
+        } catch (err) {
+          console.error('Error al parsear sesión admin:', err);
         }
       }
     };
     verificarSesionExistente();
+
+    return () => {
+      if (alertaTimeoutRef.current !== null) {
+        window.clearTimeout(alertaTimeoutRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -311,119 +350,140 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     cargarTodoBackoffice();
   }, [adminVerificado, fechaFiltroInicio, fechaFiltroFin]);
 
+  useEffect(() => {
+    if (!adminVerificado) return;
+
+    const channel = supabase
+      .channel('realtime-backoffice-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'facturas_tickets' }, () => {
+        cargarTicketsYVentas();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'caja_diaria' }, () => {
+        cargarTicketsYVentas();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'articulos_cafeteria' }, () => {
+        cargarArticulosYCategorias();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'productos_carta' }, () => {
+        cargarArticulosYCategorias();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'movimientos_stock' }, () => {
+        cargarMovimientosInventario(pageMovimientos);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [adminVerificado, fechaFiltroInicio, fechaFiltroFin, pageMovimientos]);
+
   const handleLoginAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (procesandoLoginAdmin) return;
     setErrorLoginAdmin('');
+    setProcesandoLoginAdmin(true);
 
-    const { data } = await supabase
-      .from('empleados')
-      .select('id, nombre, apellidos, rol')
-      .eq('pin_acceso', pinAdminLogin.trim())
-      .eq('rol', 'admin')
-      .eq('activo', true)
-      .maybeSingle();
+    try {
+      const { data, error } = await supabase
+        .from('empleados')
+        .select('id, nombre, apellidos, rol')
+        .eq('pin_acceso', pinAdminLogin.trim())
+        .eq('rol', 'admin')
+        .eq('activo', true)
+        .maybeSingle();
 
-    if (data) {
-      const userObj = { id: data.id, nombre: `${data.nombre} ${data.apellidos || ''}`.trim(), rol: 'admin' };
-      setAdminVerificado(userObj);
-      sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(userObj));
-      return;
+      if (error) {
+        console.error('Error verificando PIN admin en empleados:', error);
+      }
+
+      if (data) {
+        const userObj = { id: data.id, nombre: `${data.nombre} ${data.apellidos || ''}`.trim(), rol: 'admin' };
+        setAdminVerificado(userObj);
+        sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(userObj));
+        return;
+      }
+
+      if (pinAdminLogin.trim() === configFiscal.pin_administrador) {
+        setAdminVerificado({ nombre: 'Administrador Fiscal', rol: 'admin' });
+        return;
+      }
+
+      setErrorLoginAdmin('Acceso denegado: El PIN no corresponde a un usuario con rol Administrador.');
+    } catch (err) {
+      console.error('Excepción en handleLoginAdmin:', err);
+      setErrorLoginAdmin('Error al verificar credenciales de Administrador.');
+    } finally {
+      setProcesandoLoginAdmin(false);
     }
-
-    if (pinAdminLogin.trim() === configFiscal.pin_administrador) {
-      setAdminVerificado({ nombre: 'Administrador Fiscal', rol: 'admin' });
-      return;
-    }
-
-    setErrorLoginAdmin('Acceso denegado: El PIN no corresponde a un usuario con rol Administrador.');
   };
 
   const cargarTodoBackoffice = async () => {
-    await Promise.all([
-      cargarTicketsYVentas(),
-      cargarArticulosYCategorias(),
-      cargarMovimientosInventario(0),
-      cargarProveedores()
-    ]);
+    try {
+      await Promise.all([
+        cargarTicketsYVentas(),
+        cargarArticulosYCategorias(),
+        cargarMovimientosInventario(0),
+        cargarProveedores()
+      ]);
+    } catch (err) {
+      console.error('Error en cargarTodoBackoffice:', err);
+    }
   };
 
   const cargarTicketsYVentas = async () => {
-    const inicioISO = `${fechaFiltroInicio}T00:00:00.000Z`;
-    const finISO = `${fechaFiltroFin}T23:59:59.999Z`;
+    try {
+      const inicioISO = `${fechaFiltroInicio}T00:00:00.000Z`;
+      const finISO = `${fechaFiltroFin}T23:59:59.999Z`;
 
-    const { data: tData } = await supabase
-      .from('facturas_tickets')
-      .select('*')
-      .gte('fecha_expedicion', inicioISO)
-      .lte('fecha_expedicion', finISO)
-      .order('fecha_expedicion', { ascending: false });
-
-    if (tData) {
-      setTicketsHistorico(tData);
-    }
-
-    const fechaHoy = new Date().toISOString().split('T')[0];
-    const { data: cajaAbiertaActiva } = await supabase
-      .from('caja_diaria')
-      .select('*')
-      .eq('estado', 'abierta')
-      .order('id', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (cajaAbiertaActiva) {
-      setCajaHoy(cajaAbiertaActiva);
-    } else {
-      const { data: ultimaCerradaHoy } = await supabase
-        .from('caja_diaria')
+      const { data: tData, error: errTickets } = await supabase
+        .from('facturas_tickets')
         .select('*')
-        .eq('fecha', fechaHoy)
-        .order('id', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      setCajaHoy(ultimaCerradaHoy || null);
-    }
-    const { data: historialCajas } = await supabase
-      .from('caja_diaria')
-      .select('*')
-      .order('id', { ascending: false })
-      .order('fecha', { ascending: false })
-      .order('id', { ascending: false })
-      .limit(100);
+        .gte('fecha_expedicion', inicioISO)
+        .lte('fecha_expedicion', finISO)
+        .order('fecha_expedicion', { ascending: false });
 
-    if (historialCajas) {
-      setCierresTrabajadores(historialCajas);
-    }
+      if (errTickets) {
+        console.error('Error al cargar facturas_tickets en Backoffice:', errTickets);
+      }
 
-    /*
-    const { data: cData } = await supabase
-      .from('caja_diaria')
-      .select('*')
-      .eq('fecha', fechaHoy)
-      .maybeSingle();
+      if (tData) {
+        setTicketsHistorico(tData);
+      }
 
-    if (!cajaAbiertaActiva && cData) {
-      setCajaHoy(cData);
-    } else {
-      const { data: cajaAbierta } = await supabase
+      const fechaHoy = new Date().toISOString().split('T')[0];
+      const { data: cajaAbiertaActiva } = await supabase
         .from('caja_diaria')
         .select('*')
         .eq('estado', 'abierta')
         .order('id', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (!cajaAbiertaActiva) setCajaHoy(cajaAbierta || null);
-    }
 
-    const { data: cierresData } = await supabase
-      .from('cierres_caja')
-      .select('*')
-      .order('fecha_cierre', { ascending: false })
-      .limit(25);
+      if (cajaAbiertaActiva) {
+        setCajaHoy(cajaAbiertaActiva);
+      } else {
+        const { data: ultimaCerradaHoy } = await supabase
+          .from('caja_diaria')
+          .select('*')
+          .eq('fecha', fechaHoy)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        setCajaHoy(ultimaCerradaHoy || null);
+      }
+      const { data: historialCajas } = await supabase
+        .from('caja_diaria')
+        .select('*')
+        .order('id', { ascending: false })
+        .order('fecha', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(100);
 
-    if (cierresData) {
-    if (cierresData && false) { setCierresTrabajadores(cierresData); } */
-    if (false) {
+      if (historialCajas) {
+        setCierresTrabajadores(historialCajas);
+      }
+    } catch (err) {
+      console.error('Excepción en cargarTicketsYVentas:', err);
     }
   };
 
@@ -434,6 +494,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const confirmarAperturaCajaBackoffice = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (procesandoApertura) return;
     const remanenteNum = parseFloat(remanenteAperturaInput);
     if (isNaN(remanenteNum) || remanenteNum < 0) {
       notificar('Por favor, introduce un fondo de caja inicial válido.', 'error');
@@ -443,7 +504,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setProcesandoApertura(true);
     try {
       const fechaActual = new Date().toISOString().split('T')[0];
-      const remanente_apertura = Number(remanenteNum.toFixed(2));
+      const remanente_apertura = redondearMoneda(remanenteNum);
 
       const { data: nuevaCaja, error } = await supabase
         .from('caja_diaria')
@@ -466,7 +527,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       setShowModalApertura(false);
       setCajaHoy(nuevaCaja);
       notificar(`¡Caja / Turno abierto con éxito! Fondo inicial confirmado: ${remanente_apertura.toFixed(2)} €.`, 'ok');
-      cargarTicketsYVentas();
+      await cargarTicketsYVentas();
     } catch (err: any) {
       notificar('Error al abrir la caja: ' + err.message, 'error');
     } finally {
@@ -475,6 +536,8 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   };
 
   const abrirModalCierreCaja = async () => {
+    if (cargandoCierreCaja) return;
+    setCargandoCierreCaja(true);
     try {
       const { data, error } = await supabase
         .from('caja_diaria')
@@ -498,21 +561,23 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       setModalCierreCaja({
         id,
         fecha: data.fecha,
-        remanente_apertura: Number(remanente_apertura || 0),
-        total_efectivo: Number(total_efectivo || 0),
-        total_tarjeta: Number(total_tarjeta || 0),
+        remanente_apertura: redondearMoneda(Number(remanente_apertura || 0)),
+        total_efectivo: redondearMoneda(Number(total_efectivo || 0)),
+        total_tarjeta: redondearMoneda(Number(total_tarjeta || 0)),
         procesando: false
       });
     } catch (err: any) {
       notificar('Error al consultar la caja abierta: ' + err.message, 'error');
+    } finally {
+      setCargandoCierreCaja(false);
     }
   };
 
   const confirmarCierreCajaBackoffice = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalCierreCaja) return;
+    if (!modalCierreCaja || modalCierreCaja.procesando) return;
 
-    const efectivo_real = parseFloat(efectivoRealCierreInput);
+    const efectivo_real = redondearMoneda(parseFloat(efectivoRealCierreInput));
     if (isNaN(efectivo_real) || efectivo_real < 0) {
       notificar('Por favor, introduce el importe físico contado en el cajón.', 'error');
       return;
@@ -522,10 +587,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
     try {
       const { id, remanente_apertura, total_efectivo, total_tarjeta } = modalCierreCaja;
-      const efectivoEsperado = Number((total_efectivo + remanente_apertura).toFixed(2));
-      const descuadre = Number((efectivo_real - (total_efectivo + remanente_apertura)).toFixed(2));
+      const efectivoEsperado = redondearMoneda(total_efectivo + remanente_apertura);
+      const descuadre = redondearMoneda(efectivo_real - efectivoEsperado);
       const remanente_cierre = 50.00;
-      const efectivo_retirado = Number((efectivo_real - 50.00).toFixed(2));
+      const efectivo_retirado = redondearMoneda(efectivo_real - remanente_cierre);
 
       const { error: updateError } = await supabase
         .from('caja_diaria')
@@ -578,7 +643,6 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       setShowModalArqueo(false);
       setEfectivoRealCierreInput('');
 
-
       const cuadrada = Math.abs(descuadre) < 0.01;
       setAlertaResumenCierre({
         cuadrada,
@@ -595,7 +659,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         : `Cierre de caja completado con descuadre de ${descuadre > 0 ? '+' : ''}${descuadre.toFixed(2)} €. Contado: ${efectivo_real.toFixed(2)} € | Retirado: ${efectivo_retirado.toFixed(2)} €.`;
 
       notificar(textoResumen, cuadrada ? 'ok' : 'info');
-      cargarTicketsYVentas();
+      await cargarTicketsYVentas();
     } catch (err: any) {
       notificar('Error al realizar el cierre de caja: ' + err.message, 'error');
       setModalCierreCaja((prev) => (prev ? { ...prev, procesando: false } : null));
@@ -603,27 +667,32 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   };
 
   const cargarArticulosYCategorias = async () => {
-    const { data: cats } = await supabase
-      .from('categorias_cafeteria')
-      .select('nombre')
-      .eq('activo', true)
-      .order('orden', { ascending: true });
+    try {
+      const { data: cats } = await supabase
+        .from('categorias_cafeteria')
+        .select('nombre')
+        .eq('activo', true)
+        .order('orden', { ascending: true });
 
-    if (cats && cats.length > 0) {
-      setCategorias(cats.map((c) => c.nombre));
-    }
+      if (cats && cats.length > 0) {
+        setCategorias(cats.map((c) => c.nombre));
+      }
 
-    const { data: arts } = await supabase
-      .from('articulos_cafeteria')
-      .select('*')
-      .order('nombre', { ascending: true });
+      const { data: arts } = await supabase
+        .from('articulos_cafeteria')
+        .select('*')
+        .order('nombre', { ascending: true });
 
-    if (arts && arts.length > 0) {
-      setArticulosMaestro(arts);
+      if (arts && arts.length > 0) {
+        setArticulosMaestro(arts);
+      }
+    } catch (err) {
+      console.error('Error en cargarArticulosYCategorias:', err);
     }
   };
 
   const refrescarStockInventario = async () => {
+    if (refrescandoStock) return;
     setRefrescandoStock(true);
     try {
       await Promise.all([
@@ -639,22 +708,31 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   };
 
   const cargarMovimientosInventario = async (page: number = 0) => {
-    const from = page * ITEMS_PER_PAGE;
-    const to = from + ITEMS_PER_PAGE - 1;
-    const { data } = await supabase
-      .from('movimientos_stock')
-      .select('*, articulos_cafeteria(nombre, unidad_medida)')
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    try {
+      const from = page * ITEMS_PER_PAGE;
+      const to = from + ITEMS_PER_PAGE - 1;
+      const { data, error } = await supabase
+        .from('movimientos_stock')
+        .select('*, articulos_cafeteria(nombre, unidad_medida)')
+        .order('created_at', { ascending: false })
+        .range(from, to);
 
-    if (data) {
-      setMovimientosStock(data);
+      if (error) {
+        console.error('Error al cargar movimientos_stock:', error);
+        return;
+      }
+
+      if (data) {
+        setMovimientosStock(data);
+      }
+    } catch (err) {
+      console.error('Excepción en cargarMovimientosInventario:', err);
     }
   };
 
   const confirmarFacturaRectificativa = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalRectificativa || !adminVerificado) return;
+    if (!modalRectificativa || !adminVerificado || modalRectificativa.procesando) return;
 
     if (!modalRectificativa.motivo.trim()) {
       notificar('Debes indicar obligatoriamente el motivo de la rectificación/devolución.', 'info');
@@ -666,14 +744,29 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     try {
       const orig = modalRectificativa.factura;
       const cfg = configFiscal;
-      const importeNegativo = -Math.abs(Number(orig.total_final));
-      const brutoNegativo = -Math.abs(Number(orig.subtotal_bruto));
+      const importeNegativo = redondearMoneda(-Math.abs(Number(orig.total_final)));
+      const brutoNegativo = redondearMoneda(-Math.abs(Number(orig.subtotal_bruto)));
 
-      const lineasNegativas = (orig.lineas || []).map((l: any) => ({
+      const lineasNegativas: LineaTicketFiscal[] = (orig.lineas || []).map((l: any) => ({
         ...l,
         cantidad: -Math.abs(Number(l.cantidad)),
-        subtotal_linea: -Math.abs(Number(l.subtotal_linea))
+        subtotal_linea: redondearMoneda(-Math.abs(Number(l.subtotal_linea))),
+        porcentaje_iva: Number(l.porcentaje_iva ?? l.tipo_iva ?? orig.tipo_iva_aplicado ?? 10) === 21 ? 21 : 10,
+        tipo_iva: Number(l.porcentaje_iva ?? l.tipo_iva ?? orig.tipo_iva_aplicado ?? 10) === 21 ? 21 : 10
       }));
+
+      let hash_anterior = '';
+      try {
+        const { data: ultimoTicket } = await supabase
+          .from('facturas_tickets')
+          .select('hash_actual')
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        hash_anterior = ultimoTicket?.hash_actual || '';
+      } catch (errPrevHash) {
+        console.error('Error al obtener hash_anterior en Rectificativa Backoffice:', errPrevHash);
+      }
 
       const { data: docRect, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'R',
@@ -685,7 +778,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         p_importe_tarjeta: orig.metodo_pago === 'tarjeta' ? importeNegativo : 0,
         p_subtotal_bruto: brutoNegativo,
         p_descuento_general_porc: orig.descuento_general_porcentaje || 0,
-        p_descuento_total_imp: 0,
+        p_descuento_total_imp: redondearMoneda(-Math.abs(Number(orig.descuento_total_importe || 0))),
         p_autorizado_por: adminVerificado.nombre,
         p_tipo_iva: orig.tipo_iva_aplicado || cfg.iva_defecto || 10,
         p_total_final: importeNegativo,
@@ -697,11 +790,39 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       if (rpcError) throw rpcError;
 
+      const desgloseNegativo = calcularDesgloseImpuestosLineas(
+        lineasNegativas,
+        Number(orig.descuento_general_porcentaje || 0),
+        importeNegativo
+      );
+      const fechaRect = String(docRect?.fecha_expedicion || new Date().toISOString());
+      const hash_actual = await calcularHashVeriFactu(
+        String(docRect.numero_completo),
+        fechaRect,
+        importeNegativo,
+        hash_anterior
+      );
+
+      await supabase
+        .from('facturas_tickets')
+        .update({
+          tipo_factura: 'R4',
+          base_imponible_10: desgloseNegativo.base_imponible_10,
+          iva_10: desgloseNegativo.iva_10,
+          base_imponible_21: desgloseNegativo.base_imponible_21,
+          iva_21: desgloseNegativo.iva_21,
+          base_imponible: desgloseNegativo.baseImponibleTotal,
+          cuota_iva: desgloseNegativo.cuotaIvaTotal,
+          hash_anterior,
+          hash_actual
+        })
+        .eq('id', docRect.id);
+
       // Devolver stock al anular / rectificar factura
       for (const linea of (orig.lineas || [])) {
         if (linea.articulo_id || linea.producto_id) {
           const artId = linea.articulo_id || linea.producto_id;
-          const cantVendida = Number(linea.cantidad || 0);
+          const cantVendida = Math.abs(Number(linea.cantidad || 0));
           const artRef = articulosMaestro.find(a => a.id === artId);
           if (artRef && artRef.controla_stock) {
             const nuevoStock = Number(artRef.stock_actual || 0) + cantVendida;
@@ -712,11 +833,13 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       }
 
       const fechaHoy = new Date().toISOString().split('T')[0];
-      if (cajaHoy && cajaHoy.estado === 'abierta' && orig.fecha_expedicion.startsWith(fechaHoy)) {
-        const nuevoEfectivo =
-          Number(cajaHoy.total_efectivo) + (orig.metodo_pago === 'efectivo' ? importeNegativo : 0);
-        const nuevaTarjeta =
-          Number(cajaHoy.total_tarjeta) + (orig.metodo_pago === 'tarjeta' ? importeNegativo : 0);
+      if (cajaHoy && cajaHoy.estado === 'abierta' && String(orig.fecha_expedicion || '').startsWith(fechaHoy)) {
+        const nuevoEfectivo = redondearMoneda(
+          Number(cajaHoy.total_efectivo) + (orig.metodo_pago === 'efectivo' ? importeNegativo : 0)
+        );
+        const nuevaTarjeta = redondearMoneda(
+          Number(cajaHoy.total_tarjeta) + (orig.metodo_pago === 'tarjeta' ? importeNegativo : 0)
+        );
 
         await supabase
           .from('caja_diaria')
@@ -731,7 +854,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         .from('facturas_tickets')
         .select('*')
         .eq('id', docRect.id)
-        .single();
+        .maybeSingle();
 
       if (rectCompleta) {
         imprimirDocumentoFiscalHTML(rectCompleta, cfg);
@@ -739,17 +862,16 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       notificar(`Factura Rectificativa ${docRect.numero_completo} emitida e impresa.`, 'ok');
       setModalRectificativa(null);
-      cargarTicketsYVentas();
-      cargarArticulosYCategorias();
+      await Promise.all([cargarTicketsYVentas(), cargarArticulosYCategorias()]);
     } catch (err: any) {
       notificar('Error al emitir factura rectificativa: ' + err.message, 'error');
-      setModalRectificativa({ ...modalRectificativa, procesando: false });
+      setModalRectificativa((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
   const confirmarFacturaNominativa = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalFacturaNominativa || !adminVerificado) return;
+    if (!modalFacturaNominativa || !adminVerificado || modalFacturaNominativa.procesando) return;
 
     if (!modalFacturaNominativa.razonSocial.trim() || !modalFacturaNominativa.nifCif.trim()) {
       notificar('Nombre/Razón Social y NIF/CIF del cliente son obligatorios por ley.', 'info');
@@ -761,6 +883,19 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     try {
       const orig = modalFacturaNominativa.factura;
       const cfg = configFiscal;
+
+      let hash_anterior = '';
+      try {
+        const { data: ultimoTicket } = await supabase
+          .from('facturas_tickets')
+          .select('hash_actual')
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        hash_anterior = ultimoTicket?.hash_actual || '';
+      } catch (errPrevHash) {
+        console.error('Error al obtener hash_anterior en Nominativa Backoffice:', errPrevHash);
+      }
 
       const { data: docNom, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'F',
@@ -787,11 +922,39 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       if (rpcError) throw rpcError;
 
+      const desgloseNom = calcularDesgloseImpuestosLineas(
+        (orig.lineas || []) as LineaTicketFiscal[],
+        Number(orig.descuento_general_porcentaje || 0),
+        Number(orig.total_final || 0)
+      );
+      const fechaNom = String(docNom?.fecha_expedicion || new Date().toISOString());
+      const hash_actual = await calcularHashVeriFactu(
+        String(docNom.numero_completo),
+        fechaNom,
+        Number(orig.total_final || 0),
+        hash_anterior
+      );
+
+      await supabase
+        .from('facturas_tickets')
+        .update({
+          tipo_factura: 'F1',
+          base_imponible_10: orig.base_imponible_10 ?? desgloseNom.base_imponible_10,
+          iva_10: orig.iva_10 ?? desgloseNom.iva_10,
+          base_imponible_21: orig.base_imponible_21 ?? desgloseNom.base_imponible_21,
+          iva_21: orig.iva_21 ?? desgloseNom.iva_21,
+          base_imponible: orig.base_imponible ?? desgloseNom.baseImponibleTotal,
+          cuota_iva: orig.cuota_iva ?? desgloseNom.cuotaIvaTotal,
+          hash_anterior,
+          hash_actual
+        })
+        .eq('id', docNom.id);
+
       const { data: nomCompleta } = await supabase
         .from('facturas_tickets')
         .select('*')
         .eq('id', docNom.id)
-        .single();
+        .maybeSingle();
 
       if (nomCompleta) {
         imprimirDocumentoFiscalHTML(nomCompleta, cfg);
@@ -799,10 +962,10 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
       notificar(`Factura Nominativa ${docNom.numero_completo} generada e impresa correctamente.`, 'ok');
       setModalFacturaNominativa(null);
-      cargarTicketsYVentas();
+      await cargarTicketsYVentas();
     } catch (err: any) {
       notificar('Error al generar factura nominativa: ' + err.message, 'error');
-      setModalFacturaNominativa({ ...modalFacturaNominativa, procesando: false });
+      setModalFacturaNominativa((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
@@ -841,7 +1004,17 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const actualizarOpcion = (indexPaso: number, indexOpcion: number, campo: 'nombre' | 'destino', valor: string) => {
     const nuevos = [...pasosCombo];
-    nuevos[indexPaso].opciones[indexOpcion] = { ...nuevos[indexPaso].opciones[indexOpcion], [campo]: valor };
+    if (campo === 'destino') {
+      nuevos[indexPaso].opciones[indexOpcion] = {
+        ...nuevos[indexPaso].opciones[indexOpcion],
+        destino: valor === 'cocina' ? 'cocina' : 'barra'
+      };
+    } else {
+      nuevos[indexPaso].opciones[indexOpcion] = {
+        ...nuevos[indexPaso].opciones[indexOpcion],
+        nombre: valor
+      };
+    }
     setPasosCombo(nuevos);
   };
 
@@ -925,33 +1098,37 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     setArtEsCompuesto(Boolean(art.es_compuesto));
 
     if (art.es_compuesto) {
-      const { data: escData } = await supabase
-        .from('escandallos_cafeteria')
-        .select('*, ingrediente:articulos_cafeteria!ingrediente_id(nombre, unidad_medida, coste_unitario)')
-        .eq('articulo_padre_id', art.id);
+      try {
+        const { data: escData } = await supabase
+          .from('escandallos_cafeteria')
+          .select('*, ingrediente:articulos_cafeteria!ingrediente_id(nombre, unidad_medida, coste_unitario)')
+          .eq('articulo_padre_id', art.id);
 
-      if (escData) {
-        const mapeadas: IngredienteEscandalloUI[] = escData.map((e: any) => {
-          const uBase = (e.ingrediente?.unidad_medida || 'ud') as UnidadMedida;
-          const cBase = Number(e.ingrediente?.coste_unitario || 0);
-          return {
-            ingrediente_id: e.ingrediente_id,
-            nombre_ingrediente: e.ingrediente?.nombre || 'Ingrediente',
-            cantidad: Number(e.cantidad),
-            unidad_uso: (e.unidad_uso || 'ud') as UnidadMedida,
-            unidad_base: uBase,
-            coste_base: cBase,
-            merma_porcentaje: Number(e.merma_porcentaje || 0),
-            coste_calculado: calcularCosteIngredienteEscandallo(
-              cBase,
-              uBase,
-              Number(e.cantidad),
-              (e.unidad_uso || 'ud') as UnidadMedida,
-              Number(e.merma_porcentaje || 0)
-            )
-          };
-        });
-        setLineasEscandallo(mapeadas);
+        if (escData) {
+          const mapeadas: IngredienteEscandalloUI[] = escData.map((e: any) => {
+            const uBase = (e.ingrediente?.unidad_medida || 'ud') as UnidadMedida;
+            const cBase = Number(e.ingrediente?.coste_unitario || 0);
+            return {
+              ingrediente_id: e.ingrediente_id,
+              nombre_ingrediente: e.ingrediente?.nombre || 'Ingrediente',
+              cantidad: Number(e.cantidad),
+              unidad_uso: (e.unidad_uso || 'ud') as UnidadMedida,
+              unidad_base: uBase,
+              coste_base: cBase,
+              merma_porcentaje: Number(e.merma_porcentaje || 0),
+              coste_calculado: calcularCosteIngredienteEscandallo(
+                cBase,
+                uBase,
+                Number(e.cantidad),
+                (e.unidad_uso || 'ud') as UnidadMedida,
+                Number(e.merma_porcentaje || 0)
+              )
+            };
+          });
+          setLineasEscandallo(mapeadas);
+        }
+      } catch (err) {
+        console.error('Error al cargar escandallo del artículo:', err);
       }
     } else {
       setLineasEscandallo([]);
@@ -962,37 +1139,42 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const ext = file.name.split('.').pop();
-    const fileName = `prod_${Date.now()}.${ext}`;
+    try {
+      const ext = file.name.split('.').pop();
+      const fileName = `prod_${Date.now()}.${ext}`;
 
-    const { data, error } = await supabase.storage.from('productos').upload(fileName, file, { upsert: true });
+      const { data, error } = await supabase.storage.from('productos').upload(fileName, file, { upsert: true });
 
-    if (!error && data) {
-      const { data: pubUrl } = supabase.storage.from('productos').getPublicUrl(fileName);
-      setArtImagenUrl(pubUrl.publicUrl);
-      notificar('Imagen subida correctamente a Supabase Storage.');
-    } else {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setArtImagenUrl(reader.result);
-          notificar('Imagen cargada y lista para sincronizar.');
-        }
-      };
-      reader.readAsDataURL(file);
+      if (!error && data) {
+        const { data: pubUrl } = supabase.storage.from('productos').getPublicUrl(fileName);
+        setArtImagenUrl(pubUrl.publicUrl);
+        notificar('Imagen subida correctamente a Supabase Storage.');
+      } else {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (typeof reader.result === 'string') {
+            setArtImagenUrl(reader.result);
+            notificar('Imagen cargada y lista para sincronizar.');
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    } catch (err) {
+      console.error('Error al subir imagen:', err);
     }
   };
 
   const guardarYSincronizarArticulo = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!artNombre.trim()) return;
+    if (!artNombre.trim() || guardandoArticulo) return;
 
-    const precioNum = parseFloat(artPrecioVenta) || 0;
+    const precioNum = redondearMoneda(parseFloat(artPrecioVenta) || 0);
     const costeNum = parseFloat(artCosteUnitario) || 0;
-    const ivaNum = parseFloat(artTipoIva) || 10;
+    const ivaNum = Number(parseFloat(artTipoIva) || 10) === 21 ? 21 : 10;
     const stockNum = parseFloat(artStockInicial) || 0;
     const minNum = parseFloat(artStockMinimo) || 0;
 
+    setGuardandoArticulo(true);
     try {
       let articuloIdFinal = editandoArticuloId;
 
@@ -1071,7 +1253,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           codigo_barras: artCodigoBarras.trim(),
           coste_unitario: costeNum,
           porcentaje_iva: ivaNum,
-        tipo_iva: ivaNum,
+          tipo_iva: ivaNum,
           unidad_medida: artUnidadMedida,
           controla_stock: artControlaStock,
           stock_actual: stockNum,
@@ -1102,20 +1284,30 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           : `Artículo "${artNombre}" creado y sincronizado correctamente en TPV.`
       );
       limpiarFormularioArticulo();
-      cargarArticulosYCategorias();
+      await cargarArticulosYCategorias();
     } catch (err: any) {
       notificar('Error guardando artículo: ' + err.message, 'error');
+    } finally {
+      setGuardandoArticulo(false);
     }
   };
 
   const crearNuevaCategoria = async () => {
-    if (!nuevaCategoriaInput.trim()) return;
+    if (!nuevaCategoriaInput.trim() || creandoCategoria) return;
     const nombreLimpio = nuevaCategoriaInput.trim();
-    await supabase.from('categorias_cafeteria').insert([{ nombre: nombreLimpio, orden: categorias.length + 1 }]);
-    setCategorias((prev) => [...prev, nombreLimpio]);
-    setArtCategoria(nombreLimpio);
-    setNuevaCategoriaInput('');
-    notificar(`Categoría visual "${nombreLimpio}" añadida.`);
+    setCreandoCategoria(true);
+    try {
+      const { error } = await supabase.from('categorias_cafeteria').insert([{ nombre: nombreLimpio, orden: categorias.length + 1 }]);
+      if (error) throw error;
+      setCategorias((prev) => [...prev, nombreLimpio]);
+      setArtCategoria(nombreLimpio);
+      setNuevaCategoriaInput('');
+      notificar(`Categoría visual "${nombreLimpio}" añadida.`);
+    } catch (err: any) {
+      notificar('Error al crear categoría: ' + (err?.message || 'Error desconocido'), 'error');
+    } finally {
+      setCreandoCategoria(false);
+    }
   };
 
   const borrarCategoria = async (catNombre: string) => {
@@ -1137,9 +1329,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
   const descargarPlantillaCSV = () => {
     const cabeceras = "Nombre;Categoria;Destino(barra/cocina);PrecioVenta;CosteUnitario;porcentaje_iva;UnidadMedida;ControlaStock(SI/NO);StockInicial;StockMinimo;VisibleTPV(SI/NO)\n";
     const ejemplo1 = "Café Solo;Cafetería;barra;1.20;0.15;10;ud;SI;100;10;SI\n";
-
     const ejemplo2 = "Sobre Pokémon TCG;Merchandising;barra;4.50;2.80;21;ud;SI;50;5;SI\n";
-
 
     const blob = new Blob([cabeceras + ejemplo1 + ejemplo2], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -1172,15 +1362,9 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
         for (let i = 1; i < lineas.length; i++) {
           const columnas = lineas[i].split(';');
           if (columnas.length < 10) {
-
             ignorados++;
             continue;
           }
-
-
-
-
-
 
           let nombre = '';
           let categoria = '';
@@ -1211,7 +1395,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           }
 
           const ivaLimpiado = parseFloat(String(ivaRaw ?? '').replace('%', '').trim());
-          const porcentajeIvaFinal = !isNaN(ivaLimpiado) && ivaLimpiado > 0 ? ivaLimpiado : 10;
+          const porcentajeIvaFinal = !isNaN(ivaLimpiado) && ivaLimpiado === 21 ? 21 : 10;
 
           if (!nombre) {
             ignorados++;
@@ -1222,7 +1406,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
             nombre: nombre.trim(),
             categoria: categoria.trim() || 'Cafetería',
             destino: destino.trim().toLowerCase() === 'cocina' ? 'cocina' : 'barra',
-            precio_venta: parseFloat(precio) || 0,
+            precio_venta: redondearMoneda(parseFloat(precio) || 0),
             coste_unitario: parseFloat(coste) || 0,
             porcentaje_iva: porcentajeIvaFinal,
             tipo_iva: porcentajeIvaFinal,
@@ -1290,7 +1474,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           }
         }
         
-        cargarArticulosYCategorias();
+        await cargarArticulosYCategorias();
         notificar(`¡Importación completada! ${importados} artículos importados correctamente con sus respectivos tipos de IVA configurados${ignorados > 0 ? ` (${ignorados} ignorados o duplicados)` : ''}.`, 'ok');
       } catch (err: any) {
         notificar('Error procesando CSV: ' + err.message, 'error');
@@ -1304,7 +1488,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
   const registrarCompraMercancia = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!compraArticuloId) return;
+    if (!compraArticuloId || registrandoCompra) return;
 
     const cantComprada = parseFloat(compraCantidad) || 0;
     if (cantComprada <= 0) {
@@ -1323,6 +1507,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
 
     const nombreProvLimpio = compraProveedor.trim();
 
+    setRegistrandoCompra(true);
     try {
       // Registrar / asegurar proveedor en tabla proveedores si existe
       if (nombreProvLimpio) {
@@ -1369,201 +1554,262 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
       setCompraCosteUnitario('');
       setCompraProveedor('');
       setCompraAlbaran('');
-      cargarArticulosYCategorias();
-      cargarMovimientosInventario(pageMovimientos);
-      cargarProveedores();
+      await Promise.all([
+        cargarArticulosYCategorias(),
+        cargarMovimientosInventario(pageMovimientos),
+        cargarProveedores()
+      ]);
     } catch (err: any) {
       notificar('Error al registrar la compra: ' + err.message, 'error');
+    } finally {
+      setRegistrandoCompra(false);
     }
   };
 
+
   const procesarAjusteStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalAjusteStock) return;
+    if (!modalAjusteStock || modalAjusteStock.procesando) return;
 
-    const nuevoFisico = parseFloat(modalAjusteStock.nuevoStock) || 0;
-    const diferencia = nuevoFisico - modalAjusteStock.stockActual;
-    
-    if (diferencia === 0) {
-      notificar('El stock introducido es igual al actual. No hay cambios.', 'info');
-      setModalAjusteStock(null);
+    const { articulo, tipo, cantidad, motivo } = modalAjusteStock;
+    const cantNum = parseFloat(cantidad) || 0;
+
+    if (cantNum < 0 || (tipo === 'MERMA' && cantNum <= 0)) {
+      notificar('Introduce una cantidad válida.', 'error');
       return;
     }
 
     setModalAjusteStock({ ...modalAjusteStock, procesando: true });
 
     try {
-      await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoFisico }).eq('id', modalAjusteStock.articuloId);
-      await supabase.from('productos_carta').update({ stock_actual: nuevoFisico }).eq('articulo_inventario_id', modalAjusteStock.articuloId);
+      const stockAnterior = Number(articulo.stock_actual || 0);
+      let nuevoStock = stockAnterior;
+      let deltaMovimiento = 0;
 
-      await supabase.from('movimientos_stock').insert([{
-        articulo_id: modalAjusteStock.articuloId,
-        tipo_movimiento: 'AJUSTE_MANUAL',
-        cantidad: diferencia,
-        coste_compra_unitario: 0,
-        usuario_nombre: adminVerificado?.nombre || 'Admin',
-        observaciones: modalAjusteStock.motivo.trim() || 'Regularización manual de stock'
-      }]);
+      if (tipo === 'MERMA') {
+        nuevoStock = Math.max(0, stockAnterior - cantNum);
+        deltaMovimiento = -cantNum;
+      } else {
+        nuevoStock = cantNum;
+        deltaMovimiento = cantNum - stockAnterior;
+      }
 
-      notificar(`Stock de "${modalAjusteStock.nombre}" ajustado a ${nuevoFisico} ${modalAjusteStock.unidad}.`, 'ok');
+      await supabase
+        .from('articulos_cafeteria')
+        .update({ stock_actual: nuevoStock, updated_at: new Date().toISOString() })
+        .eq('id', articulo.id);
+
+      await supabase
+        .from('productos_carta')
+        .update({ stock_actual: nuevoStock })
+        .eq('articulo_inventario_id', articulo.id);
+
+      await supabase.from('movimientos_stock').insert([
+        {
+          articulo_id: articulo.id,
+          tipo_movimiento: tipo === 'MERMA' ? 'MERMA' : 'RECUENTO_FISICO',
+          cantidad: deltaMovimiento,
+          coste_compra_unitario: Number(articulo.coste_unitario || 0),
+          usuario_nombre: adminVerificado?.nombre || 'Administrador',
+          observaciones: `${motivo} (Stock ant: ${stockAnterior} -> Nuevo: ${nuevoStock})`
+        }
+      ]);
+
+      notificar(
+        tipo === 'MERMA'
+          ? `Merma registrada en "${articulo.nombre}". Stock actualizado: ${nuevoStock} ${articulo.unidad_medida}.`
+          : `Recuento físico aplicado a "${articulo.nombre}". Stock fijado en: ${nuevoStock} ${articulo.unidad_medida}.`,
+        'ok'
+      );
+
       setModalAjusteStock(null);
-      cargarArticulosYCategorias();
-      cargarMovimientosInventario(pageMovimientos);
+      await Promise.all([cargarArticulosYCategorias(), cargarMovimientosInventario(pageMovimientos)]);
     } catch (err: any) {
-      notificar('Error al realizar el ajuste: ' + err.message, 'error');
-      setModalAjusteStock({ ...modalAjusteStock, procesando: false });
+      notificar('Error ajustando stock: ' + err.message, 'error');
+      setModalAjusteStock((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
   const agregarIngredienteAElaboracion = () => {
-    if (!modalElaboracion || !modalElaboracion.ingSelId) return;
-    const ingObj = articulosMaestro.find((a) => a.id === modalElaboracion.ingSelId);
+    if (!modalElaboracion || !elabIngSelId) return;
+    const ingObj = articulosMaestro.find(a => a.id === elabIngSelId);
     if (!ingObj) return;
-
-    const cant = parseFloat(modalElaboracion.ingSelCant) || 0;
-    const costeManual = modalElaboracion.ingSelCoste.trim() !== '' ? parseFloat(modalElaboracion.ingSelCoste) : Number(ingObj.coste_unitario || 0);
+    const cant = parseFloat(elabIngCant) || 0;
     if (cant <= 0) return;
 
-    const nuevoIng = {
-      id: Date.now().toString(),
-      articulo_id: ingObj.id,
-      nombre: ingObj.nombre,
-      cantidad: cant,
-      unidad: ingObj.unidad_medida,
-      costeBase: costeManual
-    };
+    const factor = factorConversionUnidades(elabIngUnidad, (ingObj.unidad_medida || 'ud') as UnidadMedida);
+    const cantConvertida = cant * factor;
+    const costeCalc = cantConvertida * Number(ingObj.coste_unitario || 0);
 
     setModalElaboracion({
       ...modalElaboracion,
-      ingredientes: [...modalElaboracion.ingredientes, nuevoIng],
-      ingSelId: '',
-      ingSelCant: '1',
-      ingSelCoste: ''
+      ingredientesUsados: [
+        ...modalElaboracion.ingredientesUsados,
+        {
+          ingrediente_id: ingObj.id,
+          nombre: ingObj.nombre,
+          cantidad: cant,
+          unidad_uso: elabIngUnidad,
+          unidad_base: (ingObj.unidad_medida || 'ud') as UnidadMedida,
+          coste_calculado: costeCalc
+        }
+      ]
     });
+    setElabIngCant('1');
   };
 
-  const eliminarIngredienteElaboracion = (idToRemove: string) => {
+  const eliminarIngredienteElaboracion = (idx: number) => {
     if (!modalElaboracion) return;
     setModalElaboracion({
       ...modalElaboracion,
-      ingredientes: modalElaboracion.ingredientes.filter(i => i.id !== idToRemove)
+      ingredientesUsados: modalElaboracion.ingredientesUsados.filter((_, i) => i !== idx)
     });
   };
 
   const confirmarElaboracionLote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalElaboracion) return;
+    if (!modalElaboracion || modalElaboracion.procesando) return;
 
-    const racionesGeneradas = parseFloat(modalElaboracion.cantidadGenerada) || 0;
-    if (racionesGeneradas <= 0 || modalElaboracion.ingredientes.length === 0) {
-      notificar('Debes indicar las raciones generadas y añadir al menos un ingrediente.', 'error');
+    const cantResultante = parseFloat(modalElaboracion.cantidadResultante) || 0;
+    if (!modalElaboracion.articuloDestinoId || cantResultante <= 0) {
+      notificar('Selecciona el producto resultante e indica la cantidad producida (> 0).', 'error');
+      return;
+    }
+
+    if (modalElaboracion.ingredientesUsados.length === 0) {
+      notificar('Añade al menos 1 materia prima utilizada en la elaboración.', 'info');
       return;
     }
 
     setModalElaboracion({ ...modalElaboracion, procesando: true });
 
     try {
-      let costeTotalIngredientes = 0;
-      const promesasIngredientes = modalElaboracion.ingredientes.map(async (ing) => {
-        costeTotalIngredientes += (ing.cantidad * ing.costeBase);
-        
-        const refObj = articulosMaestro.find(a => a.id === ing.articulo_id);
-        const nuevoStockIng = (Number(refObj?.stock_actual) || 0) - ing.cantidad;
+      const artDestino = articulosMaestro.find(a => a.id === modalElaboracion.articuloDestinoId);
+      if (!artDestino) throw new Error('Artículo destino no encontrado.');
 
-        await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoStockIng }).eq('id', ing.articulo_id);
-        await supabase.from('productos_carta').update({ stock_actual: nuevoStockIng }).eq('articulo_inventario_id', ing.articulo_id);
+      const costeTotalLote = modalElaboracion.ingredientesUsados.reduce((acc, i) => acc + i.coste_calculado, 0);
+      const costeUnitarioResultante = cantResultante > 0 ? costeTotalLote / cantResultante : 0;
 
-        await supabase.from('movimientos_stock').insert([{
-          articulo_id: ing.articulo_id,
-          tipo_movimiento: 'ELABORACION_SALIDA',
-          cantidad: -Math.abs(ing.cantidad),
-          coste_compra_unitario: ing.costeBase,
-          usuario_nombre: adminVerificado?.nombre || 'Admin',
-          observaciones: `Consumo para elaboración de lote de ${racionesGeneradas} raciones`
-        }]);
-      });
+      // 1. Descontar cada materia prima secuencialmente para evitar condiciones de carrera si se repite un ingrediente
+      const stockAcumuladoPorIngrediente = new Map<string, number>();
+      for (const ing of modalElaboracion.ingredientesUsados) {
+        const artIng = articulosMaestro.find(a => a.id === ing.ingrediente_id);
+        if (artIng) {
+          const factor = factorConversionUnidades(ing.unidad_uso, artIng.unidad_medida as UnidadMedida);
+          const cantDescontar = ing.cantidad * factor;
+          const stockBase = stockAcumuladoPorIngrediente.has(artIng.id)
+            ? stockAcumuladoPorIngrediente.get(artIng.id)!
+            : Number(artIng.stock_actual || 0);
+          const nuevoStockIng = Math.max(0, stockBase - cantDescontar);
+          stockAcumuladoPorIngrediente.set(artIng.id, nuevoStockIng);
 
-      await Promise.all(promesasIngredientes);
+          await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoStockIng }).eq('id', artIng.id);
+          await supabase.from('productos_carta').update({ stock_actual: nuevoStockIng }).eq('articulo_inventario_id', artIng.id);
 
-      const costeProporcionalUnitario = costeTotalIngredientes / racionesGeneradas;
-      const platoDestino = articulosMaestro.find(a => a.id === modalElaboracion.articuloDestinoId);
-      const nuevoStockPlato = (Number(platoDestino?.stock_actual) || 0) + racionesGeneradas;
+          await supabase.from('movimientos_stock').insert([{
+            articulo_id: artIng.id,
+            tipo_movimiento: 'CONSUMO_ELABORACION',
+            cantidad: -cantDescontar,
+            coste_compra_unitario: Number(artIng.coste_unitario || 0),
+            usuario_nombre: adminVerificado?.nombre || 'Cocina/Barra',
+            observaciones: `Usado para elaborar ${cantResultante} ${artDestino.unidad_medida} de ${artDestino.nombre}`
+          }]);
+        }
+      }
 
-      await supabase.from('articulos_cafeteria').update({ 
-        stock_actual: nuevoStockPlato,
-        coste_unitario: costeProporcionalUnitario 
-      }).eq('id', modalElaboracion.articuloDestinoId);
+      // 2. Sumar el producto elaborado resultante y actualizar su coste unitario
+      const nuevoStockDestino = Number(artDestino.stock_actual || 0) + cantResultante;
+      await supabase
+        .from('articulos_cafeteria')
+        .update({
+          stock_actual: nuevoStockDestino,
+          coste_unitario: costeUnitarioResultante > 0 ? costeUnitarioResultante : artDestino.coste_unitario,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', artDestino.id);
 
-      await supabase.from('productos_carta').update({ 
-        stock_actual: nuevoStockPlato,
-        coste_unitario: costeProporcionalUnitario 
-      }).eq('articulo_inventario_id', modalElaboracion.articuloDestinoId);
+      await supabase
+        .from('productos_carta')
+        .update({
+          stock_actual: nuevoStockDestino,
+          coste_unitario: costeUnitarioResultante > 0 ? costeUnitarioResultante : artDestino.coste_unitario
+        })
+        .eq('articulo_inventario_id', artDestino.id);
 
       await supabase.from('movimientos_stock').insert([{
-        articulo_id: modalElaboracion.articuloDestinoId,
-        tipo_movimiento: 'ELABORACION_ENTRADA',
-        cantidad: racionesGeneradas,
-        coste_compra_unitario: costeProporcionalUnitario,
-        usuario_nombre: adminVerificado?.nombre || 'Admin',
-        observaciones: `Producción de lote interno (${racionesGeneradas} raciones). Coste total: ${costeTotalIngredientes.toFixed(2)}€`
+        articulo_id: artDestino.id,
+        tipo_movimiento: 'PRODUCCION_INTERNA',
+        cantidad: cantResultante,
+        coste_compra_unitario: costeUnitarioResultante,
+        usuario_nombre: adminVerificado?.nombre || 'Cocina/Barra',
+        observaciones: `Lote elaborado (${modalElaboracion.ingredientesUsados.length} ingredientes). Coste lote: ${costeTotalLote.toFixed(2)}€`
       }]);
 
-      notificar(`Lote elaborado con éxito: +${racionesGeneradas} raciones con un coste unitario de ${costeProporcionalUnitario.toFixed(2)}€`, 'ok');
+      notificar(`¡Elaboración registrada! +${cantResultante} ${artDestino.unidad_medida} de "${artDestino.nombre}" añadidos al inventario.`, 'ok');
       setModalElaboracion(null);
-      cargarArticulosYCategorias();
-      cargarMovimientosInventario(pageMovimientos);
+      await Promise.all([cargarArticulosYCategorias(), cargarMovimientosInventario(pageMovimientos)]);
     } catch (err: any) {
-      notificar('Error al procesar la elaboración del lote: ' + err.message, 'error');
-      setModalElaboracion({ ...modalElaboracion, procesando: false });
+      notificar('Error en elaboración: ' + err.message, 'error');
+      setModalElaboracion(prev => prev ? { ...prev, procesando: false } : null);
     }
   };
 
   const guardarConfiguracionFiscal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (configFiscal.id) {
-      await supabase.from('configuracion_fiscal').update(configFiscal).eq('id', configFiscal.id);
-    } else {
-      await supabase.from('configuracion_fiscal').insert([configFiscal]);
+    if (guardandoConfigFiscal) return;
+    setGuardandoConfigFiscal(true);
+    try {
+      const payload = {
+        id: 1,
+        ...configFiscal,
+        updated_at: new Date().toISOString()
+      };
+      const { error } = await supabase.from('configuracion_fiscal').upsert([payload]);
+      if (error) throw error;
+      notificar('Datos fiscales y cabeceras de facturación guardados correctamente.');
+    } catch (err: any) {
+      notificar('Error guardando datos fiscales: ' + err.message, 'error');
+    } finally {
+      setGuardandoConfigFiscal(false);
     }
-    notificar('Datos fiscales y PIN de autorización actualizados correctamente.');
   };
 
   if (!adminVerificado) {
     return (
-      <div className="min-h-screen bg-[#050609] flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-[#0d0f17] border border-cyan-500/30 rounded-3xl p-8 shadow-2xl space-y-6">
-          <div className="text-center space-y-2">
-            <div className="h-14 w-14 mx-auto rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center">
-              <ShieldAlert className="h-7 w-7" />
-            </div>
-            <h2 className="text-xl font-black text-white">BACKOFFICE CAFETERÍA</h2>
-            <p className="text-xs text-slate-400">
-              Acceso restringido exclusivamente a usuarios con perfil <strong>Administrador</strong>.
+      <div className="min-h-screen bg-[#020617] text-white flex items-center justify-center p-4 font-sans">
+        <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-8 max-w-md w-full shadow-2xl">
+          <div className="text-center mb-6">
+            <span className="text-5xl block mb-3">🔐</span>
+            <h1 className="text-2xl font-black text-white tracking-tight">Acceso Backoffice</h1>
+            <p className="text-xs text-slate-400 mt-1">
+              Introduce un PIN con permisos de <strong className="text-indigo-400">Administrador / Encargado</strong>
             </p>
           </div>
 
-          <form onSubmit={handleLoginAdmin} className="space-y-4">
+          <form onSubmit={verificarPinAdmin} className="space-y-4">
             <input
               type="password"
+              value={pinAcceso}
+              onChange={(e) => setPinAcceso(e.target.value)}
+              placeholder="••••"
+              maxLength={6}
+              disabled={procesandoLoginAdmin}
+              className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center text-3xl font-black tracking-[0.5em] text-indigo-400 outline-none focus:border-indigo-500"
               autoFocus
-              placeholder="PIN de Administrador"
-              value={pinAdminLogin}
-              onChange={(e) => setPinAdminLogin(e.target.value)}
-              className="w-full bg-black/60 border border-white/15 rounded-xl px-4 py-3.5 text-center text-xl tracking-[0.5em] font-mono font-bold text-white outline-none focus:border-cyan-400"
             />
-            {errorLoginAdmin && <p className="text-xs text-rose-400 text-center font-bold">{errorLoginAdmin}</p>}
+
+            {errorPin && (
+              <p className="text-xs text-rose-400 font-bold text-center bg-rose-500/10 border border-rose-500/30 p-3 rounded-xl">
+                ⚠️ {errorPin}
+              </p>
+            )}
+
             <button
               type="submit"
-              className="w-full py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer"
+              disabled={procesandoLoginAdmin}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black py-4 rounded-2xl shadow-lg transition-all uppercase tracking-wider text-sm"
             >
-              Verificar Rol Administrador
-            </button>
-            <button
-              type="button"
-              onClick={() => (onBack ? onBack() : (window.location.hash = ''))}
-              className="w-full py-2 text-xs text-slate-400 hover:text-white cursor-pointer"
-            >
-              Volver a Cafetería
+              {procesandoLoginAdmin ? 'Verificando...' : 'Entrar al Panel de Gestión'}
             </button>
           </form>
         </div>
@@ -1571,927 +1817,385 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
     );
   }
 
-  const ticketsFiltrados = ticketsHistorico.filter((t) => {
-    const coincideSerie = filtroSerie === 'TODAS' || t.serie === filtroSerie;
-    const texto = `${t.numero_completo} ${t.vendedor_nombre} ${t.mesa} ${t.cliente_nif || ''} ${t.cliente_nombre_razon || ''}`.toLowerCase();
-    return coincideSerie && texto.includes(busquedaTicket.toLowerCase());
-  });
-
-  const totalFacturadoPeriodo = ticketsFiltrados.reduce((acc, t) => acc + Number(t.total_final || 0), 0);
-  const totalEfectivoPeriodo = ticketsFiltrados
-    .filter((t) => t.metodo_pago === 'efectivo')
-    .reduce((acc, t) => acc + Number(t.total_final || 0), 0);
-  const totalTarjetaPeriodo = ticketsFiltrados
-    .filter((t) => t.metodo_pago === 'tarjeta')
-    .reduce((acc, t) => acc + Number(t.total_final || 0), 0);
-  const numOperacionesValidas = ticketsFiltrados.filter((t) => t.serie === 'T').length;
-  const ticketMedioPeriodo = numOperacionesValidas > 0 ? totalFacturadoPeriodo / numOperacionesValidas : 0;
-
-  const mapaVendedores: Record<string, { nombre: string; operaciones: number; total: number }> = {};
-  ticketsFiltrados.forEach((t) => {
-    if (t.serie === 'F') return;
-    const vend = t.vendedor_nombre || 'Sin asignar';
-    if (!mapaVendedores[vend]) {
-      mapaVendedores[vend] = { nombre: vend, operaciones: 0, total: 0 };
-    }
-    mapaVendedores[vend].operaciones += 1;
-    mapaVendedores[vend].total += Number(t.total_final || 0);
-  });
-  const ventasPorVendedor = Object.values(mapaVendedores).sort((a, b) => b.total - a.total);
-  const maxVentaVendedor = ventasPorVendedor.length > 0 ? ventasPorVendedor[0].total : 1; 
-
-  const mapaHoras: Record<string, { hora: string; operaciones: number; total: number }> = {};
-  ticketsFiltrados.forEach((t) => {
-    if (t.serie === 'F') return;
-    const fechaObj = new Date(t.fecha_expedicion);
-    const h = String(fechaObj.getHours()).padStart(2, '0') + ':00';
-    if (!mapaHoras[h]) {
-      mapaHoras[h] = { hora: h, operaciones: 0, total: 0 };
-    }
-    mapaHoras[h].operaciones += 1;
-    mapaHoras[h].total += Number(t.total_final || 0);
-  });
-  const ventasPorHora = Object.values(mapaHoras).sort((a, b) => a.hora.localeCompare(b.hora));
-
-  // Generar array continuo de 08:00 a 23:00 para el gráfico de líneas
-  const horasContinuas = Array.from({ length: 16 }, (_, i) => {
-    const horaStr = String(i + 8).padStart(2, '0') + ':00';
-    const encontrado = ventasPorHora.find(v => v.hora === horaStr);
-    return {
-      hora: horaStr,
-      total: encontrado ? encontrado.total : 0,
-      operaciones: encontrado ? encontrado.operaciones : 0
-    };
-  });
-  const maxVentaLinea = Math.max(...horasContinuas.map(h => h.total), 1);
-
-  const margenBeneficioArticulo =
-    parseFloat(artPrecioVenta) > 0
-      ? (((parseFloat(artPrecioVenta) - parseFloat(artCosteUnitario)) / parseFloat(artPrecioVenta)) * 100).toFixed(1)
-      : '0.0';
-
   return (
-    <div className="min-h-screen bg-[#050609] text-slate-100 p-4 sm:p-6 flex flex-col justify-between font-sans">
-      
-      {/* MODAL DE AJUSTE RÁPIDO DE STOCK */}
-      {modalAjusteStock && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
-          <form
-            onSubmit={procesarAjusteStock}
-            className="w-full max-w-sm bg-[#0d0f17] border border-cyan-500/40 rounded-3xl p-6 shadow-2xl space-y-4"
-          >
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-cyan-400">
-                <Target className="h-5 w-5" />
-                <h3 className="font-black text-white text-base">Ajuste / Regularización</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setModalAjusteStock(null)}
-                className="text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
+    <div className="min-h-screen bg-[#020617] text-white flex flex-col md:flex-row font-sans">
+      {/* NOTIFICACIÓN FLOTANTE */}
+      {mensajeToast && (
+        <div
+          className={`fixed top-5 right-5 z-50 px-5 py-3.5 rounded-2xl font-black text-xs shadow-2xl border flex items-center gap-2 transition-all ${
+            mensajeToast.tipo === 'ok'
+              ? 'bg-emerald-950/95 border-emerald-500 text-emerald-300'
+              : mensajeToast.tipo === 'error'
+              ? 'bg-rose-950/95 border-rose-500 text-rose-300'
+              : 'bg-indigo-950/95 border-indigo-500 text-indigo-300'
+          }`}
+        >
+          <span>{mensajeToast.tipo === 'ok' ? '✅' : mensajeToast.tipo === 'error' ? '⚠️' : 'ℹ️'}</span>
+          <span>{mensajeToast.texto}</span>
+        </div>
+      )}
 
-            <div className="text-xs text-slate-300 bg-black/40 p-3 rounded-xl border border-white/10">
-              Ajustando inventario de:<br/>
-              <strong className="text-white text-sm block mt-1">{modalAjusteStock.nombre}</strong>
+      {/* SIDEBAR DE NAVEGACIÓN */}
+      <aside className="w-full md:w-64 bg-[#0f172a] border-b md:border-b-0 md:border-r border-slate-800 p-5 flex flex-col justify-between shrink-0">
+        <div>
+          <div className="flex items-center gap-3 mb-8 pb-4 border-b border-slate-800">
+            <div className="w-10 h-10 rounded-2xl bg-indigo-600 flex items-center justify-center font-black text-xl shadow-lg">
+              N
             </div>
-
-            <div className="grid grid-cols-2 gap-3 items-end">
-              <div>
-                <label className="text-xs font-bold text-slate-400 block mb-1">Stock Actual</label>
-                <div className="w-full bg-black/60 border border-white/10 rounded-xl px-3.5 py-2.5 text-slate-400 font-mono">
-                  {modalAjusteStock.stockActual} {modalAjusteStock.unidad}
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-cyan-400 block mb-1">Nuevo Stock Físico *</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  required
-                  value={modalAjusteStock.nuevoStock}
-                  onChange={(e) => setModalAjusteStock({ ...modalAjusteStock, nuevoStock: e.target.value })}
-                  className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-cyan-400 font-mono font-bold"
-                />
-              </div>
-            </div>
-
             <div>
-              <label className="text-xs font-bold text-slate-300 block mb-1">Motivo (Opcional)</label>
-              <input
-                type="text"
-                placeholder="Ej: Stock Inicial, Merma por rotura, Cuadre mensual..."
-                value={modalAjusteStock.motivo}
-                onChange={(e) => setModalAjusteStock({ ...modalAjusteStock, motivo: e.target.value })}
-                className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setModalAjusteStock(null)}
-                className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={modalAjusteStock.procesando}
-                className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50"
-              >
-                {modalAjusteStock.procesando ? 'Guardando...' : 'Confirmar Ajuste'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* MODAL ELABORACIÓN LOTE */}
-      {modalElaboracion && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
-          <form
-            onSubmit={confirmarElaboracionLote}
-            className="w-full max-w-2xl bg-[#0d0f17] border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4"
-          >
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-emerald-400">
-                <UtensilsCrossed className="h-5 w-5" />
-                <h3 className="font-black text-white text-base">Herramienta de Elaboración de Lotes (Producción)</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setModalElaboracion(null)}
-                className="text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="text-xs font-bold text-slate-300 block mb-1">Plato Destino a Generar (Suma Stock)</label>
-                <select
-                  required
-                  value={modalElaboracion.articuloDestinoId}
-                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, articuloDestinoId: e.target.value })}
-                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-white text-xs"
-                >
-                  <option value="">-- Selecciona el plato elaborado --</option>
-                  {articulosMaestro.map(a => (
-                    <option key={a.id} value={a.id}>{a.nombre} (Stock actual: {a.stock_actual} {a.unidad_medida})</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-300 block mb-1">Raciones Generadas del Plato *</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  required
-                  placeholder="Ej: 20 tapas / 5 tartas"
-                  value={modalElaboracion.cantidadGenerada}
-                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, cantidadGenerada: e.target.value })}
-                  className="w-full bg-black/60 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-emerald-400 font-mono font-bold text-xs"
-                />
-              </div>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
-              <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Añadir Ingredientes Consumidos</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                <select
-                  value={modalElaboracion.ingSelId}
-                  onChange={(e) => {
-                    const selId = e.target.value;
-                    const ingFound = articulosMaestro.find(a => a.id === selId);
-                    setModalElaboracion({
-                      ...modalElaboracion,
-                      ingSelId: selId,
-                      ingSelCoste: ingFound ? String(ingFound.coste_unitario || 0) : ''
-                    });
-                  }}
-                  className="sm:col-span-5 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs"
-                >
-                  <option value="">-- Seleccionar ingrediente --</option>
-                  {articulosMaestro
-                    .filter(a => a.id !== modalElaboracion.articuloDestinoId)
-                    .map(a => (
-                      <option key={a.id} value={a.id}>{a.nombre} ({Number(a.coste_unitario || 0).toFixed(2)}€/{a.unidad_medida})</option>
-                  ))}
-                </select>
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder="Cantidad"
-                  value={modalElaboracion.ingSelCant}
-                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, ingSelCant: e.target.value })}
-                  className="sm:col-span-3 bg-black/60 border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs font-mono"
-                />
-                <input
-                  type="number"
-                  step="0.0001"
-                  placeholder="Coste unitario (€)"
-                  value={modalElaboracion.ingSelCoste}
-                  onChange={(e) => setModalElaboracion({ ...modalElaboracion, ingSelCoste: e.target.value })}
-                  className="sm:col-span-3 bg-black/60 border border-amber-500/40 rounded-xl px-2.5 py-2 text-amber-400 text-xs font-mono font-bold"
-                  title="Puedes modificar el coste a mano si se compró específicamente para este lote"
-                />
-                <button
-                  type="button"
-                  onClick={agregarIngredienteAElaboracion}
-                  className="sm:col-span-1 rounded-xl bg-amber-500 text-slate-950 font-bold flex items-center justify-center cursor-pointer"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </div>
-
-              {modalElaboracion.ingredientes.length > 0 && (
-                <div className="space-y-1.5 mt-3 max-h-40 overflow-y-auto pr-1">
-                  {modalElaboracion.ingredientes.map((ing: any) => (
-                    <div key={ing.id} className="flex justify-between items-center bg-black/40 px-3 py-2 rounded-lg text-xs">
-                      <span className="text-white"><strong>{ing.nombre}</strong>: {ing.cantidad} {ing.unidad} <span className="text-amber-400 font-mono">({ing.costeBase.toFixed(4)}€/ud)</span></span>
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-emerald-400 font-bold">{(ing.cantidad * ing.costeBase).toFixed(2)} €</span>
-                        <button
-                          type="button"
-                          onClick={() => eliminarIngredienteElaboracion(ing.id)}
-                          className="text-rose-400 hover:text-rose-300 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-between items-center pt-2">
-              <div className="text-xs text-slate-400">
-                Coste total materia prima: <strong className="text-white">
-                  {modalElaboracion.ingredientes.reduce((acc: number, i: any) => acc + (i.cantidad * i.costeBase), 0).toFixed(2)} €
-                </strong>
-              </div>
-              <button
-                type="submit"
-                disabled={modalElaboracion.procesando}
-                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50"
-              >
-                {modalElaboracion.procesando ? 'Procesando Lote...' : 'Finalizar Elaboración'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* MODAL EMPLEADO */}
-      {modalEmpleado && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
-          <form onSubmit={guardarEmpleado} className="w-full max-w-sm bg-[#0d0f17] border border-purple-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-purple-400"><UserCog className="h-5 w-5" /><h3 className="font-black text-white text-base">{modalEmpleado.id ? 'Editar Empleado' : 'Nuevo Empleado'}</h3></div>
-              <button type="button" onClick={() => setModalEmpleado(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
-            </div>
-            <div className="space-y-3 text-xs">
-              <div><label className="font-bold text-slate-300 block mb-1">Nombre *</label><input type="text" required value={modalEmpleado.nombre} onChange={(e) => setModalEmpleado({ ...modalEmpleado, nombre: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white" /></div>
-              <div><label className="font-bold text-slate-300 block mb-1">Apellidos</label><input type="text" value={modalEmpleado.apellidos} onChange={(e) => setModalEmpleado({ ...modalEmpleado, apellidos: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white" /></div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className="font-bold text-amber-400 block mb-1">PIN de Acceso *</label><input type="text" required value={modalEmpleado.pin} onChange={(e) => setModalEmpleado({ ...modalEmpleado, pin: e.target.value })} className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-amber-400 font-mono font-bold" /></div>
-                <div><label className="font-bold text-slate-300 block mb-1">Rol</label><select value={modalEmpleado.rol} onChange={(e) => setModalEmpleado({ ...modalEmpleado, rol: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white"><option value="empleado">Empleado/Camarero</option><option value="admin">Administrador</option></select></div>
-              </div>
-              <label className="flex items-center gap-2 cursor-pointer pt-2"><input type="checkbox" checked={modalEmpleado.activo} onChange={(e) => setModalEmpleado({ ...modalEmpleado, activo: e.target.checked })} className="h-4 w-4 accent-emerald-400" /><span className="font-bold text-emerald-300">Empleado Activo (Permite login)</span></label>
-            </div>
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button type="button" onClick={() => setModalEmpleado(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
-              <button type="submit" className="py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs uppercase cursor-pointer">Guardar</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* MODALES BACKOFFICE PARA FACTURACIÓN */}
-      {modalRectificativa && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
-          <form onSubmit={confirmarFacturaRectificativa} className="w-full max-w-md bg-[#0d0f17] border border-rose-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-rose-400"><RotateCcw className="h-5 w-5" /><h3 className="font-black text-white text-base">Emitir Factura Rectificativa</h3></div>
-              <button type="button" onClick={() => setModalRectificativa(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
-            </div>
-            <div className="text-xs text-slate-300 bg-black/40 p-3 rounded-xl border border-white/10 space-y-1">
-              <div><strong>Ticket a rectificar:</strong> {modalRectificativa.factura.numero_completo}</div>
-              <div><strong>Importe a devolver:</strong> <span className="text-rose-400 font-mono font-bold">-{Number(modalRectificativa.factura.total_final).toFixed(2)} € ({modalRectificativa.factura.metodo_pago})</span></div>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300 uppercase">Motivo legal de la rectificación *</label>
-              <input type="text" required placeholder="Ej: Devolución de producto / Error en cobro" value={modalRectificativa.motivo} onChange={(e) => setModalRectificativa({ ...modalRectificativa, motivo: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white" />
-            </div>
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button type="button" onClick={() => setModalRectificativa(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
-              <button type="submit" disabled={modalRectificativa.procesando} className="py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase cursor-pointer disabled:opacity-50">{modalRectificativa.procesando ? 'Emitiendo...' : 'Emitir y Devolver'}</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {modalFacturaNominativa && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
-          <form onSubmit={confirmarFacturaNominativa} className="w-full max-w-md bg-[#0d0f17] border border-cyan-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-cyan-400"><FileText className="h-5 w-5" /><h3 className="font-black text-white text-base">Convertir en Factura Nominativa</h3></div>
-              <button type="button" onClick={() => setModalFacturaNominativa(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
-            </div>
-            <div className="text-xs text-slate-300 bg-black/40 p-3 rounded-xl border border-white/10">
-              Canje del Ticket <strong>{modalFacturaNominativa.factura.numero_completo}</strong> por importe de <strong>{Number(modalFacturaNominativa.factura.total_final).toFixed(2)} €</strong>
-            </div>
-            <div className="space-y-3">
-              <div><label className="text-xs font-bold text-slate-300 block mb-1">Nombre Completo o Razón Social *</label><input type="text" required placeholder="Ej: Empresa Cliente S.L." value={modalFacturaNominativa.razonSocial} onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, razonSocial: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white" /></div>
-              <div><label className="text-xs font-bold text-slate-300 block mb-1">NIF / CIF / NIE *</label><input type="text" required placeholder="Ej: B14000000" value={modalFacturaNominativa.nifCif} onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, nifCif: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white uppercase font-mono" /></div>
-              <div><label className="text-xs font-bold text-slate-300 block mb-1">Dirección Fiscal Completa *</label><input type="text" required placeholder="Calle, Número, CP, Ciudad, Provincia" value={modalFacturaNominativa.direccion} onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, direccion: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white" /></div>
-            </div>
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button type="button" onClick={() => setModalFacturaNominativa(null)} className="py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer">Cancelar</button>
-              <button type="submit" disabled={modalFacturaNominativa.procesando} className="py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50">{modalFacturaNominativa.procesando ? 'Generando...' : 'Emitir e Imprimir'}</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* MODAL DE APERTURA DE CAJA / TURNO */}
-      {showModalApertura && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
-          <form
-            onSubmit={confirmarAperturaCajaBackoffice}
-            className="w-full max-w-md bg-[#0d0f17] border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-5"
-          >
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-emerald-400">
-                <LockOpen className="h-5 w-5" />
-                <h3 className="font-black text-white text-base">Apertura de Caja / Turno</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowModalApertura(false)}
-                className="text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-300">
-              Confirma el fondo de caja inicial (remanente de apertura) en efectivo con el que se inicia el turno de hoy.
-            </p>
-
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-emerald-400 uppercase block">
-                Fondo de Caja Inicial (Remanente de Apertura) *
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  required
-                  autoFocus
-                  value={remanenteAperturaInput}
-                  onChange={(e) => setRemanenteAperturaInput(e.target.value)}
-                  className="w-full bg-black/70 border-2 border-emerald-500/50 focus:border-emerald-400 rounded-2xl px-4 py-4 text-3xl font-mono font-black text-emerald-400 text-center outline-none shadow-inner"
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xl font-mono font-bold text-slate-500">
-                  €
-                </span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowModalApertura(false)}
-                className="py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={procesandoApertura}
-                className="py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg disabled:opacity-50"
-              >
-                <LockOpen className="h-4 w-4" />
-                {procesandoApertura ? 'Abriendo...' : 'Confirmar Apertura'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* MODAL ARQUEO CIEGO - CIERRE DE CAJA */}
-      {showModalArqueo && modalCierreCaja && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[100]">
-          <form
-            onSubmit={confirmarCierreCajaBackoffice}
-            className="w-full max-w-md bg-[#0d0f17] border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-5"
-          >
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-amber-400">
-                <Calculator className="h-5 w-5" />
-                <h3 className="font-black text-white text-base">Cierre de Caja · Arqueo Ciego</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowModalArqueo(false);
-                  setModalCierreCaja(null);
-                }}
-                className="text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="p-3.5 rounded-2xl bg-sky-950/30 border border-sky-500/30 space-y-1">
-                <span className="text-[10px] font-bold uppercase text-sky-400 flex items-center gap-1">
-                  <CreditCard className="h-3.5 w-3.5" /> Total Tarjeta
-                </span>
-                <p className="text-xl font-black font-mono text-white">
-                  {Number(modalCierreCaja.total_tarjeta).toFixed(2)} €
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-black/50 border border-white/10 space-y-1 flex flex-col justify-between">
-                <span className="text-[10px] font-bold uppercase text-slate-400 flex items-center gap-1">
-                  <EyeOff className="h-3.5 w-3.5 text-amber-400" /> Efectivo Teórico
-                </span>
-                <p className="text-xs font-bold text-slate-500 italic">Oculto (Arqueo Ciego)</p>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-amber-400 uppercase block">
-                Efectivo Real en Cajón (Monedas y Billetes) *
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  required
-                  autoFocus
-                  placeholder="0.00"
-                  value={efectivoRealCierreInput}
-                  onChange={(e) => setEfectivoRealCierreInput(e.target.value)}
-                  className="w-full bg-black/70 border-2 border-amber-500/50 focus:border-amber-400 rounded-2xl px-4 py-4 text-3xl font-mono font-black text-amber-400 text-center outline-none shadow-inner"
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xl font-mono font-bold text-slate-500">
-                  €
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 text-center">
-                Se mantendrá un fondo fijo de cierre de <strong className="text-white">50.00 €</strong> en caja.
+              <h1 className="font-black text-base tracking-tight text-white">NEXUS POS</h1>
+              <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-widest">
+                👤 {adminVerificado.nombre}
               </p>
             </div>
-
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowModalArqueo(false);
-                  setModalCierreCaja(null);
-                }}
-                className="py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={modalCierreCaja.procesando}
-                className="py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg disabled:opacity-50"
-              >
-                <Lock className="h-4 w-4" />
-                {modalCierreCaja.procesando ? 'Cerrando Caja...' : 'Confirmar Cierre'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* ALERTA VISUAL / SWEETALERT DE RESUMEN DE CIERRE */}
-      {alertaResumenCierre && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4 z-[110]">
-          <div className="w-full max-w-md bg-[#0d0f17] border border-white/15 rounded-3xl p-6 shadow-2xl space-y-5 text-center">
-            <div
-              className={`h-16 w-16 mx-auto rounded-2xl flex items-center justify-center border ${
-                alertaResumenCierre.cuadrada
-                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
-                  : 'bg-amber-500/10 border-amber-500/40 text-amber-400'
-              }`}
-            >
-              {alertaResumenCierre.cuadrada ? (
-                <CheckCircle2 className="h-9 w-9" />
-              ) : (
-                <AlertTriangle className="h-9 w-9" />
-              )}
-            </div>
-
-            <div className="space-y-1">
-              <h3 className="text-xl font-black text-white">
-                {alertaResumenCierre.cuadrada ? '¡Caja Cuadrada a Cero!' : 'Cierre Registrado con Descuadre'}
-              </h3>
-              <p className="text-xs text-slate-400">
-                El turno actual ha finalizado y la caja ha quedado en estado <strong className="text-rose-400">CERRADA</strong>.
-              </p>
-            </div>
-
-            <div className="bg-black/50 border border-white/10 rounded-2xl p-4 space-y-2.5 text-xs text-left">
-              <div className="flex justify-between">
-                <span className="text-slate-400">Efectivo Físico Contado:</span>
-                <span className="font-mono font-bold text-white">{alertaResumenCierre.efectivo_real.toFixed(2)} €</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Efectivo Teórico Esperado:</span>
-                <span className="font-mono font-bold text-slate-300">{alertaResumenCierre.efectivo_esperado.toFixed(2)} €</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Total Ventas Tarjeta:</span>
-                <span className="font-mono font-bold text-sky-400">{alertaResumenCierre.total_tarjeta.toFixed(2)} €</span>
-              </div>
-              <div className="flex justify-between border-t border-white/10 pt-2">
-                <span className="font-bold text-slate-300">Descuadre:</span>
-                <span
-                  className={`font-mono font-black text-sm ${
-                    alertaResumenCierre.cuadrada ? 'text-emerald-400' : 'text-rose-400'
-                  }`}
-                >
-                  {alertaResumenCierre.descuadre > 0 ? '+' : ''}
-                  {alertaResumenCierre.descuadre.toFixed(2)} €
-                </span>
-              </div>
-              <div className="flex justify-between border-t border-white/10 pt-2">
-                <span className="text-slate-400">Fondo Fijo Cierre (Remanente):</span>
-                <span className="font-mono font-bold text-amber-400">{alertaResumenCierre.remanente_cierre.toFixed(2)} €</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Efectivo Retirado:</span>
-                <span className="font-mono font-bold text-cyan-400">{alertaResumenCierre.efectivo_retirado.toFixed(2)} €</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setAlertaResumenCierre(null)}
-              className="w-full py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase cursor-pointer shadow-lg"
-            >
-              Entendido
-            </button>
           </div>
-        </div>
-      )}
 
-      <header className="border-b border-white/10 pb-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-0 bg-[#050609]/95 backdrop-blur-md z-30">
-        <div className="flex items-center gap-3">
-          <div className="h-12 w-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center"><TrendingUp className="h-7 w-7" /></div>
-          <div><h1 className="text-lg sm:text-xl font-black tracking-wide text-white">CAFETERÍA · BACKOFFICE</h1><p className="text-xs text-slate-400">Admin activo: <strong className="text-cyan-400">{adminVerificado.nombre}</strong></p></div>
+          <nav className="space-y-1.5">
+            {[
+              { id: 'resumen', label: '📊 Resumen y Arqueo Z' },
+              { id: 'tickets', label: '🧾 Facturas y Tickets' },
+              { id: 'articulos', label: '🍔 Artículos y Escandallos' },
+              { id: 'inventario', label: '📦 Stock, Compras y Lotes' },
+              { id: 'empleados', label: '👥 Empleados y Turnos' },
+              { id: 'configuracion', label: '⚙️ Datos Fiscales y Mesas' }
+            ].map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setTabActiva(item.id as any)}
+                className={`w-full text-left px-4 py-3 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+                  tabActiva === item.id
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
+                    : 'text-slate-400 hover:bg-slate-800/60 hover:text-white'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="mt-6 pt-4 border-t border-slate-800 space-y-2">
           <button
-            type="button"
-            onClick={!cajaHoy || cajaHoy.estado !== 'abierta' ? abrirModalAperturaCaja : abrirModalCierreCaja}
-
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer shadow-lg ${
-              !cajaHoy || cajaHoy.estado !== 'abierta'
-                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-5 py-2.5 shadow-[0_0_20px_rgba(16,185,129,0.4)]'
-                : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-            }`}
+            onClick={() => {
+              setModalElaboracion({
+                articuloDestinoId: '',
+                cantidadResultante: '1',
+                ingredientesUsados: [],
+                observaciones: '',
+                procesando: false
+              });
+            }}
+            className="w-full py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-black text-xs transition-all"
           >
-            <Lock className="h-4 w-4" />
-            {!cajaHoy || cajaHoy.estado !== 'abierta' ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-            <span>{!cajaHoy || cajaHoy.estado !== 'abierta' ? 'Abrir Caja / Turno' : 'Cierre de Caja'}</span>
+            👨‍🍳 Elaborar Producto / Lote
           </button>
-          <button type="button" onClick={() => (onBack ? onBack() : (window.location.hash = ''))} className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-xs font-bold text-white cursor-pointer"><ArrowLeft className="h-4 w-4" /><span>Volver a TPV</span></button>
+          <button
+            onClick={() => setAdminVerificado(null)}
+            className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-rose-950/50 text-slate-400 hover:text-rose-300 border border-slate-800 font-bold text-xs transition-all"
+          >
+            🔒 Bloquear Sesión
+          </button>
         </div>
-      </header>
+      </aside>
 
-      <div className="max-w-7xl w-full mx-auto mb-6 flex flex-wrap gap-2 border-b border-white/10 pb-4">
-        <button onClick={() => setPestanaActiva('ventas_dia')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'ventas_dia' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><BarChart3 className="h-4 w-4" /> Ventas y Cuadre</button>
-        <button onClick={() => setPestanaActiva('historial_cajas')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'historial_cajas' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Wallet className="h-4 w-4" /> Historial de Cajas</button>
-        <button onClick={() => setPestanaActiva('historico_tickets')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'historico_tickets' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Receipt className="h-4 w-4" /> Histórico Tickets</button>
-        <button onClick={() => setPestanaActiva('articulos_escandallos')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'articulos_escandallos' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Layers className="h-4 w-4" /> Artículos y Escandallos</button>
-        <button onClick={() => setPestanaActiva('inventario_compras')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'inventario_compras' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Package className="h-4 w-4" /> Inventario y Compras</button>
-        <button onClick={() => setPestanaActiva('proveedores')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'proveedores' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Truck className="h-4 w-4" /> Proveedores y Precios</button>
-        <button onClick={() => setPestanaActiva('empleados')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'empleados' ? 'bg-purple-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><UserCog className="h-4 w-4" /> Empleados</button>
-        <button onClick={() => setPestanaActiva('datos_fiscales')} className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${pestanaActiva === 'datos_fiscales' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'bg-white/5 text-slate-400 hover:text-white'}`}><Building2 className="h-4 w-4" /> Configuración Fiscal</button>
-      </div>
-
-      <main className="flex-1 max-w-7xl w-full mx-auto space-y-6 pb-16">
-        {mensajeAlerta && (
-          <div className={`p-4 rounded-2xl border text-xs font-bold flex items-center gap-2 ${mensajeAlerta.tipo === 'ok' ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300' : mensajeAlerta.tipo === 'info' ? 'bg-sky-950/60 border-sky-500/40 text-sky-300' : 'bg-rose-950/60 border-rose-500/40 text-rose-300'}`}><CheckCircle2 className="h-4 w-4 shrink-0" /><span>{mensajeAlerta.texto}</span></div>
-        )}
-
-        {(!cajaHoy || cajaHoy.estado !== 'abierta') && (
-          <div className="p-6 rounded-3xl bg-emerald-950/30 border-2 border-emerald-500/40 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
-            <div className="flex items-center gap-4">
-              <div className="h-14 w-14 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0">
-                <LockOpen className="h-7 w-7" />
-              </div>
+      {/* CONTENIDO PRINCIPAL */}
+      <main className="flex-1 p-5 md:p-8 overflow-y-auto space-y-8">
+        {/* ================= PESTAÑA 1: RESUMEN Y ARQUEO DE CAJA ================= */}
+        {tabActiva === 'resumen' && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap justify-between items-center gap-4">
               <div>
-                <h2 className="text-lg font-black text-white uppercase tracking-wide">
-                  {cajaHoy?.estado === 'cerrada' ? 'Caja Cerrada · Turno Finalizado' : 'No hay caja abierta para el día de hoy'}
-                </h2>
-                <p className="text-xs text-slate-300 mt-0.5">
-                  Abre un nuevo turno confirmando el fondo de caja inicial para habilitar las ventas y el registro en el sistema.
+                <h2 className="text-2xl font-black text-white">Resumen Operativo y Caja Diaria</h2>
+                <p className="text-xs text-slate-400">
+                  Métricas financieras con desglose de IVA e inventario valorado en tiempo real
                 </p>
               </div>
-            </div>
-            <button
-              type="button"
-              onClick={abrirModalAperturaCaja}
-              className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 cursor-pointer shadow-[0_0_25px_rgba(16,185,129,0.45)] transition-all shrink-0"
-            >
-              <LockOpen className="h-5 w-5" />
-              <span>Abrir Caja / Turno</span>
-            </button>
-          </div>
-        )}
-
-        {/* PESTAÑA PROVEEDORES Y PRECIOS HISTÓRICOS */}
-        {pestanaActiva === 'proveedores' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
-              <h2 className="text-sm font-black text-white flex items-center gap-2">
-                <Truck className="h-5 w-5 text-emerald-400" /> Trazabilidad de Proveedores y Evolución de Precios por Artículo
-              </h2>
-              <div className="relative w-64">
-                <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-2.5" />
-                <input
-                  type="text"
-                  placeholder="Filtrar por artículo o proveedor..."
-                  value={filtroArticuloProveedor}
-                  onChange={(e) => setFiltroArticuloProveedor(e.target.value)}
-                  className="w-full bg-black/60 border border-white/15 rounded-xl pl-8 pr-2.5 py-1.5 text-xs text-white"
-                />
-              </div>
-            </div>
-
-            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
-              <h3 className="font-bold text-white text-sm">Histórico de Compras por Artículo y Proveedor</h3>
-              <div className="overflow-x-auto max-h-[500px]">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
-                    <tr>
-                      <th className="p-3">Fecha</th>
-                      <th className="p-3">Artículo / Materia Prima</th>
-                      <th className="p-3">Proveedor</th>
-                      <th className="p-3 text-right">Cantidad Comprada</th>
-                      <th className="p-3 text-right">Coste Unitario</th>
-                      <th className="p-3">Nº Albarán</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {movimientosStock
-                      .filter(m => m.tipo_movimiento === 'COMPRA')
-                      .filter(m => {
-                        const texto = `${m.articulos_cafeteria?.nombre || ''} ${m.proveedor || ''} ${m.numero_albaran_factura || ''}`.toLowerCase();
-                        return texto.includes(filtroArticuloProveedor.toLowerCase());
-                      })
-                      .length === 0 ? (
-                        <tr><td colSpan={6} className="p-8 text-center text-slate-500">No hay registros de compras con ese filtro.</td></tr>
-                      ) : (
-                        movimientosStock
-                          .filter(m => m.tipo_movimiento === 'COMPRA')
-                          .filter(m => {
-                            const texto = `${m.articulos_cafeteria?.nombre || ''} ${m.proveedor || ''} ${m.numero_albaran_factura || ''}`.toLowerCase();
-                            return texto.includes(filtroArticuloProveedor.toLowerCase());
-                          })
-                          .map((m) => (
-                            <tr key={m.id} className="hover:bg-white/[0.02]">
-                              <td className="p-3 text-slate-400">{new Date(m.created_at).toLocaleDateString('es-ES')}</td>
-                              <td className="p-3 font-bold text-white">{m.articulos_cafeteria?.nombre || 'Artículo eliminado'}</td>
-                              <td className="p-3 text-emerald-400 font-bold">{m.proveedor || 'Sin especificar'}</td>
-                              <td className="p-3 text-right font-mono font-bold">+{Number(m.cantidad).toFixed(Number.isInteger(Number(m.cantidad)) ? 0 : 2)} {m.articulos_cafeteria?.unidad_medida || ''}</td>
-                              <td className="p-3 text-right font-mono text-amber-400 font-bold">{Number(m.coste_compra_unitario || 0).toFixed(4)} €</td>
-                              <td className="p-3 text-slate-400 font-mono">{m.numero_albaran_factura || '-'}</td>
-                            </tr>
-                          ))
-                      )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* PESTAÑA EMPLEADOS */}
-        {pestanaActiva === 'empleados' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
-              <h2 className="text-sm font-black text-white flex items-center gap-2"><UserCog className="h-5 w-5 text-purple-400" /> Gestión de Camareros y Administradores</h2>
-              <button type="button" onClick={() => setModalEmpleado({ nombre: '', apellidos: '', pin: '', rol: 'empleado', activo: true })} className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase cursor-pointer flex items-center gap-2 shadow-lg"><Plus className="h-4 w-4" /> Nuevo Empleado</button>
-            </div>
-            
-            <div className="overflow-x-auto max-h-[600px] border border-white/10 rounded-2xl bg-[#0d0f17]">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md z-10 shadow-md">
-                  <tr><th className="p-4">Estado</th><th className="p-4">Nombre Completo</th><th className="p-4">Rol en TPV</th><th className="p-4">PIN de Acceso</th><th className="p-4 text-right">Acciones</th></tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {empleados.length === 0 ? (
-                    <tr><td colSpan={5} className="p-8 text-center text-slate-500">No hay empleados registrados.</td></tr>
-                  ) : (
-                    empleados.map((emp) => (
-                      <tr key={emp.id} className="hover:bg-white/[0.02]">
-                        <td className="p-4">{emp.activo ? <span className="bg-emerald-500/20 text-emerald-400 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1 w-max"><Check className="h-3 w-3"/> Activo</span> : <span className="bg-rose-500/20 text-rose-400 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1 w-max"><Ban className="h-3 w-3"/> Inactivo</span>}</td>
-                        <td className="p-4 font-bold text-white text-sm">{emp.nombre} {emp.apellidos}</td>
-                        <td className="p-4"><span className={`px-2.5 py-1 rounded-lg font-bold uppercase text-[10px] ${emp.rol === 'admin' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'}`}>{emp.rol}</span></td>
-                        <td className="p-4 font-mono text-slate-400">{emp.pin_acceso}</td>
-                        <td className="p-4 text-right">
-                          <button type="button" onClick={() => setModalEmpleado({ id: emp.id, nombre: emp.nombre, apellidos: emp.apellidos || '', pin: emp.pin_acceso, rol: emp.rol, activo: emp.activo })} className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-purple-500 hover:text-white text-slate-300 font-bold flex items-center gap-1.5 cursor-pointer ml-auto transition-colors"><Edit3 className="h-4 w-4" /> Editar</button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {pestanaActiva === 'ventas_dia' && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-4 bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-bold text-slate-300 uppercase">Consultar Fecha:</span>
-                <input type="date" value={fechaFiltroInicio} onChange={(e) => { setFechaFiltroInicio(e.target.value); setFechaFiltroFin(e.target.value); }} className="bg-black/60 border border-white/20 rounded-xl px-3 py-1.5 text-xs text-white" />
-              </div>
-              <span className="text-xs text-slate-400">Operaciones registradas: <strong>{ticketsFiltrados.length}</strong></span>
+              <button
+                onClick={iniciarArqueoYCierreCaja}
+                disabled={cargandoCierreCaja || !cajaHoy || cajaHoy.estado === 'cerrada'}
+                className="bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white px-5 py-3 rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg transition-all"
+              >
+                {cargandoCierreCaja ? '⏳ Calculando Arqueo...' : '🔒 Realizar Cierre de Caja (Z)'}
+              </button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-1"><div className="flex justify-between text-xs text-slate-400 font-bold uppercase"><span>Facturación Neta Día</span><TrendingUp className="h-4 w-4 text-cyan-400" /></div><div className="text-2xl font-black text-white font-mono">{totalFacturadoPeriodo.toFixed(2)} €</div><p className="text-[11px] text-slate-500">{ticketsFiltrados.length} documentos fiscales emitidos</p></div>
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-1"><div className="flex justify-between text-xs text-slate-400 font-bold uppercase"><span>Total Efectivo</span><DollarSign className="h-4 w-4 text-emerald-400" /></div><div className="text-2xl font-black text-emerald-400 font-mono">{totalEfectivoPeriodo.toFixed(2)} €</div><p className="text-[11px] text-slate-500">Cobros netos en metálico</p></div>
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-1"><div className="flex justify-between text-xs text-slate-400 font-bold uppercase"><span>Total Tarjeta</span><CreditCard className="h-4 w-4 text-sky-400" /></div><div className="text-2xl font-black text-sky-400 font-mono">{totalTarjetaPeriodo.toFixed(2)} €</div><p className="text-[11px] text-slate-500">Cobros por datáfono bancario</p></div>
-              <div className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-1"><div className="flex justify-between text-xs text-slate-400 font-bold uppercase"><span>Ticket Medio</span><Wallet className="h-4 w-4 text-amber-400" /></div><div className="text-2xl font-black text-amber-400 font-mono">{ticketMedioPeriodo.toFixed(2)} €</div><p className="text-[11px] text-slate-500">Promedio por operación</p></div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
-                <div className="flex items-center gap-2 text-amber-400 border-b border-white/10 pb-3"><Users className="h-5 w-5" /><h3 className="font-bold text-white text-sm">Ventas por Vendedor y Ticket Medio</h3></div>
-                {ventasPorVendedor.length === 0 ? ( <p className="text-xs text-slate-500 py-6 text-center">No hay ventas en esta fecha.</p> ) : (
-                  <div className="space-y-4 pt-2">
-                    {ventasPorVendedor.map((v, i) => (
-                      <div key={i} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
-                          <div><span className="font-black text-amber-400 mr-2">#{i + 1}</span><span className="font-bold text-white uppercase">{v.nombre}</span><span className="text-slate-500 ml-2">({v.operaciones} tkts)</span></div>
-                          <div className="text-right font-mono font-black text-cyan-400">{v.total.toFixed(2)} €</div>
-                        </div>
-                        <div className="w-full bg-black/60 rounded-full h-1.5 border border-white/5 overflow-hidden mt-2">
-                          <div className="bg-amber-400 h-1.5 rounded-full" style={{ width: `${Math.max(1, (v.total / maxVentaVendedor) * 100)}%` }}></div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <div className="bg-[#0f172a] border border-slate-800 p-5 rounded-3xl">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  Facturación Bruta (Filtro)
+                </span>
+                <p className="text-3xl font-black text-emerald-400 mt-1">{metricasResumen.ventasBrutas.toFixed(2)}€</p>
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Base: <strong>{metricasResumen.baseImponible.toFixed(2)}€</strong> · IVA Total:{' '}
+                  <strong>{metricasResumen.cuotaIva.toFixed(2)}€</strong>
+                </p>
+                <div className="mt-2 pt-2 border-t border-slate-800/80 space-y-0.5 text-[10px]">
+                  <p className="text-emerald-300/90 flex justify-between">
+                    <span>IVA 10% (Base {metricasResumen.base10.toFixed(2)}€):</span>
+                    <strong>{metricasResumen.iva10.toFixed(2)}€</strong>
+                  </p>
+                  <p className="text-amber-300/90 flex justify-between">
+                    <span>IVA 21% (Base {metricasResumen.base21.toFixed(2)}€):</span>
+                    <strong>{metricasResumen.iva21.toFixed(2)}€</strong>
+                  </p>
+                </div>
               </div>
 
-              {/* GRÁFICO DE LÍNEAS CONTINUAS POR HORAS (08:00 A 23:00) */}
-              <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
-                <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                  <div className="flex items-center gap-2 text-cyan-400">
-                    <Clock className="h-5 w-5" />
-                    <h3 className="font-bold text-white text-sm">Evolución de Ventas por Horas (Apertura a Cierre)</h3>
-                  </div>
-                  <span className="text-[10px] text-slate-400 font-mono">08:00 - 23:00</span>
-                </div>
+              <div className="bg-[#0f172a] border border-slate-800 p-5 rounded-3xl">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  Desglose de Cobros
+                </span>
+                <p className="text-lg font-black text-amber-400 mt-1">
+                  💵 Efectivo: {metricasResumen.totalEfectivo.toFixed(2)}€
+                </p>
+                <p className="text-lg font-black text-sky-400">
+                  💳 Tarjeta: {metricasResumen.totalTarjeta.toFixed(2)}€
+                </p>
+              </div>
 
-                <div className="pt-2 pb-2">
-                  <div className="h-44 w-full relative">
-                    <svg className="w-full h-full overflow-visible" viewBox="0 0 600 120" preserveAspectRatio="none">
-                      {/* Líneas guía horizontales */}
-                      <line x1="0" y1="0" x2="600" y2="0" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
-                      <line x1="0" y1="60" x2="600" y2="60" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
-                      <line x1="0" y1="120" x2="600" y2="120" stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
+              <div className="bg-[#0f172a] border border-slate-800 p-5 rounded-3xl">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  Valor de Stock a Coste
+                </span>
+                <p className="text-3xl font-black text-indigo-400 mt-1">
+                  {metricasResumen.valorInventarioCoste.toFixed(2)}€
+                </p>
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Valor PVP estimado: <strong>{metricasResumen.valorInventarioVenta.toFixed(2)}€</strong>
+                </p>
+              </div>
 
-                      {/* Línea de tendencia SVG */}
-                      <path
-                        d={horasContinuas.reduce((acc, h, idx) => {
-                          const x = (idx / (horasContinuas.length - 1)) * 600;
-                          const y = 120 - (h.total / maxVentaLinea) * 100;
-                          return idx === 0 ? `M ${x} ${y}` : `${acc} L ${x} ${y}`;
-                        }, '')}
-                        fill="none"
-                        stroke="#22d3ee"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-
-                      {/* Puntos interactivos en cada hora */}
-                      {horasContinuas.map((h, idx) => {
-                        const x = (idx / (horasContinuas.length - 1)) * 600;
-                        const y = 120 - (h.total / maxVentaLinea) * 100;
-                        return (
-                          <g key={idx} className="group cursor-pointer">
-                            <circle cx={x} cy={y} r="4" className="fill-cyan-400 stroke-[#0d0f17] stroke-2 transition-all group-hover:r-7" />
-                            {h.total > 0 && (
-                              <text x={x} y={y - 10} textAnchor="middle" className="text-[9px] font-mono fill-cyan-300 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {h.total.toFixed(0)}€
-                              </text>
-                            )}
-                          </g>
-                        );
-                      })}
-                    </svg>
-                  </div>
-
-                  {/* Eje X de Horas */}
-                  <div className="flex justify-between text-[9px] font-mono text-slate-500 pt-3 border-t border-white/5">
-                    {horasContinuas.map((h, idx) => (
-                      <span key={idx} className={h.total > 0 ? 'text-cyan-400 font-bold' : ''}>{h.hora.substring(0, 2)}h</span>
-                    ))}
-                  </div>
-                </div>
+              <div className="bg-[#0f172a] border border-slate-800 p-5 rounded-3xl">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  Alertas de Stock Bajo
+                </span>
+                <p className="text-3xl font-black text-rose-400 mt-1">{metricasResumen.alertasStock.length}</p>
+                <p className="text-[11px] text-slate-400 mt-2">Artículos en o bajo el mínimo</p>
               </div>
             </div>
 
-            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
-              <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                <div className="flex items-center gap-2 text-emerald-400"><Wallet className="h-5 w-5" /><h3 className="font-bold text-white text-sm">Comprobación de Cuadres y Cierres de Caja de los Trabajadores</h3></div>
-                <div className="flex flex-wrap items-center gap-3">
-                  {cajaHoy && (
-                    <span
-                      className={`text-xs font-mono px-3 py-1.5 rounded-xl border font-bold ${
-                        cajaHoy.estado === 'cerrada'
-                          ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
-                          : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                      }`}
-                    >
-                      {cajaHoy.estado === 'cerrada' ? 'TURNO FINALIZADO · CAJA CERRADA' : 'TURNO ACTIVO · CAJA ABIERTA'} | Fondo:{' '}
-                      {Number(cajaHoy.remanente_apertura).toFixed(2)} €
-                      {cajaHoy.estado === 'cerrada' && cajaHoy.efectivo_real !== undefined && (
-                        <>
-                          {' '}| Contado: {Number(cajaHoy.efectivo_real).toFixed(2)} € | Descuadre:{' '}
-                          {Number(cajaHoy.descuadre || 0).toFixed(2)} € | Retirado:{' '}
-                          {Number(cajaHoy.efectivo_retirado || 0).toFixed(2)} €
-                        </>
-                      )}
-                    </span>
-                  )}
+            {/* PANEL DE APERTURA DE CAJA SI NO EXISTE HOY */}
+            {!cajaHoy && (
+              <div className="bg-indigo-950/30 border border-indigo-500/40 rounded-3xl p-6 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-black text-white">Apertura de Caja Diaria</h3>
+                  <p className="text-xs text-slate-300">
+                    Indica el fondo de maniobra inicial en el cajón portamonedas para iniciar la jornada.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={fondoInicialInput}
+                    onChange={(e) => setFondoInicialInput(e.target.value)}
+                    disabled={procesandoApertura}
+                    className="w-32 bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-white font-black text-right"
+                  />
                   <button
-                    type="button"
-                    onClick={!cajaHoy || cajaHoy.estado !== 'abierta' ? abrirModalAperturaCaja : abrirModalCierreCaja}
-        
-                    className={`px-4 py-2 rounded-xl font-black text-xs uppercase flex items-center gap-1.5 cursor-pointer shadow-md transition-colors ${!cajaHoy || cajaHoy.estado !== 'abierta' ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950' : 'bg-amber-500 hover:bg-amber-400 text-slate-950'}`}
+                    onClick={abrirCajaDiaria}
+                    disabled={procesandoApertura}
+                    className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-5 py-2.5 rounded-xl font-black text-xs uppercase"
                   >
-                    <Calculator className="h-4 w-4" />
-                    <span>{!cajaHoy || cajaHoy.estado !== 'abierta' ? 'Abrir Caja / Turno' : 'Realizar Cierre de Caja'}</span>
+                    {procesandoApertura ? 'Abriendo...' : 'Abrir Caja Hoy'}
                   </button>
                 </div>
               </div>
-              <div className="overflow-x-auto max-h-[450px] overflow-y-auto rounded-2xl border border-white/5">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-[#141824] text-slate-400 uppercase sticky top-0 z-10 border-b border-white/10">
-                    <tr><th className="p-3">Ref. Turno</th><th className="p-3">Fecha</th><th className="p-3">Estado</th><th className="p-3 text-right">Ingresos Tarjeta</th><th className="p-3 text-right">Efectivo Teórico</th><th className="p-3 text-right">Efectivo Real Contado</th><th className="p-3 text-right">Remanente (Fondo de caja)</th><th className="p-3 text-right">Descuadre</th></tr>
+            )}
+
+            {/* COMPONENTE DE HISTORIAL DE CAJAS Y MOVIMIENTOS */}
+            <HistorialCajas />
+          </div>
+        )}
+
+        {/* ================= PESTAÑA 2: FACTURAS Y TICKETS LEGALES ================= */}
+        {tabActiva === 'tickets' && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap justify-between items-end gap-4 bg-[#0f172a] border border-slate-800 p-5 rounded-3xl">
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-[10px] font-black uppercase text-slate-400 mb-1">Desde</label>
+                  <input
+                    type="date"
+                    value={filtroFechaInicio}
+                    onChange={(e) => setFiltroFechaInicio(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black uppercase text-slate-400 mb-1">Hasta</label>
+                  <input
+                    type="date"
+                    value={filtroFechaFin}
+                    onChange={(e) => setFiltroFechaFin(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black uppercase text-slate-400 mb-1">Serie</label>
+                  <select
+                    value={filtroSerieTicket}
+                    onChange={(e) => setFiltroSerieTicket(e.target.value as any)}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  >
+                    <option value="TODAS">Todas (T, R, F)</option>
+                    <option value="T">Simplificadas (T)</option>
+                    <option value="R">Rectificativas (R)</option>
+                    <option value="F">Nominativas (F)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black uppercase text-slate-400 mb-1">Buscar</label>
+                  <input
+                    type="text"
+                    placeholder="Nº factura, NIF, mesa..."
+                    value={busquedaTicket}
+                    onChange={(e) => setBusquedaTicket(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() =>
+                    exportarTicketsAExcelCSV(ticketsFiltrados, configFiscal, `${filtroFechaInicio}_${filtroFechaFin}`)
+                  }
+                  className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 px-4 py-2.5 rounded-xl font-black text-xs transition-all"
+                >
+                  📥 Exportar Libro IVA (Excel CSV)
+                </button>
+                <button
+                  onClick={() =>
+                    exportarTicketsAPDF(
+                      ticketsFiltrados,
+                      configFiscal,
+                      `${filtroFechaInicio} a ${filtroFechaFin}`
+                    )
+                  }
+                  className="bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 px-4 py-2.5 rounded-xl font-black text-xs transition-all"
+                >
+                  🖨️ Imprimir Informe PDF Fiscal
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900/90 text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                      <th className="p-3.5">Nº Documento</th>
+                      <th className="p-3.5">Tipo</th>
+                      <th className="p-3.5">Fecha / Hora</th>
+                      <th className="p-3.5">Mesa / Cliente</th>
+                      <th className="p-3.5">Pago</th>
+                      <th className="p-3.5 text-right">Base 10% / IVA</th>
+                      <th className="p-3.5 text-right">Base 21% / IVA</th>
+                      <th className="p-3.5 text-right">Total</th>
+                      <th className="p-3.5 text-center">Acciones Legales</th>
+                    </tr>
                   </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {cierresTrabajadores.length === 0 ? ( <tr><td colSpan={8} className="p-6 text-center text-slate-500">No hay turnos ni cierres de caja registrados todavía.</td></tr> ) : (
-                      cierresTrabajadores.map((c) => (
-                        <tr key={c.id} className="hover:bg-white/[0.02]">
-                          <td className="p-3 font-mono font-black text-amber-400">#{c.id}</td>
-                          <td className="p-3 font-mono text-slate-200">{formatearFechaHoraCaja(c)}</td>
-                          <td className="p-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${c.estado === 'abierta' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-500/20 text-slate-300 border border-white/10'}`}>
-                              {String(c.estado).toLowerCase() === 'abierta' ? 'Abierta' : 'Cerrada'}
+                  <tbody className="divide-y divide-slate-800/60">
+                    {ticketsFiltrados.map((t) => {
+                      const d = obtenerDesgloseTicketSeguro(t);
+                      return (
+                        <tr key={t.id} className="hover:bg-slate-900/40">
+                          <td className="p-3.5 font-black text-white">
+                            {t.numero_completo}
+                            {t.hash_actual && (
+                              <span
+                                title={`VeriFactu SHA-256: ${t.hash_actual}`}
+                                className="block text-[9px] font-mono text-indigo-400"
+                              >
+                                🔗 {String(t.hash_actual).slice(0, 10)}...
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3.5">
+                            <span
+                              className={`px-2 py-0.5 rounded-md font-black text-[10px] ${
+                                t.serie === 'R'
+                                  ? 'bg-rose-500/20 text-rose-300'
+                                  : t.serie === 'F'
+                                  ? 'bg-indigo-500/20 text-indigo-300'
+                                  : 'bg-emerald-500/20 text-emerald-300'
+                              }`}
+                            >
+                              {t.tipo_factura || (t.serie === 'R' ? 'R4' : t.serie === 'F' ? 'F1' : 'F2')} · {t.tipo_documento}
                             </span>
                           </td>
-                          <td className="p-3 text-right font-mono text-sky-400">{Number(c.total_tarjeta ?? c.ventas_tarjeta_sistema ?? 0).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono text-slate-200">{Number(c.total_efectivo ?? c.ventas_efectivo_sistema ?? 0).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono font-bold text-white">{Number(c.efectivo_real ?? c.efectivo_contado_trabajador ?? 0).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono text-slate-300">{Number(c.remanente_apertura ?? c.fondo_inicial ?? 0).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono">
-                            {(() => {
-                              const desc = Number(Number(c.descuadre ?? c.descuadre_efectivo ?? 0).toFixed(2));
-                              if (desc === 0) {
-                                return <span className="text-emerald-400 font-semibold">{desc.toFixed(2)} €</span>;
-                              }
-                              if (desc < 0) {
-                                return <span className="text-red-500 font-bold">{desc.toFixed(2)} €</span>;
-                              }
-                              return <span className="text-amber-400 font-semibold">+{desc.toFixed(2)} €</span>;
-                            })()}
+                          <td className="p-3.5 text-slate-300">
+                            {new Date(t.fecha_expedicion).toLocaleString('es-ES')}
                           </td>
-                          {/* <td className="p-3">{new Date(c.fecha_cierre).toLocaleString('es-ES')}</td> */}
-                          {/* <td className="p-3 font-bold text-white">{c.usuario_nombre}</td> */}
-                          {/* <td className="p-3 text-right font-mono">{Number(c.fondo_inicial).toFixed(2)} €</td> */}
-                          {/* <td className="p-3 text-right font-mono text-emerald-400">{Number(c.ventas_efectivo_sistema).toFixed(2)} €</td> */}
-                          {/* <td className="p-3 text-right font-mono text-sky-400">{Number(c.ventas_tarjeta_sistema).toFixed(2)} €</td> */}
-                          {/* <td className="p-3 text-right font-mono font-bold text-white">{Number(c.efectivo_esperado_caja).toFixed(2)} €</td> */}
-                          {/* <td className="p-3 text-right font-mono font-bold text-amber-400">{Number(c.efectivo_contado_trabajador).toFixed(2)} €</td> */}
-                          {/* <td className="p-3 text-right font-mono font-black"><span className={`px-2 py-0.5 rounded ${Math.abs(Number(c.descuadre_efectivo)) < 0.05 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>{Number(c.descuadre_efectivo).toFixed(2)} €</span></td> */}
+                          <td className="p-3.5">
+                            <span className="font-bold text-white">Mesa {t.mesa}</span>
+                            {t.cliente_nombre && (
+                              <span className="block text-[10px] text-indigo-300">
+                                {t.cliente_nombre} ({t.cliente_nif})
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3.5 uppercase font-bold text-slate-300">{t.metodo_pago}</td>
+                          <td className="p-3.5 text-right text-emerald-300 font-mono text-[11px]">
+                            {d.base_imponible_10.toFixed(2)}€ / {d.iva_10.toFixed(2)}€
+                          </td>
+                          <td className="p-3.5 text-right text-amber-300 font-mono text-[11px]">
+                            {d.base_imponible_21.toFixed(2)}€ / {d.iva_21.toFixed(2)}€
+                          </td>
+                          <td
+                            className={`p-3.5 text-right font-black text-sm ${
+                              Number(t.total_final) < 0 ? 'text-rose-400' : 'text-emerald-400'
+                            }`}
+                          >
+                            {Number(t.total_final).toFixed(2)}€
+                          </td>
+                          <td className="p-3.5 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                onClick={() => imprimirDocumentoFiscalHTML(t, configFiscal)}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-bold text-[11px]"
+                                title="Reimprimir Ticket / Factura"
+                              >
+                                🖨️ Copia
+                              </button>
+                              {t.serie === 'T' && (
+                                <>
+                                  <button
+                                    onClick={() =>
+                                      setModalFacturaNominativa({
+                                        factura: t,
+                                        razonSocial: '',
+                                        nifCif: '',
+                                        direccion: '',
+                                        procesando: false
+                                      })
+                                    }
+                                    className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-bold text-[11px]"
+                                    title="Canjear por Factura Nominativa con NIF"
+                                  >
+                                    🏢 Nominativa
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      setModalRectificativa({
+                                        factura: t,
+                                        motivo: '',
+                                        procesando: false
+                                      })
+                                    }
+                                    className="px-2.5 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-[11px]"
+                                    title="Emitir Factura Rectificativa (Devolución legal)"
+                                  >
+                                    ↩️ Rectificar
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
                         </tr>
-                      ))
-                    )}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2499,325 +2203,244 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           </div>
         )}
 
-        {pestanaActiva === 'historial_cajas' && (
-          <HistorialCajas refreshTrigger={cajaHoy} />
-        )}
-
-        {pestanaActiva === 'historico_tickets' && (
-          <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-5">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/10 pb-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <div><label className="text-[10px] uppercase font-bold text-slate-400 block">Desde</label><input type="date" value={fechaFiltroInicio} onChange={(e) => setFechaFiltroInicio(e.target.value)} className="bg-black/60 border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white" /></div>
-                <div><label className="text-[10px] uppercase font-bold text-slate-400 block">Hasta</label><input type="date" value={fechaFiltroFin} onChange={(e) => setFechaFiltroFin(e.target.value)} className="bg-black/60 border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white" /></div>
-                <div>
-                  <label className="text-[10px] uppercase font-bold text-slate-400 block">Serie Fiscal</label>
-                  <select value={filtroSerie} onChange={(e) => setFiltroSerie(e.target.value)} className="bg-black/60 border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white">
-                    <option value="TODAS">Todas (T, R, F)</option><option value="T">Serie T (Simplificadas)</option><option value="R">Serie R (Rectificativas)</option><option value="F">Serie F (Nominativas)</option>
-                  </select>
-                </div>
-                <div className="relative"><label className="text-[10px] uppercase font-bold text-slate-400 block">Buscar</label><input type="text" placeholder="Nº, NIF, Camarero..." value={busquedaTicket} onChange={(e) => setBusquedaTicket(e.target.value)} className="bg-black/60 border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white" /></div>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <button type="button" onClick={() => exportarTicketsAExcelCSV(ticketsFiltrados, 'libro_facturas_nexus')} className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs flex items-center gap-1.5 cursor-pointer"><FileSpreadsheet className="h-4 w-4" /> Exportar Excel (.CSV)</button>
-                <button type="button" onClick={() => exportarTicketsAPDF(ticketsFiltrados, configFiscal)} className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs flex items-center gap-1.5 cursor-pointer"><FileText className="h-4 w-4" /> Exportar PDF Oficial</button>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto max-h-[600px] border border-white/10 rounded-2xl bg-black/20">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md z-10 shadow-md">
-                  <tr>
-                    <th className="p-3">Nº Oficial</th>
-                    <th className="p-3">Tipo</th>
-                    <th className="p-3">Fecha y Hora</th>
-                    <th className="p-3">Mesa / Vendedor</th>
-                    <th className="p-3">Pago</th>
-                    <th className="p-3 text-right">Base Imp.</th>
-                    <th className="p-3 text-right">IVA</th>
-                    <th className="p-3 text-right">Total</th>
-                    <th className="p-3 text-right">Acción</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {(() => {
-                    const raices = agruparFacturas(ticketsFiltrados);
-                    if (raices.length === 0) { return <tr><td colSpan={9} className="p-8 text-center text-slate-500">No hay documentos en el rango seleccionado.</td></tr>; }
-
-                    const renderFila = (f: any, nivel: number) => (
-                      <React.Fragment key={f.id}>
-                        <tr className={`hover:bg-white/[0.05] transition-colors ${nivel > 0 ? 'bg-white/[0.02]' : ''}`}>
-                          <td className="p-3 font-mono font-bold text-cyan-400 flex items-center gap-2" style={{ paddingLeft: `${nivel * 1.5 + 0.75}rem` }}>
-                            {nivel > 0 && <span className="text-slate-600"><CornerDownRight className="h-4 w-4"/></span>}
-                            {f.numero_completo}
-                          </td>
-                          <td className="p-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${f.serie === 'R' ? 'bg-rose-500/20 text-rose-300' : f.serie === 'F' ? 'bg-purple-500/20 text-purple-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
-                              {f.tipo_documento}
-                            </span>
-                            {f.estado_fiscal !== 'EMITIDO' && <span className="ml-2 text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">{f.estado_fiscal}</span>}
-                          </td>
-                          <td className="p-3 text-slate-400">{new Date(f.fecha_expedicion).toLocaleString('es-ES')}</td>
-                          <td className="p-3">
-                            {f.mesa} · <strong>{f.vendedor_nombre}</strong>
-                            {f.cliente_nif && <span className="block text-[10px] text-cyan-300">Cliente: {f.cliente_nombre_razon} ({f.cliente_nif})</span>}
-                          </td>
-                          <td className="p-3 uppercase font-bold text-slate-300">{f.metodo_pago}</td>
-                          <td className="p-3 text-right font-mono text-slate-400">{Number(f.base_imponible).toFixed(2)} €</td>
-                          <td className="p-3 text-right font-mono text-slate-400">{Number(f.cuota_iva).toFixed(2)} €</td>
-                          <td className={`p-3 text-right font-mono font-black ${Number(f.total_final) < 0 ? 'text-rose-400' : 'text-white'}`}>
-                            {Number(f.total_final).toFixed(2)} €
-                          </td>
-                          <td className="p-3 text-right flex justify-end gap-1.5">
-                            <button type="button" title="Imprimir" onClick={() => imprimirDocumentoFiscalHTML(f, configFiscal)} className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center cursor-pointer">
-                              <Printer className="h-3.5 w-3.5" />
-                            </button>
-                            {f.serie === 'T' && f.estado_fiscal === 'EMITIDO' && (
-                              <button type="button" title="Convertir en Factura Nominativa" onClick={() => setModalFacturaNominativa({ factura: f, razonSocial: '', nifCif: '', direccion: '', procesando: false })} className="px-2.5 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 text-cyan-300 flex items-center cursor-pointer transition-all">
-                                <FileText className="h-3.5 w-3.5" />
-                              </button>
-                            )}
-                            {(f.serie === 'T' || f.serie === 'F') && f.estado_fiscal === 'EMITIDO' && (
-                              <button type="button" title="Anular / Devolver" onClick={() => setModalRectificativa({ factura: f, motivo: '', procesando: false })} className="px-2.5 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-600 hover:text-white text-rose-300 flex items-center cursor-pointer transition-all">
-                                <RotateCcw className="h-3.5 w-3.5" />
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                        {f.hijos?.map((h: any) => renderFila(h, nivel + 1))}
-                      </React.Fragment>
-                    );
-
-                    return raices.map(r => renderFila(r, 0));
-                  })()}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {pestanaActiva === 'articulos_escandallos' && (
+        {/* ================= PESTAÑA 3: ARTÍCULOS, ESCANDALLOS Y COMBOS ================= */}
+        {tabActiva === 'articulos' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <form onSubmit={guardarYSincronizarArticulo} className="lg:col-span-7 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-5">
-              <div className="flex items-center justify-between border-b border-white/10 pb-3 flex-wrap gap-3">
-                <h3 className="font-black text-white text-base">
-                  {editandoArticuloId ? '✏️ Editando Artículo' : '➕ Crear Nuevo Artículo / Receta'}
+            {/* FORMULARIO CREAR / EDITAR ARTÍCULO */}
+            <form
+              onSubmit={guardarYSincronizarArticulo}
+              className="lg:col-span-5 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 self-start"
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 className="text-lg font-black text-white">
+                  {editandoArticuloId ? '✏️ Editando Artículo' : '➕ Nuevo Artículo / Receta'}
                 </h3>
-                <div className="flex items-center gap-2">
-                  {!editandoArticuloId && (
-                    <>
-                      <button type="button" onClick={descargarPlantillaCSV} className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300 flex items-center gap-1.5 cursor-pointer">
-                        <Download className="h-3.5 w-3.5" /> Plantilla CSV
-                      </button>
-                      <label className="px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 border border-cyan-500/30 text-cyan-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors">
-                        <Upload className="h-3.5 w-3.5" />
-                        {isImportingCSV ? 'Importando...' : 'Importar CSV'}
-                        <input type="file" accept=".csv" className="hidden" onChange={manejarImportacionCSV} disabled={isImportingCSV} />
-                      </label>
-                    </>
-                  )}
-                  {editandoArticuloId && (
-                    <button type="button" onClick={limpiarFormularioArticulo} className="text-xs text-amber-400 hover:underline cursor-pointer">
-                      Cancelar edición y crear nuevo
-                    </button>
-                  )}
-                </div>
+                {editandoArticuloId && (
+                  <button
+                    type="button"
+                    onClick={limpiarFormularioArticulo}
+                    className="text-xs font-bold text-rose-400 hover:underline"
+                  >
+                    Cancelar edición
+                  </button>
+                )}
               </div>
 
-              <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 space-y-2 text-xs">
-                <span className="font-bold text-slate-300 block">Categorías Visuales Existentes (Pestañas TPV):</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {categorias.map((cat) => (
-                    <span key={cat} className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-black/50 border border-white/15 text-slate-200 font-bold text-xs">
-                      {cat}
-                      <button type="button" onClick={() => borrarCategoria(cat)} className="text-rose-400 hover:text-rose-300 ml-1 p-0.5 cursor-pointer" title={`Borrar categoría ${cat}`}>
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="text-[10px] font-black uppercase text-slate-400">Nombre del Artículo *</label>
+                  <input
+                    type="text"
+                    required
+                    value={artNombre}
+                    onChange={(e) => setArtNombre(e.target.value)}
+                    placeholder="Ej: Hamburguesa Nexus / Café con Leche"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white mt-1"
+                  />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">Nombre del Artículo *</label>
-                  <input type="text" required placeholder="Ej: Café con Leche / Tapa Salmorejo" value={artNombre} onChange={(e) => setArtNombre(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-bold" />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-300 block mb-1">Categoría Visual (Pestaña TPV)</label>
-                  <div className="flex gap-1.5">
-                    <select value={artCategoria} onChange={(e) => setArtCategoria(e.target.value)} className="flex-1 bg-black/60 border border-white/20 rounded-xl px-3 py-2.5 text-white">
-                      {categorias.map((c) => (<option key={c} value={c}>{c}</option>))}
-                    </select>
-                    <input type="text" placeholder="+ Nueva" value={nuevaCategoriaInput} onChange={(e) => setNuevaCategoriaInput(e.target.value)} className="w-24 bg-black/60 border border-white/20 rounded-xl px-2 text-white" />
-                    <button type="button" onClick={crearNuevaCategoria} className="px-2.5 rounded-xl bg-cyan-500 text-slate-950 font-bold cursor-pointer">+</button>
-                  </div>
-                </div>
-                <div>
-                  <label className="font-bold text-slate-300 block mb-1">Destino KDS (Pantalla de Impresión)</label>
-                  <select value={artDestino} onChange={(e) => setArtDestino(e.target.value as 'barra' | 'cocina')} className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-cyan-300 font-bold">
-                    <option value="barra">Barra</option>
-                    <option value="cocina">Cocina</option>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Categoría</label>
+                  <select
+                    value={artCategoria}
+                    onChange={(e) => setArtCategoria(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-bold text-white mt-1"
+                  >
+                    {categorias.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
                   </select>
                 </div>
+
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">Unidad de Medida Base</label>
-                  <select value={artUnidadMedida} onChange={(e) => setArtUnidadMedida(e.target.value as UnidadMedida)} className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-amber-300 font-bold">
-                    <option value="ud">Unidad (ud)</option><option value="kg">Kilogramos (kg)</option><option value="g">Gramos (g)</option><option value="l">Litros (l)</option><option value="ml">Mililitros (ml)</option><option value="m">Metros (m)</option><option value="cm">Centímetros (cm)</option>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Monitor de Destino</label>
+                  <select
+                    value={artDestino}
+                    onChange={(e) => setArtDestino(e.target.value as 'barra' | 'cocina')}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-bold text-white mt-1"
+                  >
+                    <option value="barra">🍹 Monitor de Barra</option>
+                    <option value="cocina">🍳 Monitor de Cocina (KDS)</option>
                   </select>
                 </div>
+
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">Código de Barras (EAN / SKU)</label>
-                  <div className="relative">
-                    <Barcode className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
-                    <input type="text" placeholder="Escanea o escribe el código..." value={artCodigoBarras} onChange={(e) => setArtCodigoBarras(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl pl-9 pr-3 py-2.5 text-white font-mono" />
-                  </div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Precio Venta PVP (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={artPrecioVenta}
+                    onChange={(e) => setArtPrecioVenta(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-black text-emerald-400 mt-1"
+                  />
                 </div>
+
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">Precio de Venta PVP con IVA (€)</label>
-                  <input type="number" step="0.01" value={artPrecioVenta} onChange={(e) => setArtPrecioVenta(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-emerald-400 font-mono font-bold text-sm" />
+                  <label className="text-[10px] font-black uppercase text-slate-400">Coste Unitario (€)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={artCosteUnitario}
+                    disabled={artEsCompuesto}
+                    onChange={(e) => setArtCosteUnitario(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-bold text-amber-300 mt-1 disabled:opacity-60"
+                  />
                 </div>
+
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">Tipo de IVA</label>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Tipo de IVA Aplicable</label>
                   <select
                     value={artTipoIva}
                     onChange={(e) => setArtTipoIva(e.target.value)}
-                    className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-white font-bold"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-bold text-white mt-1"
                   >
-                    <option value="10">10% (Reducido - Hostelería / Alimentación)</option>
-                    <option value="21">21% (General - Ocio, TCG y Merchandising)</option>
+                    <option value="10">10% (Hostelería / Comida y Bebida)</option>
+                    <option value="21">21% (Cartas TCG / Merchandising)</option>
                   </select>
                 </div>
+
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">
-                    Coste por {artUnidadMedida} (€) {artEsCompuesto && '(Auto por Escandallo)'}
-                  </label>
-                  <input type="number" step="0.0001" readOnly={artEsCompuesto} value={artCosteUnitario} onChange={(e) => setArtCosteUnitario(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-amber-400 font-mono font-bold text-sm" />
-                  <span className="text-[10px] text-slate-400">Margen bruto estimado: {margenBeneficioArticulo}%</span>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Unidad de Medida Base</label>
+                  <select
+                    value={artUnidadMedida}
+                    onChange={(e) => setArtUnidadMedida(e.target.value as UnidadMedida)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-bold text-white mt-1"
+                  >
+                    <option value="ud">Unidades (ud)</option>
+                    <option value="kg">Kilogramos (kg)</option>
+                    <option value="g">Gramos (g)</option>
+                    <option value="l">Litros (l)</option>
+                    <option value="ml">Mililitros (ml)</option>
+                    <option value="cl">Centilitros (cl)</option>
+                  </select>
                 </div>
-                <div className="sm:col-span-2 space-y-1.5">
-                  <label className="font-bold text-slate-300 block">Imagen del Producto (URL o Subir Archivo)</label>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <input type="text" placeholder="https://... o sube una foto desde tu equipo" value={artImagenUrl} onChange={(e) => setArtImagenUrl(e.target.value)} className="flex-1 bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-white" />
-                    <label className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold flex items-center gap-1.5 cursor-pointer shrink-0">
-                      <ImageIcon className="h-4 w-4 text-cyan-400" /> Subir Foto
-                      <input type="file" accept="image/*" onChange={manejarSubidaImagen} className="hidden" />
-                    </label>
-                  </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Stock Actual</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={artStockInicial}
+                    onChange={(e) => setArtStockInicial(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white mt-1"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Alerta Stock Mínimo</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={artStockMinimo}
+                    onChange={(e) => setArtStockMinimo(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs font-bold text-rose-300 mt-1"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Imagen (URL o Subir)</label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={manejarSubidaImagen}
+                    className="w-full text-[10px] text-slate-400 mt-1"
+                  />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-black/40 border border-white/10 text-xs">
+              <div className="flex flex-wrap gap-4 pt-2 border-t border-slate-800 text-xs font-bold">
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={artControlaStock} onChange={(e) => setArtControlaStock(e.target.checked)} className="h-4 w-4 accent-cyan-400" />
-                  <span className="font-bold text-white">Lleva Control de Stock</span>
+                  <input
+                    type="checkbox"
+                    checked={artVendibleTpv}
+                    onChange={(e) => setArtVendibleTpv(e.target.checked)}
+                  />
+                  <span>Visible en Carta TPV</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={artVendibleTpv} onChange={(e) => setArtVendibleTpv(e.target.checked)} className="h-4 w-4 accent-emerald-400" />
-                  <span className="font-bold text-emerald-300">Visible en TPV / Carta</span>
+                  <input
+                    type="checkbox"
+                    checked={artControlaStock}
+                    onChange={(e) => setArtControlaStock(e.target.checked)}
+                  />
+                  <span>Controlar Stock</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={artEsCompuesto} onChange={(e) => { setArtEsCompuesto(e.target.checked); if (e.target.checked) setArtEsCombo(false); }} className="h-4 w-4 accent-amber-400" />
-                  <span className="font-bold text-amber-300">Es Elaboración (Escandallo)</span>
+                <label className="flex items-center gap-2 cursor-pointer text-amber-300">
+                  <input
+                    type="checkbox"
+                    checked={artEsCompuesto}
+                    onChange={(e) => setArtEsCompuesto(e.target.checked)}
+                  />
+                  <span>🧪 Tiene Escandallo (Receta)</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={artEsCombo} onChange={(e) => { setArtEsCombo(e.target.checked); if (e.target.checked) setArtEsCompuesto(false); }} className="h-4 w-4 accent-purple-400" />
-                  <span className="font-bold text-purple-300">Combo / Opciones (Menús, Combinados)</span>
+                <label className="flex items-center gap-2 cursor-pointer text-indigo-300">
+                  <input
+                    type="checkbox"
+                    checked={artEsCombo}
+                    onChange={(e) => setArtEsCombo(e.target.checked)}
+                  />
+                  <span>🍱 Es Menú / Combo Guiado</span>
                 </label>
               </div>
 
-              {artControlaStock && !artEsCompuesto && (
-                <div className="grid grid-cols-2 gap-3 p-3.5 rounded-2xl bg-cyan-950/20 border border-cyan-500/30 text-xs">
-                  <div>
-                    <label className="font-bold text-cyan-300 block mb-1">Stock Inicial / Actual ({artUnidadMedida})</label>
-                    <input type="number" step="0.001" value={artStockInicial} onChange={(e) => setArtStockInicial(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3 py-2 text-white font-mono font-bold" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-300 block mb-1">Stock Mínimo Alerta</label>
-                    <input type="number" step="0.001" value={artStockMinimo} onChange={(e) => setArtStockMinimo(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3 py-2 text-white font-mono" />
-                  </div>
-                </div>
-              )}
-
-              {artEsCombo && (
-                <div className="p-4 rounded-2xl bg-purple-950/20 border border-purple-500/40 space-y-4 text-xs">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-purple-400 font-bold">
-                      <ListPlus className="h-4 w-4" />
-                      <span>Opciones del Menú, Tostada o Combinado</span>
-                    </div>
-                    <button type="button" onClick={agregarPasoCombo} className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold flex items-center gap-1 cursor-pointer">
-                      <Plus className="h-3 w-3" /> Añadir Paso
-                    </button>
-                  </div>
-
-                  <div className="space-y-4">
-                    {pasosCombo.map((paso, pIdx) => (
-                      <div key={pIdx} className="p-3 bg-black/40 border border-white/10 rounded-xl space-y-3">
-                        <div className="flex items-center gap-2">
-                          <span className="font-black text-slate-400">{pIdx + 1}.</span>
-                          <input type="text" placeholder="Ej: Elige el refresco / Elige el tipo de pan" value={paso.titulo} onChange={(e) => actualizarTituloPaso(pIdx, e.target.value)} className="flex-1 bg-black/60 border border-white/20 rounded-lg px-3 py-1.5 text-white font-bold" />
-                          <button type="button" onClick={() => eliminarPasoCombo(pIdx)} className="text-rose-400 hover:text-rose-300 p-1"><Trash2 className="h-4 w-4" /></button>
-                        </div>
-                        <div className="pl-6 space-y-2">
-                          {paso.opciones.map((opc, oIdx) => (
-                            <div key={oIdx} className="flex gap-2 items-center">
-                              <input type="text" placeholder="Nombre de la opción" value={opc.nombre} onChange={(e) => actualizarOpcion(pIdx, oIdx, 'nombre', e.target.value)} className="flex-1 bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-white text-xs" />
-                              <select value={opc.destino} onChange={(e) => actualizarOpcion(pIdx, oIdx, 'destino', e.target.value)} className="bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-white text-xs">
-                                <option value="barra">Barra</option><option value="cocina">Cocina</option>
-                              </select>
-                              <button type="button" onClick={() => eliminarOpcionDePaso(pIdx, oIdx)} className="text-slate-500 hover:text-rose-400"><X className="h-4 w-4" /></button>
-                            </div>
-                          ))}
-                          <button type="button" onClick={() => agregarOpcionAPaso(pIdx)} className="text-purple-400 hover:text-purple-300 font-bold flex items-center gap-1 mt-1 text-[10px] uppercase">
-                            <Plus className="h-3 w-3" /> Añadir Opción a este paso
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                    {pasosCombo.length === 0 && (<p className="text-slate-500 italic text-center py-2">No hay pasos configurados.</p>)}
-                  </div>
-                </div>
-              )}
-
+              {/* CONSTRUCTOR DE ESCANDALLO CON CONVERSIÓN DE UNIDADES */}
               {artEsCompuesto && (
-                <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/40 space-y-4 text-xs">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-amber-400 font-bold">
-                      <Scale className="h-4 w-4" />
-                      <span>Configuración del Escandallo (Ingredientes por peso, volumen o unidad)</span>
-                    </div>
-                    <span className="font-mono font-black text-amber-300">
-                      Coste Total Escandallo: {Number(artCosteUnitario).toFixed(4)} €
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
-                    <div className="sm:col-span-5">
-                      <label className="text-[10px] text-slate-300 block mb-1">Ingrediente / Artículo Base</label>
-                      <select value={ingredienteSelId} onChange={(e) => setIngredienteSelId(e.target.value)} className="w-full bg-black/70 border border-white/20 rounded-xl px-2.5 py-2 text-white">
-                        <option value="">-- Seleccionar ingrediente --</option>
-                        {articulosMaestro.filter((a) => a.id !== editandoArticuloId && !a.es_combo).map((a) => (
-                          <option key={a.id} value={a.id}>{a.nombre} ({Number(a.coste_unitario).toFixed(2)}€/{a.unidad_medida})</option>
-                        ))}
+                <div className="bg-slate-950/90 border border-amber-500/30 rounded-2xl p-4 space-y-3">
+                  <h4 className="text-xs font-black uppercase text-amber-400">
+                    🧪 Escandallo / Ingredientes por Unidad Vendida
+                  </h4>
+                  <div className="grid grid-cols-12 gap-2 items-end">
+                    <div className="col-span-5">
+                      <label className="text-[9px] font-bold text-slate-400">Ingrediente</label>
+                      <select
+                        value={ingredienteSelId}
+                        onChange={(e) => setIngredienteSelId(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                      >
+                        <option value="">Elegir ingrediente...</option>
+                        {articulosMaestro
+                          .filter((a) => a.id !== editandoArticuloId)
+                          .map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.nombre} ({a.coste_unitario}€/{a.unidad_medida})
+                            </option>
+                          ))}
                       </select>
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[10px] text-slate-300 block mb-1">Cantidad</label>
-                      <input type="number" step="0.001" value={ingredienteCantidad} onChange={(e) => setIngredienteCantidad(e.target.value)} className="w-full bg-black/70 border border-white/20 rounded-xl px-2.5 py-2 text-white font-mono" />
+                    <div className="col-span-3">
+                      <label className="text-[9px] font-bold text-slate-400">Cant.</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={ingredienteCantidad}
+                        onChange={(e) => setIngredienteCantidad(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                      />
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[10px] text-slate-300 block mb-1">Unidad Receta</label>
-                      <select value={ingredienteUnidadUso} onChange={(e) => setIngredienteUnidadUso(e.target.value as UnidadMedida)} className="w-full bg-black/70 border border-white/20 rounded-xl px-2 py-2 text-amber-300 font-bold">
-                        <option value="g">g (gramos)</option><option value="kg">kg (kilos)</option><option value="ml">ml (mililitros)</option><option value="l">l (litros)</option><option value="ud">ud (unidades)</option><option value="cm">cm</option><option value="m">m</option>
+                    <div className="col-span-2">
+                      <label className="text-[9px] font-bold text-slate-400">Unidad</label>
+                      <select
+                        value={ingredienteUnidadUso}
+                        onChange={(e) => setIngredienteUnidadUso(e.target.value as UnidadMedida)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                      >
+                        <option value="ud">ud</option>
+                        <option value="g">g</option>
+                        <option value="kg">kg</option>
+                        <option value="ml">ml</option>
+                        <option value="cl">cl</option>
+                        <option value="l">l</option>
                       </select>
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[10px] text-slate-300 block mb-1">% Merma</label>
-                      <input type="number" step="0.5" value={ingredienteMerma} onChange={(e) => setIngredienteMerma(e.target.value)} className="w-full bg-black/70 border border-white/20 rounded-xl px-2 py-2 text-white font-mono" />
-                    </div>
-                    <div className="sm:col-span-1">
-                      <button type="button" onClick={agregarIngredienteAEscandallo} className="w-full py-2 rounded-xl bg-amber-500 text-slate-950 font-black flex items-center justify-center cursor-pointer">
-                        <Plus className="h-4 w-4" />
+                    <div className="col-span-2">
+                      <button
+                        type="button"
+                        onClick={agregarIngredienteAEscandallo}
+                        className="w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-2 rounded-lg text-xs"
+                      >
+                        +
                       </button>
                     </div>
                   </div>
@@ -2825,14 +2448,22 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                   {lineasEscandallo.length > 0 && (
                     <div className="space-y-1.5 pt-2">
                       {lineasEscandallo.map((l, idx) => (
-                        <div key={idx} className="flex items-center justify-between bg-black/50 px-3 py-2 rounded-xl border border-white/10">
-                          <div>
-                            <strong className="text-white">{l.nombre_ingrediente}</strong>: <span className="text-amber-300 font-mono">{l.cantidad} {l.unidad_uso}</span>
-                            {l.merma_porcentaje > 0 && (<span className="text-slate-400 ml-1.5">(Merma: {l.merma_porcentaje}%)</span>)}
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <span className="font-mono font-bold text-emerald-400">{l.coste_calculado.toFixed(4)} €</span>
-                            <button type="button" onClick={() => eliminarLineaEscandallo(idx)} className="text-rose-400 hover:text-rose-300 cursor-pointer"><Trash2 className="h-4 w-4" /></button>
+                        <div
+                          key={idx}
+                          className="flex justify-between items-center bg-slate-900 px-3 py-2 rounded-lg text-xs"
+                        >
+                          <span>
+                            <strong>{l.nombre_ingrediente}</strong> · {l.cantidad} {l.unidad_uso}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-amber-300 font-bold">{l.coste_calculado.toFixed(3)}€</span>
+                            <button
+                              type="button"
+                              onClick={() => eliminarLineaEscandallo(idx)}
+                              className="text-rose-400 font-black"
+                            >
+                              ✕
+                            </button>
                           </div>
                         </div>
                       ))}
@@ -2841,54 +2472,547 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
                 </div>
               )}
 
-              <button type="submit" className="w-full py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg">
-                <Save className="h-4 w-4" />
-                {editandoArticuloId ? 'Guardar Cambios y Sincronizar en Supabase' : 'Confirmar Creación y Sincronizar con TPV'}
+              {/* CONSTRUCTOR DE PASOS COMBO */}
+              {artEsCombo && (
+                <div className="bg-slate-950/90 border border-indigo-500/30 rounded-2xl p-4 space-y-3">
+                  <div className="flex justify-between items-center">
+                    <h4 className="text-xs font-black uppercase text-indigo-400">🍱 Pasos del Combo</h4>
+                    <button
+                      type="button"
+                      onClick={agregarPasoCombo}
+                      className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-lg font-black"
+                    >
+                      + Añadir Paso
+                    </button>
+                  </div>
+                  {pasosCombo.map((paso, idxP) => (
+                    <div key={idxP} className="bg-slate-900 p-3 rounded-xl space-y-2 border border-slate-800">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={paso.titulo}
+                          onChange={(e) => actualizarTituloPaso(idxP, e.target.value)}
+                          className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-bold"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => agregarOpcionAPaso(idxP)}
+                          className="text-[10px] bg-emerald-600/30 text-emerald-300 px-2 py-1 rounded-lg font-bold"
+                        >
+                          + Opción
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => eliminarPasoCombo(idxP)}
+                          className="text-rose-400 text-xs px-1"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                      {paso.opciones.map((op, idxO) => (
+                        <div key={idxO} className="flex gap-2 items-center pl-2">
+                          <input
+                            type="text"
+                            value={op.nombre}
+                            onChange={(e) => actualizarOpcion(idxP, idxO, 'nombre', e.target.value)}
+                            className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs"
+                          />
+                          <select
+                            value={op.destino}
+                            onChange={(e) => actualizarOpcion(idxP, idxO, 'destino', e.target.value)}
+                            className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-[10px]"
+                          >
+                            <option value="barra">Barra</option>
+                            <option value="cocina">Cocina</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => eliminarOpcionDePaso(idxP, idxO)}
+                            className="text-rose-400 text-xs"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={guardandoArticulo}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black py-3.5 rounded-2xl shadow-lg text-xs uppercase tracking-wider transition-all"
+              >
+                {guardandoArticulo
+                  ? 'Guardando...'
+                  : editandoArticuloId
+                  ? '💾 Guardar Cambios y Sincronizar'
+                  : '➕ Crear Artículo en Maestro y Carta'}
               </button>
             </form>
 
-            <div className="lg:col-span-5 p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4">
-              <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <h3 className="font-bold text-white text-sm">Catálogo Sincronizado ({articulosMaestro.length})</h3>
+            {/* LISTADO Y GESTIÓN DE CATEGORÍAS Y ARTÍCULOS */}
+            <div className="lg:col-span-7 space-y-4">
+              {/* GESTIÓN DE CATEGORÍAS + IMPORTAR CSV */}
+              <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-xs font-black uppercase text-slate-400">Categorías TPV e Importación CSV</h4>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={descargarPlantillaCSV}
+                      className="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-xl font-bold"
+                    >
+                      📄 Plantilla CSV
+                    </button>
+                    <label className="text-[11px] bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 px-3 py-1.5 rounded-xl font-bold cursor-pointer">
+                      {isImportingCSV ? 'Importando...' : '📤 Importar CSV'}
+                      <input type="file" accept=".csv" onChange={manejarImportacionCSV} className="hidden" disabled={isImportingCSV} />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Nueva categoría (ej. Bollería, Cervezas...)"
+                    value={nuevaCategoriaInput}
+                    onChange={(e) => setNuevaCategoriaInput(e.target.value)}
+                    disabled={creandoCategoria}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  />
                   <button
                     type="button"
-                    onClick={refrescarStockInventario}
-                    disabled={refrescandoStock}
-                    className="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={crearNuevaCategoria}
+                    disabled={creandoCategoria}
+                    className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-4 py-2 rounded-xl font-black text-xs"
                   >
-                    <RefreshCw className={`h-3.5 w-3.5 ${refrescandoStock ? 'animate-spin' : ''}`} />
-                    <span>{refrescandoStock ? 'Actualizando...' : 'Refrescar Stock'}</span>
+                    {creandoCategoria ? '...' : '+ Añadir'}
                   </button>
                 </div>
-                <div className="relative w-44">
-                  <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-2.5" />
-                  <input type="text" placeholder="Buscar artículo..." value={filtroArticulos} onChange={(e) => setFiltroArticulos(e.target.value)} className="w-full bg-black/60 border border-white/15 rounded-xl pl-8 pr-2.5 py-1.5 text-xs text-white" />
+
+                <div className="flex flex-wrap gap-1.5">
+                  {categorias.map((c) => (
+                    <span
+                      key={c}
+                      className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full text-xs font-bold text-slate-300"
+                    >
+                      {c}
+                      <button
+                        type="button"
+                        onClick={() => borrarCategoria(c)}
+                        className="text-rose-400 hover:text-rose-300 font-black"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
                 </div>
               </div>
 
-              <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
-                {articulosMaestro.filter((a) => a.nombre.toLowerCase().includes(filtroArticulos.toLowerCase())).map((art) => (
-                  <div key={art.id} className="p-3.5 rounded-2xl bg-black/40 border border-white/10 flex items-center justify-between gap-3 text-xs">
-                    <div className="flex items-center gap-3">
-                      {art.imagen_url ? (
-                        <img src={art.imagen_url} alt={art.nombre} className="h-11 w-11 rounded-xl object-cover border border-white/10" />
-                      ) : (
-                        <div className="h-11 w-11 rounded-xl bg-white/5 flex items-center justify-center text-slate-500"><Package className="h-5 w-5" /></div>
-                      )}
-                      <div>
-                        <div className="font-bold text-white flex items-center gap-1.5">
-                          <span>{art.nombre}</span>
-                          {art.es_compuesto && (<span className="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded">Escandallo</span>)}
-                          {art.es_combo && (<span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">Opciones</span>)}
-                        </div>
-                        <div className="text-[11px] text-slate-400">
-                          Pestaña: <strong className="text-cyan-300">{art.categoria}</strong> · Destino: <strong className="text-amber-300 uppercase">{art.destino || 'barra'}</strong> · PVP: <strong className="text-emerald-400">{Number(art.precio_venta).toFixed(2)}€</strong> · <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-black ${Number(art.porcentaje_iva ?? art.tipo_iva ?? 10) === 21 ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'}`}>{Number(art.porcentaje_iva ?? art.tipo_iva ?? 10)}% IVA</span>
-                        </div>
-                      </div>
+              {/* TABLA DE ARTÍCULOS */}
+              <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-5 space-y-4">
+                <input
+                  type="text"
+                  placeholder="🔍 Buscar artículo por nombre o categoría..."
+                  value={busquedaArticulo}
+                  onChange={(e) => setBusquedaArticulo(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs font-bold text-white"
+                />
+
+                <div className="overflow-x-auto max-h-[540px]">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-900 text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                        <th className="p-3">Artículo</th>
+                        <th className="p-3">Categoría / Destino</th>
+                        <th className="p-3 text-center">IVA</th>
+                        <th className="p-3 text-right">PVP / Coste</th>
+                        <th className="p-3 text-right">Stock</th>
+                        <th className="p-3 text-center">Editar</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {articulosMaestro
+                        .filter(
+                          (a) =>
+                            a.nombre.toLowerCase().includes(busquedaArticulo.toLowerCase()) ||
+                            (a.categoria || '').toLowerCase().includes(busquedaArticulo.toLowerCase())
+                        )
+                        .map((art) => {
+                          const ivaArt = Number(art.porcentaje_iva ?? art.tipo_iva ?? 10) === 21 ? 21 : 10;
+                          return (
+                            <tr key={art.id} className="hover:bg-slate-900/40">
+                              <td className="p-3 font-black text-white">
+                                {art.nombre}
+                                {!art.vendible_tpv && (
+                                  <span className="ml-2 text-[9px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">
+                                    Materia Prima
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 text-slate-300">
+                                {art.categoria} ·{' '}
+                                <span className="uppercase text-[10px] font-bold text-indigo-400">
+                                  {art.destino || 'barra'}
+                                </span>
+                              </td>
+                              <td className="p-3 text-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded font-black text-[10px] ${
+                                    ivaArt === 21
+                                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                  }`}
+                                >
+                                  {ivaArt}%
+                                </span>
+                              </td>
+                              <td className="p-3 text-right">
+                                <span className="font-black text-emerald-400">
+                                  {Number(art.precio_venta || 0).toFixed(2)}€
+                                </span>
+                                <span className="block text-[10px] text-slate-400">
+                                  Coste: {Number(art.coste_unitario || 0).toFixed(2)}€
+                                </span>
+                              </td>
+                              <td className="p-3 text-right font-bold">
+                                {art.controla_stock ? (
+                                  <span
+                                    className={
+                                      Number(art.stock_actual) <= Number(art.stock_minimo)
+                                        ? 'text-rose-400 font-black'
+                                        : 'text-white'
+                                    }
+                                  >
+                                    {Number(art.stock_actual || 0).toFixed(2)} {art.unidad_medida}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">Libre</span>
+                                )}
+                              </td>
+                              <td className="p-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => seleccionarArticuloParaEditar(art)}
+                                  className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 font-bold text-[11px]"
+                                >
+                                  ✏️ Editar
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= PESTAÑA 4: INVENTARIO, COMPRAS Y MERMAS ================= */}
+        {tabActiva === 'inventario' && (
+          <div className="space-y-6">
+            {/* RECEPCIÓN DE MERCANCÍA / COMPRAS CON AUTOCOMPLETADO DE PROVEEDORES */}
+            <form
+              onSubmit={registrarCompraMercancia}
+              className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end"
+            >
+              <div className="lg:col-span-2">
+                <label className="text-[10px] font-black uppercase text-slate-400">
+                  📦 Entrada de Compra (Artículo)
+                </label>
+                <select
+                  value={compraArticuloId}
+                  onChange={(e) => setCompraArticuloId(e.target.value)}
+                  disabled={registrandoCompra}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                >
+                  <option value="">Seleccionar artículo...</option>
+                  {articulosMaestro.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.nombre} (Stock: {a.stock_actual} {a.unidad_medida})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Cantidad Recibida</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={compraCantidad}
+                  onChange={(e) => setCompraCantidad(e.target.value)}
+                  placeholder="Ej: 24"
+                  disabled={registrandoCompra}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Nuevo Coste Unit. (€)</label>
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={compraCosteUnitario}
+                  onChange={(e) => setCompraCosteUnitario(e.target.value)}
+                  placeholder="Opcional"
+                  disabled={registrandoCompra}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-amber-300 mt-1"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Proveedor</label>
+                <input
+                  type="text"
+                  list="lista-proveedores-sugeridos"
+                  value={compraProveedor}
+                  onChange={(e) => setCompraProveedor(e.target.value)}
+                  placeholder="Escribe o elige proveedor..."
+                  disabled={registrandoCompra}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                />
+                <datalist id="lista-proveedores-sugeridos">
+                  {proveedoresSugeridos.map((p) => (
+                    <option key={p} value={p} />
+                  ))}
+                </datalist>
+              </div>
+
+              <button
+                type="submit"
+                disabled={registrandoCompra}
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-2.5 px-4 rounded-xl text-xs uppercase shadow-lg"
+              >
+                {registrandoCompra ? 'Guardando...' : '+ Sumar Stock'}
+              </button>
+            </form>
+
+            {/* CONTROL RÁPIDO DE MERMAS Y RECUENTO FÍSICO */}
+            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4">
+              <div className="flex flex-wrap justify-between items-center gap-2">
+                <h3 className="text-base font-black text-white">Control de Stock, Mermas y Recuento Físico</h3>
+                <button
+                  type="button"
+                  disabled={refrescandoStock}
+                  onClick={async () => {
+                    if (refrescandoStock) return;
+                    setRefrescandoStock(true);
+                    try {
+                      await Promise.all([
+                        cargarArticulosYCategorias(),
+                        cargarMovimientosInventario(pageMovimientos)
+                      ]);
+                      notificar('Inventario actualizado en tiempo real.', 'ok');
+                    } finally {
+                      setRefrescandoStock(false);
+                    }
+                  }}
+                  className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 px-3 py-1.5 rounded-xl font-bold text-xs"
+                >
+                  {refrescandoStock ? '⏳ Actualizando...' : '🔄 Refrescar Stock'}
+                </button>
+              </div>
+              <div className="overflow-x-auto max-h-80">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900 text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                      <th className="p-3">Artículo</th>
+                      <th className="p-3 text-right">Stock Actual</th>
+                      <th className="p-3 text-right">Mínimo</th>
+                      <th className="p-3 text-center">Acciones de Inventario</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {articulosMaestro
+                      .filter((a) => a.controla_stock)
+                      .map((art) => (
+                        <tr key={art.id} className="hover:bg-slate-900/40">
+                          <td className="p-3 font-bold text-white">{art.nombre}</td>
+                          <td className="p-3 text-right font-black text-emerald-400">
+                            {Number(art.stock_actual || 0).toFixed(2)} {art.unidad_medida}
+                          </td>
+                          <td className="p-3 text-right text-slate-400">
+                            {Number(art.stock_minimo || 0).toFixed(2)} {art.unidad_medida}
+                          </td>
+                          <td className="p-3 text-center">
+                            <div className="flex justify-center gap-2">
+                              <button
+                                onClick={() =>
+                                  setModalAjusteStock({
+                                    articulo: art,
+                                    tipo: 'MERMA',
+                                    cantidad: '1',
+                                    motivo: 'Rotura / Caducidad',
+                                    procesando: false
+                                  })
+                                }
+                                className="px-2.5 py-1 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/30 font-bold text-[11px]"
+                              >
+                                🗑️ Registrar Merma
+                              </button>
+                              <button
+                                onClick={() =>
+                                  setModalAjusteStock({
+                                    articulo: art,
+                                    tipo: 'RECUENTO_FISICO',
+                                    cantidad: String(art.stock_actual || 0),
+                                    motivo: 'Arqueo de inventario físico',
+                                    procesando: false
+                                  })
+                                }
+                                className="px-2.5 py-1 rounded-lg bg-amber-600/20 text-amber-300 border border-amber-500/30 font-bold text-[11px]"
+                              >
+                                📋 Recuento Físico
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* KARDEX / HISTORIAL DE MOVIMIENTOS DE STOCK */}
+            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="text-base font-black text-white">Kardex · Historial de Movimientos de Stock</h3>
+                <div className="flex gap-2">
+                  <button
+                    disabled={pageMovimientos === 0}
+                    onClick={() => cargarMovimientosInventario(pageMovimientos - 1)}
+                    className="px-3 py-1 bg-slate-800 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    ◀ Anterior
+                  </button>
+                  <button
+                    disabled={!hayMasMovimientos}
+                    onClick={() => cargarMovimientosInventario(pageMovimientos + 1)}
+                    className="px-3 py-1 bg-slate-800 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    Siguiente ▶
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900 text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                      <th className="p-3">Fecha</th>
+                      <th className="p-3">Artículo</th>
+                      <th className="p-3">Tipo</th>
+                      <th className="p-3 text-right">Cantidad</th>
+                      <th className="p-3">Usuario / Proveedor</th>
+                      <th className="p-3">Observaciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {movimientosStock.map((m) => (
+                      <tr key={m.id}>
+                        <td className="p-3 text-slate-400">{new Date(m.created_at).toLocaleString('es-ES')}</td>
+                        <td className="p-3 font-bold text-white">{m.articulos_cafeteria?.nombre || 'Artículo'}</td>
+                        <td className="p-3 font-black text-indigo-300">{m.tipo_movimiento}</td>
+                        <td
+                          className={`p-3 text-right font-black ${
+                            Number(m.cantidad) < 0 ? 'text-rose-400' : 'text-emerald-400'
+                          }`}
+                        >
+                          {Number(m.cantidad) > 0 ? `+${m.cantidad}` : m.cantidad}{' '}
+                          {m.articulos_cafeteria?.unidad_medida || ''}
+                        </td>
+                        <td className="p-3 text-slate-300">
+                          {m.usuario_nombre} {m.proveedor ? `· 🚚 ${m.proveedor}` : ''}
+                        </td>
+                        <td className="p-3 text-slate-400">{m.observaciones}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= PESTAÑA 5: EMPLEADOS Y ROLES ================= */}
+        {tabActiva === 'empleados' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <form
+              onSubmit={guardarEmpleado}
+              className="lg:col-span-4 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 self-start"
+            >
+              <h3 className="text-lg font-black text-white">➕ Registrar Empleado / PIN</h3>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Nombre Completo</label>
+                <input
+                  type="text"
+                  required
+                  value={empNombre}
+                  onChange={(e) => setEmpNombre(e.target.value)}
+                  disabled={guardandoEmpleado}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">PIN Numérico (4 dígitos)</label>
+                <input
+                  type="text"
+                  required
+                  maxLength={6}
+                  value={empPin}
+                  onChange={(e) => setEmpPin(e.target.value)}
+                  disabled={guardandoEmpleado}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-black text-indigo-400 mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Rol y Permisos</label>
+                <select
+                  value={empRol}
+                  onChange={(e) => setEmpRol(e.target.value as any)}
+                  disabled={guardandoEmpleado}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+                >
+                  <option value="camarero">Camarero (Servicio y Cobro)</option>
+                  <option value="encargado">Encargado (Autoriza Descuentos y Backoffice)</option>
+                  <option value="admin">Administrador Total</option>
+                </select>
+              </div>
+              <button
+                type="submit"
+                disabled={guardandoEmpleado}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black py-3 rounded-xl text-xs uppercase"
+              >
+                {guardandoEmpleado ? 'Guardando...' : 'Guardar Empleado'}
+              </button>
+            </form>
+
+            <div className="lg:col-span-8 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4">
+              <h3 className="text-lg font-black text-white">Plantilla Activa</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {empleados.map((emp) => (
+                  <div
+                    key={emp.id}
+                    className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex justify-between items-center"
+                  >
+                    <div>
+                      <p className="font-black text-white">{emp.nombre}</p>
+                      <p className="text-xs text-indigo-400 uppercase font-bold">
+                        {emp.rol} · PIN: {emp.codigo_pin}
+                      </p>
                     </div>
-                    <button type="button" onClick={() => seleccionarArticuloParaEditar(art)} className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-cyan-500 hover:text-slate-950 text-white font-bold flex items-center gap-1 cursor-pointer transition-all">
-                      <Edit3 className="h-3.5 w-3.5" /> Editar
+                    <button
+                      onClick={() => alternarEstadoEmpleado(emp)}
+                      className={`px-3 py-1.5 rounded-xl font-black text-xs ${
+                        emp.activo ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                      }`}
+                    >
+                      {emp.activo ? 'Activo' : 'Inactivo'}
                     </button>
                   </div>
                 ))}
@@ -2897,219 +3021,411 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
           </div>
         )}
 
-        {pestanaActiva === 'inventario_compras' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center bg-[#0d0f17] p-4 rounded-2xl border border-white/10">
-              <h2 className="text-sm font-black text-white flex items-center gap-2">
-                <Layers className="h-5 w-5 text-emerald-400" />
-                Gestión Centralizada de Stock y Elaboraciones
-              </h2>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={refrescarStockInventario}
-                  disabled={refrescandoStock}
-                  className="px-4 py-2.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-                >
-                  <RefreshCw className={`h-4 w-4 ${refrescandoStock ? 'animate-spin' : ''}`} />
-                  <span>{refrescandoStock ? 'Actualizando...' : 'Refrescar Stock'}</span>
-                </button>
-                <button type="button" onClick={() => setModalElaboracion({ abierto: true, articuloDestinoId: '', cantidadGenerada: '', ingredientes: [], ingSelId: '', ingSelCant: '1', ingSelCoste: '', procesando: false })} className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase cursor-pointer flex items-center gap-2 transition-all shadow-lg">
-                  <UtensilsCrossed className="h-4 w-4" /> Elaborar Lote / Receta
-                </button>
-              </div>
-              <button type="button" className="hidden" onClick={() => setModalElaboracion({ abierto: true, articuloDestinoId: '', cantidadGenerada: '', ingredientes: [], ingSelId: '', ingSelCant: '1', ingSelCoste: '', procesando: false })}>
-                <UtensilsCrossed className="h-4 w-4" /> Elaborar Lote / Receta
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              <div className="lg:col-span-12 flex flex-col gap-6 w-full">
-              <form onSubmit={registrarCompraMercancia} className="w-full max-w-2xl p-6 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-4 text-xs shadow-lg">
-                <div className="flex items-center gap-2 text-cyan-400 border-b border-white/10 pb-3">
-                  <ShoppingCart className="h-5 w-5" />
-                  <h3 className="font-black text-white text-sm">Registrar Compra Proveedor (Entrada Stock)</h3>
-                </div>
-                <div>
-                  <label className="font-bold text-slate-300 block mb-1">Seleccionar Artículo / Materia Prima *</label>
-                  <select required value={compraArticuloId} onChange={(e) => { setCompraArticuloId(e.target.value); const sel = articulosMaestro.find((a) => a.id === e.target.value); if (sel) setCompraCosteUnitario(String(sel.coste_unitario || '')); }} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white">
-                    <option value="">-- Elige artículo comprado --</option>
-                    {articulosMaestro.map((a) => (<option key={a.id} value={a.id}>{a.nombre} (Stock actual: {Number(a.stock_actual).toFixed(2)} {a.unidad_medida})</option>))}
-                  </select>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="font-bold text-cyan-400 block mb-1">Cantidad Comprada a Sumar *</label>
-                    <input type="number" step="0.001" required placeholder="Ej: 10 o 2.500" value={compraCantidad} onChange={(e) => setCompraCantidad(e.target.value)} className="w-full bg-black/60 border border-cyan-500/40 rounded-xl px-3.5 py-2.5 text-white font-mono font-bold" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-300 block mb-1">Coste Compra Unitario (€)</label>
-                    <input type="number" step="0.0001" placeholder="Coste por ud/kg/l" value={compraCosteUnitario} onChange={(e) => setCompraCosteUnitario(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-amber-400 font-mono font-bold" />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3 relative">
-                  <div>
-                    <label className="font-bold text-slate-300 block mb-1">Proveedor</label>
-                    <input
-                      type="text"
-                      list="proveedores-sugeridos"
-                      placeholder="Ej: Distribuciones Córdoba"
-                      value={compraProveedor}
-                      onChange={(e) => setCompraProveedor(e.target.value)}
-                      className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-white"
-                    />
-                    <datalist id="proveedores-sugeridos">
-                      {listaProveedores.map(p => (
-                        <option key={p.id || p.nombre} value={p.nombre} />
-                      ))}
-                    </datalist>
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-300 block mb-1">Nº Albarán / Factura</label>
-                    <input type="text" placeholder="ALB-2026-..." value={compraAlbaran} onChange={(e) => setCompraAlbaran(e.target.value)} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-white font-mono" />
-                  </div>
-                </div>
-                <button type="submit" className="w-full py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black uppercase tracking-wider cursor-pointer shadow-lg">
-                  Añadir Compra y Sumar al Inventario
-                </button>
-              </form>
-
-              <div className="w-full p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
-                <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                  <div className="flex items-center gap-2.5 flex-wrap">
-                    <h3 className="font-bold text-white text-sm">Estado del Stock Real por Artículo</h3>
-                    <button
-                      type="button"
-                      onClick={refrescarStockInventario}
-                      disabled={refrescandoStock}
-                      className="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${refrescandoStock ? 'animate-spin' : ''}`} />
-                      <span>{refrescandoStock ? 'Actualizando...' : 'Refrescar Stock'}</span>
-                    </button>
-                  </div>
-                  <span className="text-xs text-slate-400">
-                    Valoración total en almacén: <strong className="text-emerald-400 font-mono">{articulosMaestro.reduce((acc, a) => acc + Math.max(0, Number(a.stock_actual)) * Number(a.coste_unitario || 0), 0).toFixed(2)} €</strong>
-                  </span>
-                </div>
-                <div className="overflow-x-auto max-h-[620px] overflow-y-auto rounded-2xl border border-white/5">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-white/5 text-slate-400 uppercase sticky top-0 backdrop-blur-md">
-                      <tr><th className="px-5 py-3.5">Artículo</th><th className="px-5 py-3.5 text-center">IVA</th><th className="px-5 py-3.5 text-right">Stock Real Actual</th><th className="px-5 py-3.5 text-right">Coste Unit.</th><th className="px-5 py-3.5 text-center">Acciones</th></tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {articulosMaestro.map((a) => {
-                        const stockNum = Number(a.stock_actual ?? 0);
-                        const claseColorStock =
-                          stockNum <= 0
-                            ? 'text-red-500 font-bold'
-                            : stockNum <= 5
-                            ? 'text-orange-400 font-semibold'
-                            : 'text-slate-200 font-medium';
-                        return (
-                          <tr key={a.id} className="hover:bg-white/[0.02]">
-                            <td className="px-5 py-3.5"><div className="font-bold text-white text-sm">{a.nombre}</div><div className="text-[11px] text-slate-400">{a.categoria}</div></td>
-                            <td className="px-5 py-3.5 text-center">
-                              <span className={`px-2 py-0.5 rounded-lg text-xs font-mono font-bold border ${Number(a.porcentaje_iva ?? a.tipo_iva ?? 10) === 21 ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'}`}>
-                                {Number(a.porcentaje_iva ?? a.tipo_iva ?? 10)}%
-                              </span>
-                            </td>
-                            <td className="px-5 py-3.5 text-right">
-                              <span className={`font-mono text-sm inline-flex items-center justify-end gap-1.5 ${claseColorStock}`}>
-                                {stockNum <= 0 && <span title="Rotura de stock">⚠️</span>}
-                                <span>{stockNum.toFixed(Number.isInteger(stockNum) ? 0 : 2)} {a.unidad_medida}</span>
-                              </span>
-                            </td>
-                            <td className="px-5 py-3.5 text-right font-mono text-slate-300">{Number(a.coste_unitario).toFixed(3)} €</td>
-                            <td className="p-2.5 text-center">
-                              <button type="button" title="Ajuste rápido de stock" onClick={() => setModalAjusteStock({ articuloId: a.id, nombre: a.nombre, stockActual: Number(a.stock_actual), nuevoStock: String(Number(a.stock_actual)), unidad: a.unidad_medida, motivo: '', procesando: false })} className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-cyan-500 hover:text-slate-950 text-cyan-400 transition-colors cursor-pointer">
-                                <Target className="h-4 w-4 mx-auto" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-
-            </div>
-            <div className="p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-3">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="font-bold text-white text-sm">Últimos Movimientos de Inventario</h3>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setPageMovimientos(Math.max(0, pageMovimientos - 1))} disabled={pageMovimientos === 0} className="px-3 py-1 bg-white/10 text-white rounded-lg hover:bg-white/20 disabled:opacity-50 text-xs cursor-pointer">Anterior</button>
-                  <span className="text-slate-400 text-xs py-1 font-bold">Pág {pageMovimientos + 1}</span>
-                  <button type="button" onClick={() => setPageMovimientos(pageMovimientos + 1)} disabled={movimientosStock.length < ITEMS_PER_PAGE} className="px-3 py-1 bg-white/10 text-white rounded-lg hover:bg-white/20 disabled:opacity-50 text-xs cursor-pointer">Siguiente</button>
-                </div>
-              </div>
-              <div className="overflow-x-auto max-h-60">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-[#141824] text-slate-400 uppercase sticky top-0 z-10 border-b border-white/10">
-                    <tr><th className="p-2.5">Fecha</th><th className="p-2.5">Artículo</th><th className="p-2.5">Tipo</th><th className="p-2.5 text-right">Cantidad</th><th className="p-2.5">Observaciones / Albarán</th><th className="p-2.5">Usuario</th></tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {movimientosStock.map((m) => (
-                      <tr key={m.id}>
-                        <td className="p-2.5">{new Date(m.created_at).toLocaleString('es-ES')}</td>
-                        <td className="p-2.5 font-bold text-white">{m.articulos_cafeteria?.nombre || '-'}</td>
-                        <td className="p-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${Number(m.cantidad) >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>{m.tipo_movimiento}</span></td>
-                        <td className="p-2.5 text-right font-mono font-bold">{Number(m.cantidad) > 0 ? `+${Number(m.cantidad).toFixed(Number.isInteger(Number(m.cantidad)) ? 0 : 2)}` : Number(m.cantidad).toFixed(Number.isInteger(Number(m.cantidad)) ? 0 : 2)} {m.articulos_cafeteria?.unidad_medida || ''}</td>
-                        <td className="p-2.5 text-slate-400">{m.proveedor ? `${m.proveedor} (${m.numero_albaran_factura || ''}) ` : ''}{m.observaciones}</td>
-                        <td className="p-2.5 text-slate-300">{m.usuario_nombre}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {pestanaActiva === 'datos_fiscales' && (
-          <form onSubmit={guardarConfiguracionFiscal} className="max-w-2xl mx-auto p-6 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 text-xs">
-            <div className="flex items-center gap-2 text-cyan-400 border-b border-white/10 pb-3">
-              <Building2 className="h-5 w-5" />
-              <h3 className="font-bold text-white text-base">Textos Legales Obligatorios del Ticket (RD 1619/2012) y PIN Maestro</h3>
-            </div>
+        {/* ================= PESTAÑA 6: CONFIGURACIÓN FISCAL ================= */}
+        {tabActiva === 'configuracion' && (
+          <form
+            onSubmit={guardarConfiguracionFiscal}
+            className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 max-w-2xl space-y-4"
+          >
+            <h3 className="text-lg font-black text-white">⚙️ Datos Fiscales del Emisor (VeriFactu / Facturación)</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="font-bold text-slate-300 block mb-1">Nombre Comercial (Cabecera Ticket)</label>
-                <input type="text" required value={configFiscal.nombre_comercial} onChange={(e) => setConfigFiscal({ ...configFiscal, nombre_comercial: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white" />
+                <label className="text-[10px] font-black uppercase text-slate-400">Nombre Comercial</label>
+                <input
+                  type="text"
+                  value={configFiscal.nombre_comercial}
+                  onChange={(e) => setConfigFiscal({ ...configFiscal, nombre_comercial: e.target.value })}
+                  disabled={guardandoConfigFiscal}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+                />
               </div>
               <div>
-                <label className="font-bold text-slate-300 block mb-1">Razón Social Completa *</label>
-                <input type="text" required value={configFiscal.razon_social} onChange={(e) => setConfigFiscal({ ...configFiscal, razon_social: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white" />
+                <label className="text-[10px] font-black uppercase text-slate-400">Razón Social</label>
+                <input
+                  type="text"
+                  value={configFiscal.razon_social}
+                  onChange={(e) => setConfigFiscal({ ...configFiscal, razon_social: e.target.value })}
+                  disabled={guardandoConfigFiscal}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+                />
               </div>
               <div>
-                <label className="font-bold text-slate-300 block mb-1">NIF / CIF del Emisor *</label>
-                <input type="text" required value={configFiscal.nif_cif} onChange={(e) => setConfigFiscal({ ...configFiscal, nif_cif: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-mono uppercase" />
+                <label className="text-[10px] font-black uppercase text-slate-400">NIF / CIF</label>
+                <input
+                  type="text"
+                  value={configFiscal.nif_cif}
+                  onChange={(e) => setConfigFiscal({ ...configFiscal, nif_cif: e.target.value })}
+                  disabled={guardandoConfigFiscal}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+                />
               </div>
               <div>
-                <label className="font-bold text-slate-300 block mb-1">Teléfono del Local</label>
-                <input type="text" value={configFiscal.telefono} onChange={(e) => setConfigFiscal({ ...configFiscal, telefono: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white" />
+                <label className="text-[10px] font-black uppercase text-slate-400">Teléfono</label>
+                <input
+                  type="text"
+                  value={configFiscal.telefono}
+                  onChange={(e) => setConfigFiscal({ ...configFiscal, telefono: e.target.value })}
+                  disabled={guardandoConfigFiscal}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+                />
               </div>
               <div className="sm:col-span-2">
-                <label className="font-bold text-slate-300 block mb-1">Domicilio Fiscal Completo *</label>
-                <input type="text" required value={configFiscal.direccion_fiscal} onChange={(e) => setConfigFiscal({ ...configFiscal, direccion_fiscal: e.target.value })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white" />
-              </div>
-              <div>
-                <label className="font-bold text-slate-300 block mb-1">IVA Hostelería por Defecto (%)</label>
-                <input type="number" step="0.5" value={configFiscal.iva_defecto} onChange={(e) => setConfigFiscal({ ...configFiscal, iva_defecto: parseFloat(e.target.value) || 10 })} className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-mono" />
-              </div>
-              <div>
-                <label className="font-bold text-amber-400 block mb-1">PIN Maestro Autorización Descuentos / Rectificativas</label>
-                <input type="text" required value={configFiscal.pin_administrador} onChange={(e) => setConfigFiscal({ ...configFiscal, pin_administrador: e.target.value })} className="w-full bg-black/60 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-amber-400 font-mono font-bold" />
+                <label className="text-[10px] font-black uppercase text-slate-400">Dirección Fiscal</label>
+                <input
+                  type="text"
+                  value={configFiscal.direccion_fiscal}
+                  onChange={(e) => setConfigFiscal({ ...configFiscal, direccion_fiscal: e.target.value })}
+                  disabled={guardandoConfigFiscal}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+                />
               </div>
             </div>
-            <button type="submit" className="w-full py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black uppercase cursor-pointer">
-              Guardar Configuración Fiscal
+            <button
+              type="submit"
+              disabled={guardandoConfigFiscal}
+              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black px-6 py-3 rounded-xl text-xs uppercase"
+            >
+              {guardandoConfigFiscal ? 'Guardando...' : '💾 Guardar Configuración Fiscal'}
             </button>
           </form>
         )}
       </main>
+
+      {/* ================= MODAL ELABORACIÓN INTERNA DE PRODUCTO / LOTE ================= */}
+      {modalElaboracion && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form
+            onSubmit={confirmarElaboracionLote}
+            className="bg-[#0f172a] border border-amber-500/40 rounded-3xl p-6 max-w-lg w-full space-y-4 shadow-2xl"
+          >
+            <h3 className="text-lg font-black text-amber-400">👨‍🍳 Elaborar Producto Compuesto / Lote</h3>
+            <p className="text-xs text-slate-300">
+              Selecciona las materias primas utilizadas y el producto resultante para descontar ingredientes y sumar el producto elaborado automáticamente.
+            </p>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <label className="text-[10px] font-black uppercase text-slate-400">Producto Resultante</label>
+                <select
+                  value={modalElaboracion.articuloDestinoId}
+                  onChange={(e) =>
+                    setModalElaboracion({ ...modalElaboracion, articuloDestinoId: e.target.value })
+                  }
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                >
+                  <option value="">Elegir producto elaborado...</option>
+                  {articulosMaestro.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.nombre} ({a.unidad_medida})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Cant. Obtenida</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={modalElaboracion.cantidadResultante}
+                  onChange={(e) =>
+                    setModalElaboracion({ ...modalElaboracion, cantidadResultante: e.target.value })
+                  }
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-emerald-400 mt-1"
+                />
+              </div>
+            </div>
+
+            <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-3">
+              <label className="text-[10px] font-black uppercase text-amber-300">
+                Añadir Materias Primas Consumidas
+              </label>
+              <div className="grid grid-cols-12 gap-2">
+                <select
+                  value={elabIngSelId}
+                  onChange={(e) => setElabIngSelId(e.target.value)}
+                  className="col-span-6 bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                >
+                  <option value="">Materia prima...</option>
+                  {articulosMaestro.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.nombre} (Stock: {a.stock_actual} {a.unidad_medida})
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={elabIngCant}
+                  onChange={(e) => setElabIngCant(e.target.value)}
+                  className="col-span-2 bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                />
+                <select
+                  value={elabIngUnidad}
+                  onChange={(e) => setElabIngUnidad(e.target.value as UnidadMedida)}
+                  className="col-span-2 bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                >
+                  <option value="ud">ud</option>
+                  <option value="g">g</option>
+                  <option value="kg">kg</option>
+                  <option value="ml">ml</option>
+                  <option value="l">l</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={agregarIngredienteAElaboracion}
+                  className="col-span-2 bg-amber-600 text-white font-black rounded-lg text-xs"
+                >
+                  +
+                </button>
+              </div>
+
+              {modalElaboracion.ingredientesUsados.map((ing, i) => (
+                <div key={i} className="flex justify-between items-center text-xs bg-slate-900 px-3 py-1.5 rounded-lg">
+                  <span>
+                    {ing.nombre} · {ing.cantidad} {ing.unidad_uso}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => eliminarIngredienteElaboracion(i)}
+                    className="text-rose-400 font-black"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setModalElaboracion(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={modalElaboracion.procesando}
+                className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-black text-xs uppercase"
+              >
+                {modalElaboracion.procesando ? 'Procesando...' : 'Confirmar Elaboración'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= MODAL AJUSTE DE STOCK / MERMA / RECUENTO ================= */}
+      {modalAjusteStock && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form
+            onSubmit={procesarAjusteStock}
+            className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 max-w-md w-full space-y-4"
+          >
+            <h3 className="text-lg font-black text-white">
+              {modalAjusteStock.tipo === 'MERMA' ? '🗑️ Registrar Merma' : '📋 Recuento Físico de Stock'}
+            </h3>
+            <p className="text-xs text-slate-300">
+              Artículo: <strong>{modalAjusteStock.articulo.nombre}</strong> (Actual:{' '}
+              {modalAjusteStock.articulo.stock_actual} {modalAjusteStock.articulo.unidad_medida})
+            </p>
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">
+                {modalAjusteStock.tipo === 'MERMA' ? 'Cantidad a descontar' : 'Stock real contado físicamente'}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={modalAjusteStock.cantidad}
+                onChange={(e) => setModalAjusteStock({ ...modalAjusteStock, cantidad: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-black text-white mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">Motivo / Observación</label>
+              <input
+                type="text"
+                value={modalAjusteStock.motivo}
+                onChange={(e) => setModalAjusteStock({ ...modalAjusteStock, motivo: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setModalAjusteStock(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={modalAjusteStock.procesando}
+                className="px-5 py-2 rounded-xl bg-indigo-600 disabled:opacity-50 text-white text-xs font-black uppercase"
+              >
+                {modalAjusteStock.procesando ? 'Guardando...' : 'Aplicar'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= MODAL CIERRE DE CAJA (Z) ================= */}
+      {modalCierreZ && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0f172a] border border-rose-500/40 rounded-3xl p-6 max-w-md w-full space-y-4">
+            <h3 className="text-lg font-black text-white">🔒 Arqueo Ciego y Cierre de Caja (Z)</h3>
+            <div className="bg-slate-950 p-4 rounded-2xl space-y-1.5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Fondo Inicial:</span>
+                <span className="font-bold">{modalCierreZ.fondoInicial.toFixed(2)}€</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Ventas Efectivo:</span>
+                <span className="font-bold text-emerald-400">+{modalCierreZ.ventasEfectivo.toFixed(2)}€</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Entradas / Retiradas Manuales:</span>
+                <span className="font-bold">
+                  +{(modalCierreZ.entradasManuales + modalCierreZ.cambiosMetodos).toFixed(2)}€ / -
+                  {modalCierreZ.salidasManuales.toFixed(2)}€
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-slate-800 pt-2 text-sm font-black text-amber-400">
+                <span>Efectivo Esperado en Cajón:</span>
+                <span>{modalCierreZ.efectivoEsperado.toFixed(2)}€</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">
+                Efectivo Real Contado en Cajón (€)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={modalCierreZ.efectivoRealInput}
+                onChange={(e) => setModalCierreZ({ ...modalCierreZ, efectivoRealInput: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-lg font-black text-white mt-1"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setModalCierreZ(null)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarCerrarCajaZ}
+                disabled={modalCierreZ.procesando}
+                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black text-xs uppercase"
+              >
+                {modalCierreZ.procesando ? 'Cerrando...' : 'Confirmar Cierre e Imprimir Z'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL FACTURA RECTIFICATIVA ================= */}
+      {modalRectificativa && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form
+            onSubmit={confirmarFacturaRectificativa}
+            className="bg-[#0f172a] border border-rose-500/40 rounded-3xl p-6 max-w-md w-full space-y-4"
+          >
+            <h3 className="text-lg font-black text-rose-400">
+              ↩️ Emitir Factura Rectificativa de {modalRectificativa.factura.numero_completo}
+            </h3>
+            <p className="text-xs text-slate-300">
+              Se emitirá un documento serie R con importe negativo y se devolverá el stock de los artículos al almacén.
+            </p>
+            <input
+              type="text"
+              required
+              placeholder="Motivo legal de la devolución / rectificación..."
+              value={modalRectificativa.motivo}
+              onChange={(e) => setModalRectificativa({ ...modalRectificativa, motivo: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setModalRectificativa(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-xs font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={modalRectificativa.procesando}
+                className="px-5 py-2 rounded-xl bg-rose-600 disabled:opacity-50 text-white text-xs font-black uppercase"
+              >
+                {modalRectificativa.procesando ? 'Emitiendo...' : 'Emitir Rectificativa'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= MODAL FACTURA NOMINATIVA ================= */}
+      {modalFacturaNominativa && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form
+            onSubmit={confirmarFacturaNominativa}
+            className="bg-[#0f172a] border border-indigo-500/40 rounded-3xl p-6 max-w-md w-full space-y-4"
+          >
+            <h3 className="text-lg font-black text-indigo-400">
+              🏢 Emitir Factura Nominativa (Canje de {modalFacturaNominativa.factura.numero_completo})
+            </h3>
+            <input
+              type="text"
+              required
+              placeholder="Razón Social o Nombre Completo *"
+              value={modalFacturaNominativa.razonSocial}
+              onChange={(e) =>
+                setModalFacturaNominativa({ ...modalFacturaNominativa, razonSocial: e.target.value })
+              }
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white"
+            />
+            <input
+              type="text"
+              required
+              placeholder="NIF / CIF / NIE *"
+              value={modalFacturaNominativa.nifCif}
+              onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, nifCif: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white"
+            />
+            <input
+              type="text"
+              placeholder="Domicilio Fiscal completo"
+              value={modalFacturaNominativa.direccion}
+              onChange={(e) =>
+                setModalFacturaNominativa({ ...modalFacturaNominativa, direccion: e.target.value })
+              }
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setModalFacturaNominativa(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-xs font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={modalFacturaNominativa.procesando}
+                className="px-5 py-2 rounded-xl bg-indigo-600 disabled:opacity-50 text-white text-xs font-black uppercase"
+              >
+                {modalFacturaNominativa.procesando ? 'Generando...' : 'Emitir e Imprimir'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

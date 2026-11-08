@@ -1,5 +1,5 @@
 // src/TableWaiter.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
 import {
@@ -7,6 +7,7 @@ import {
   calcularHashVeriFactu,
   calcularDesgloseImpuestosLineas,
   imprimirDocumentoFiscalHTML,
+  redondearMoneda,
   type ConfiguracionFiscal,
   type LineaTicketFiscal
 } from './fiscalService';
@@ -255,14 +256,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [enviando, setEnviando] = useState(false);
   const [imprimiendoPreTicket, setImprimiendoPreTicket] = useState(false);
   const [refrescandoMesas, setRefrescandoMesas] = useState(false);
+  const [cobrandoMesa, setCobrandoMesa] = useState<string | null>(null);
+  const [cargandoCierreCaja, setCargandoCierreCaja] = useState(false);
+  const [procesandoCajaManual, setProcesandoCajaManual] = useState(false);
+  const [procesandoCuentaAparcada, setProcesandoCuentaAparcada] = useState(false);
+  const [procesandoDescuento, setProcesandoDescuento] = useState(false);
+  const [procesandoLogin, setProcesandoLogin] = useState(false);
+  const [procesandoCocina, setProcesandoCocina] = useState(false);
   const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
 
   const [alertaFlotante, setAlertaFlotante] = useState<AlertaPersonalizada | null>(null);
+  const alertaTimeoutRef = useRef<number | null>(null);
 
   const mostrarAlerta = (mensaje: string, tipo: 'exito' | 'error' | 'aviso' = 'aviso') => {
     const id = Date.now();
     setAlertaFlotante({ id, mensaje, tipo });
-    setTimeout(() => {
+    if (alertaTimeoutRef.current !== null) {
+      window.clearTimeout(alertaTimeoutRef.current);
+    }
+    alertaTimeoutRef.current = window.setTimeout(() => {
       setAlertaFlotante((prev) => (prev?.id === id ? null : prev));
     }, 4500);
   };
@@ -274,12 +286,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       const sesionGuardada = sessionStorage.getItem('nexus_camarero_sesion');
       if (sesionGuardada) {
-        const parsed = JSON.parse(sesionGuardada);
-        setCamareroActivo(parsed);
-        cargarConfiguracion();
-        cargarProductosCarta();
-        cargarMesasAbiertas();
-        cargarCaja();
+        try {
+          const parsed = JSON.parse(sesionGuardada);
+          setCamareroActivo(parsed);
+          await Promise.all([
+            cargarConfiguracion(),
+            cargarProductosCarta(),
+            cargarMesasAbiertas(),
+            cargarCaja()
+          ]);
+        } catch (err) {
+          console.error('Error al restaurar sesión de camarero:', err);
+        }
       }
     };
     initSesion();
@@ -292,31 +310,49 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       cargarProductosCarta();
     };
     window.addEventListener('pedidos-offline-sincronizados', handleSynced);
-    return () => window.removeEventListener('pedidos-offline-sincronizados', handleSynced);
+    return () => {
+      window.removeEventListener('pedidos-offline-sincronizados', handleSynced);
+      if (alertaTimeoutRef.current !== null) {
+        window.clearTimeout(alertaTimeoutRef.current);
+      }
+    };
   }, []);
 
   const loginCamarero = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (procesandoLogin) return;
     setLoginError(false);
+    setProcesandoLogin(true);
 
-    const { data } = await supabase
-      .from('empleados')
-      .select('*')
-      .eq('pin_acceso', pinInput)
-      .eq('activo', true)
-      .maybeSingle();
+    try {
+      const { data, error } = await supabase
+        .from('empleados')
+        .select('*')
+        .eq('pin_acceso', pinInput)
+        .eq('activo', true)
+        .maybeSingle();
 
-    if (data) {
-      const usuario = { id: data.id, nombre: data.nombre, rol: data.rol || 'empleado' };
-      setCamareroActivo(usuario);
-      sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(usuario));
+      if (error) throw error;
 
-      cargarConfiguracion();
-      cargarProductosCarta();
-      cargarMesasAbiertas();
-      cargarCaja();
-    } else {
+      if (data) {
+        const usuario = { id: data.id, nombre: data.nombre, rol: data.rol || 'empleado' };
+        setCamareroActivo(usuario);
+        sessionStorage.setItem('nexus_camarero_sesion', JSON.stringify(usuario));
+
+        await Promise.all([
+          cargarConfiguracion(),
+          cargarProductosCarta(),
+          cargarMesasAbiertas(),
+          cargarCaja()
+        ]);
+      } else {
+        setLoginError(true);
+      }
+    } catch (err) {
+      console.error('Error en loginCamarero:', err);
       setLoginError(true);
+    } finally {
+      setProcesandoLogin(false);
     }
   };
 
@@ -334,7 +370,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         cargarCaja();
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'comandas_cocina' }, () => {
-
         cargarMesasAbiertas();
         cargarCaja();
       })
@@ -349,6 +384,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         cargarCaja();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'productos_carta' }, () => {
+        cargarProductosCarta();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'articulos_cafeteria' }, () => {
         cargarProductosCarta();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'configuracion_local' }, () => {
@@ -381,216 +419,267 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   }, [mesaSeleccionada, mesasAbiertas]);
 
   const cargarConfiguracion = async () => {
-    const { data } = await supabase.from('configuracion_local').select('*').eq('id', 1).maybeSingle();
-    if (data) {
-      setCocinaAbierta(data.cocina_abierta);
+    try {
+      const { data, error } = await supabase.from('configuracion_local').select('*').eq('id', 1).maybeSingle();
+      if (error) {
+        console.error('Error al cargar configuracion_local:', error);
+        return;
+      }
+      if (data) {
+        setCocinaAbierta(Boolean(data.cocina_abierta));
+      }
+    } catch (err) {
+      console.error('Excepción en cargarConfiguracion:', err);
     }
   };
 
   const toggleCocina = async () => {
-    const nuevoEstado = !cocinaAbierta;
-    await supabase.from('configuracion_local').update({ cocina_abierta: nuevoEstado }).eq('id', 1);
-    setCocinaAbierta(nuevoEstado);
+    if (procesandoCocina) return;
+    setProcesandoCocina(true);
+    try {
+      const nuevoEstado = !cocinaAbierta;
+      const { error } = await supabase.from('configuracion_local').update({ cocina_abierta: nuevoEstado }).eq('id', 1);
+      if (error) throw error;
+      setCocinaAbierta(nuevoEstado);
+    } catch (err: any) {
+      mostrarAlerta('Error al cambiar estado de cocina: ' + (err?.message || 'Error de red'), 'error');
+    } finally {
+      setProcesandoCocina(false);
+    }
   };
 
   const cargarProductosCarta = async () => {
     setLoadingCarta(true);
-    const { data } = await supabase
-      .from('productos_carta')
-      .select('*')
-      .eq('activo', true)
-      .order('id', { ascending: true });
+    try {
+      const { data, error } = await supabase
+        .from('productos_carta')
+        .select('*')
+        .eq('activo', true)
+        .order('id', { ascending: true });
 
-    if (data) {
-      const { data: maestroIva } = await supabase
-        .from('articulos_cafeteria')
-        .select('id, nombre, porcentaje_iva, tipo_iva, destino, categoria');
-      const mapaIvaPorId = new Map<string, number>();
-      const mapaIvaPorNombre = new Map<string, number>();
-      const mapaDestinoPorId = new Map<string, 'cocina' | 'barra'>();
-      const mapaDestinoPorNombre = new Map<string, 'cocina' | 'barra'>();
-      if (maestroIva) {
-        maestroIva.forEach((m: any) => {
-          const ivaVal = Number(m.porcentaje_iva ?? m.tipo_iva ?? 10) === 21 ? 21 : 10;
-          const destM = String(m.destino || '').trim().toLowerCase() === 'cocina' ? 'cocina' : 'barra';
-          if (m.id) {
-            mapaIvaPorId.set(String(m.id), ivaVal);
-            mapaDestinoPorId.set(String(m.id), destM);
-          }
-          if (m.nombre) {
-            const keyNom = String(m.nombre).trim().toLowerCase();
-            mapaIvaPorNombre.set(keyNom, ivaVal);
-            mapaDestinoPorNombre.set(keyNom, destM);
-          }
-        });
+      if (error) {
+        console.error('Error al cargar productos_carta:', error);
       }
-      const enriquecidos = (data as Producto[]).map((p) => {
-        const ivaDirecto = p.porcentaje_iva ?? p.tipo_iva;
-        const ivaMaestro =
-          (p.articulo_inventario_id && mapaIvaPorId.get(String(p.articulo_inventario_id))) ||
-          mapaIvaPorNombre.get(String(p.nombre || '').trim().toLowerCase());
-        const ivaFinal = Number(ivaDirecto ?? ivaMaestro ?? 10) === 21 ? 21 : 10;
 
-        const destDirecto = String(p.destino || '').trim().toLowerCase();
-        const destMaestro =
-          (p.articulo_inventario_id && mapaDestinoPorId.get(String(p.articulo_inventario_id))) ||
-          mapaDestinoPorNombre.get(String(p.nombre || '').trim().toLowerCase());
-        const catLower = String(p.categoria || '').trim().toLowerCase();
-        const esCatCocina =
-          catLower.includes('cocina') ||
-          catLower.includes('tapa') ||
-          catLower.includes('comida') ||
-          catLower.includes('bocadillo') ||
-          catLower.includes('hamburguesa') ||
-          catLower.includes('racion') ||
-          catLower.includes('ración') ||
-          catLower.includes('plato');
-        const destinoFinal: 'cocina' | 'barra' =
-          destDirecto === 'cocina' || destMaestro === 'cocina' || (!destDirecto && esCatCocina)
-            ? 'cocina'
-            : 'barra';
+      if (data) {
+        const { data: maestroIva } = await supabase
+          .from('articulos_cafeteria')
+          .select('id, nombre, porcentaje_iva, tipo_iva, destino, categoria');
+        const mapaIvaPorId = new Map<string, number>();
+        const mapaIvaPorNombre = new Map<string, number>();
+        const mapaDestinoPorId = new Map<string, 'cocina' | 'barra'>();
+        const mapaDestinoPorNombre = new Map<string, 'cocina' | 'barra'>();
+        if (maestroIva) {
+          maestroIva.forEach((m: any) => {
+            const ivaVal = Number(m.porcentaje_iva ?? m.tipo_iva ?? 10) === 21 ? 21 : 10;
+            const destM = String(m.destino || '').trim().toLowerCase() === 'cocina' ? 'cocina' : 'barra';
+            if (m.id) {
+              mapaIvaPorId.set(String(m.id), ivaVal);
+              mapaDestinoPorId.set(String(m.id), destM);
+            }
+            if (m.nombre) {
+              const keyNom = String(m.nombre).trim().toLowerCase();
+              mapaIvaPorNombre.set(keyNom, ivaVal);
+              mapaDestinoPorNombre.set(keyNom, destM);
+            }
+          });
+        }
+        const enriquecidos = (data as Producto[]).map((p) => {
+          const ivaDirecto = p.porcentaje_iva ?? p.tipo_iva;
+          const ivaMaestro =
+            (p.articulo_inventario_id && mapaIvaPorId.get(String(p.articulo_inventario_id))) ||
+            mapaIvaPorNombre.get(String(p.nombre || '').trim().toLowerCase());
+          const ivaFinal = Number(ivaDirecto ?? ivaMaestro ?? 10) === 21 ? 21 : 10;
 
-        return {
-          ...p,
-          destino: destinoFinal,
-          porcentaje_iva: ivaFinal,
-          tipo_iva: ivaFinal
-        };
-      });
-      setProductosCarta(enriquecidos);
+          const destDirecto = String(p.destino || '').trim().toLowerCase();
+          const destMaestro =
+            (p.articulo_inventario_id && mapaDestinoPorId.get(String(p.articulo_inventario_id))) ||
+            mapaDestinoPorNombre.get(String(p.nombre || '').trim().toLowerCase());
+          const catLower = String(p.categoria || '').trim().toLowerCase();
+          const esCatCocina =
+            catLower.includes('cocina') ||
+            catLower.includes('tapa') ||
+            catLower.includes('comida') ||
+            catLower.includes('bocadillo') ||
+            catLower.includes('hamburguesa') ||
+            catLower.includes('racion') ||
+            catLower.includes('ración') ||
+            catLower.includes('plato');
+          const destinoFinal: 'cocina' | 'barra' =
+            destDirecto === 'cocina' || destMaestro === 'cocina' || (!destDirecto && esCatCocina)
+              ? 'cocina'
+              : 'barra';
+
+          return {
+            ...p,
+            destino: destinoFinal,
+            porcentaje_iva: ivaFinal,
+            tipo_iva: ivaFinal
+          };
+        });
+        setProductosCarta(enriquecidos);
+      }
+
+      const { data: cats } = await supabase
+        .from('categorias_cafeteria')
+        .select('nombre')
+        .eq('activo', true)
+        .neq('nombre', 'Materia Prima (Interno)')
+        .order('orden', { ascending: true });
+
+      if (cats && cats.length > 0) {
+        setCategoriasDisponibles(cats.map((c) => c.nombre));
+      }
+    } catch (err) {
+      console.error('Excepción en cargarProductosCarta:', err);
+    } finally {
+      setLoadingCarta(false);
     }
-
-    const { data: cats } = await supabase
-      .from('categorias_cafeteria')
-      .select('nombre')
-      .eq('activo', true)
-      .neq('nombre', 'Materia Prima (Interno)')
-      .order('orden', { ascending: true });
-
-    if (cats && cats.length > 0) {
-      setCategoriasDisponibles(cats.map((c) => c.nombre));
-    }
-    setLoadingCarta(false);
   };
 
   const cargarCaja = async () => {
-    const fechaHoy = new Date().toISOString().split('T')[0];
-    const { data: todasLasCajas } = await supabase
-      .from('caja_diaria')
-      .select('*')
-      .order('fecha', { ascending: false })
-      .order('id', { ascending: false });
+    try {
+      const fechaHoy = new Date().toISOString().split('T')[0];
+      const { data: todasLasCajas, error: errCaja } = await supabase
+        .from('caja_diaria')
+        .select('*')
+        .order('fecha', { ascending: false })
+        .order('id', { ascending: false });
 
-    if (todasLasCajas && todasLasCajas.length > 0) {
-      const cajaDeHoy = todasLasCajas.find((c) => c.fecha === fechaHoy && c.estado === 'abierta') || todasLasCajas.find((c) => c.fecha === fechaHoy);
-      if (cajaDeHoy) {
-        setCajaHoy(cajaDeHoy as CajaDiaria);
-      } else {
-        setCajaHoy(null);
+      if (errCaja) {
+        console.error('Error al cargar caja_diaria:', errCaja);
       }
 
-      const cajaAntiguaAbierta = todasLasCajas.find((c) => c.estado === 'abierta' && c.fecha !== fechaHoy);
-      if (cajaAntiguaAbierta) {
-        setCajaAtrasada(cajaAntiguaAbierta as CajaDiaria);
-      } else {
-        setCajaAtrasada(null);
-        if (!cajaDeHoy && todasLasCajas[0]) {
-          setRemanenteAperturaInput(todasLasCajas[0].remanente_cierre.toString());
+      if (todasLasCajas && todasLasCajas.length > 0) {
+        const cajaDeHoy = todasLasCajas.find((c) => c.fecha === fechaHoy && c.estado === 'abierta') || todasLasCajas.find((c) => c.fecha === fechaHoy);
+        if (cajaDeHoy) {
+          setCajaHoy(cajaDeHoy as CajaDiaria);
+        } else {
+          setCajaHoy(null);
+        }
+
+        const cajaAntiguaAbierta = todasLasCajas.find((c) => c.estado === 'abierta' && c.fecha !== fechaHoy);
+        if (cajaAntiguaAbierta) {
+          setCajaAtrasada(cajaAntiguaAbierta as CajaDiaria);
+        } else {
+          setCajaAtrasada(null);
+          if (!cajaDeHoy && todasLasCajas[0]) {
+            setRemanenteAperturaInput(String(todasLasCajas[0].remanente_cierre ?? '50.00'));
+          }
         }
       }
-    }
 
-    const { data: fData } = await supabase
-      .from('facturas_tickets')
-      .select('*')
-      .gte('fecha_expedicion', fechaHoy + 'T00:00:00Z')
-      .order('fecha_expedicion', { ascending: false });
+      const { data: fData, error: errFacturas } = await supabase
+        .from('facturas_tickets')
+        .select('*')
+        .gte('fecha_expedicion', fechaHoy + 'T00:00:00Z')
+        .order('fecha_expedicion', { ascending: false });
 
-    if (fData) {
-      setFacturasHoy(fData);
+      if (errFacturas) {
+        console.error('Error al cargar facturas_tickets:', errFacturas);
+      }
+
+      if (fData) {
+        setFacturasHoy(fData);
+      }
+    } catch (err) {
+      console.error('Excepción en cargarCaja:', err);
     }
   };
 
   const cargarMesasAbiertas = async () => {
-    const { data } = await supabase.from('comandas_cocina').select('*').eq('pagado', false).order('created_at', { ascending: true });
+    try {
+      const { data, error } = await supabase
+        .from('comandas_cocina')
+        .select('*')
+        .eq('pagado', false)
+        .order('created_at', { ascending: true });
 
-    if (data) {
-      const mapMesas: Record<string, MesaAbierta> = {};
-      const listaPlatosCocina: PlatoCocinaActivo[] = [];
+      if (error) {
+        console.error('Error al cargar comandas_cocina:', error);
+        return;
+      }
 
-      data.forEach((row: any) => {
-        const mKey = row.mesa;
+      if (data) {
+        const mapMesas: Record<string, MesaAbierta> = {};
+        const listaPlatosCocina: PlatoCocinaActivo[] = [];
 
-        if (!mapMesas[mKey]) {
-          mapMesas[mKey] = {
-            id: row.id,
-            mesa: mKey,
-            ticket_number: row.ticket_number,
-            items: [],
-            total_ticket: 0,
-            created_at: row.created_at
-          };
-        }
+        data.forEach((row: any) => {
+          const mKey = row.mesa;
 
-        if (row.items && Array.isArray(row.items)) {
-          row.items.forEach((it: any) => {
-            const nombreItem = String(it.nombre || '');
-            if (nombreItem.startsWith('🍲 LISTO PARA RECOGER:')) {
-              return;
-            }
-            const esPlatoListo = Boolean(it.listo || row.estado === 'listo' || row.estado === 'servido');
-            const estadoPlato: 'pendiente' | 'en_preparacion' | 'listo' | 'servido' =
-              row.estado === 'servido'
-                ? 'servido'
-                : esPlatoListo
-                ? 'listo'
-                : row.estado === 'en_preparacion'
-                ? 'en_preparacion'
-                : 'pendiente';
+          if (!mapMesas[mKey]) {
+            mapMesas[mKey] = {
+              id: row.id,
+              mesa: mKey,
+              ticket_number: row.ticket_number,
+              items: [],
+              total_ticket: 0,
+              created_at: row.created_at
+            };
+          }
 
-            if (row.tipo_destino === 'cocina' && !nombreItem.includes('├─')) {
-              listaPlatosCocina.push({
-                comandaId: String(row.id),
-                itemIdx: Number(it.producto_id || 0),
-                ticket_number: String(row.ticket_number || ''),
-                mesa: mKey,
-                nombre: nombreItem,
-                cantidad: Number(it.cantidad || 1),
-                comentarios: it.comentarios,
-                estado: estadoPlato,
-                listo: esPlatoListo,
-                created_at: String(row.created_at || new Date().toISOString())
-              });
-            }
+          if (row.items && Array.isArray(row.items)) {
+            row.items.forEach((it: any) => {
+              const nombreItem = String(it.nombre || '');
+              if (nombreItem.startsWith('🍲 LISTO PARA RECOGER:')) {
+                return;
+              }
+              const esPlatoListo = Boolean(it.listo || row.estado === 'listo' || row.estado === 'servido');
+              const estadoPlato: 'pendiente' | 'en_preparacion' | 'listo' | 'servido' =
+                row.estado === 'servido'
+                  ? 'servido'
+                  : esPlatoListo
+                  ? 'listo'
+                  : row.estado === 'en_preparacion'
+                  ? 'en_preparacion'
+                  : 'pendiente';
 
-            const existente = mapMesas[mKey].items.find((x) => x.nombre === it.nombre);
-            if (existente) {
-              existente.cantidad += it.cantidad || 1;
-            } else {
-              mapMesas[mKey].items.push({
-                producto_id: it.producto_id,
-                articulo_inventario_id: it.articulo_inventario_id,
-                nombre: it.nombre,
-                precio: it.precio || 0,
-                cantidad: it.cantidad || 1,
-                destino: row.tipo_destino,
-                porcentaje_iva: it.porcentaje_iva ?? it.tipo_iva,
-                tipo_iva: it.porcentaje_iva ?? it.tipo_iva,
-                estado_cocina: row.tipo_destino === 'cocina' ? estadoPlato : undefined,
-                listo: row.tipo_destino === 'cocina' ? esPlatoListo : undefined
-              });
-            }
-          });
-        }
-      });
+              if (row.tipo_destino === 'cocina' && !nombreItem.includes('├─')) {
+                listaPlatosCocina.push({
+                  comandaId: String(row.id),
+                  itemIdx: Number(it.producto_id || 0),
+                  ticket_number: String(row.ticket_number || ''),
+                  mesa: mKey,
+                  nombre: nombreItem,
+                  cantidad: Number(it.cantidad || 1),
+                  comentarios: it.comentarios,
+                  estado: estadoPlato,
+                  listo: esPlatoListo,
+                  created_at: String(row.created_at || new Date().toISOString())
+                });
+              }
 
-      setPlatosEnviadosCocina(listaPlatosCocina);
-      const listado = Object.values(mapMesas).map((m) => {
-        const total = m.items.reduce((acc, i) => acc + i.precio * i.cantidad, 0);
-        return { ...m, total_ticket: total };
-      });
+              const existente = mapMesas[mKey].items.find((x) => x.nombre === it.nombre);
+              if (existente) {
+                existente.cantidad += Number(it.cantidad) || 1;
+              } else {
+                mapMesas[mKey].items.push({
+                  producto_id: it.producto_id,
+                  articulo_inventario_id: it.articulo_inventario_id,
+                  nombre: it.nombre,
+                  precio: Number(it.precio || 0),
+                  cantidad: Number(it.cantidad) || 1,
+                  destino: row.tipo_destino,
+                  porcentaje_iva: it.porcentaje_iva ?? it.tipo_iva,
+                  tipo_iva: it.porcentaje_iva ?? it.tipo_iva,
+                  estado_cocina: row.tipo_destino === 'cocina' ? estadoPlato : undefined,
+                  listo: row.tipo_destino === 'cocina' ? esPlatoListo : undefined
+                });
+              }
+            });
+          }
+        });
 
-      setMesasAbiertas(listado.filter((m) => m.total_ticket > 0));
+        setPlatosEnviadosCocina(listaPlatosCocina);
+        const listado = Object.values(mapMesas).map((m) => {
+          const total = redondearMoneda(m.items.reduce((acc, i) => acc + Number(i.precio) * Number(i.cantidad), 0));
+          return { ...m, total_ticket: total };
+        });
+
+        setMesasAbiertas(listado.filter((m) => m.total_ticket > 0));
+      }
+    } catch (err) {
+      console.error('Excepción en cargarMesasAbiertas:', err);
     }
   };
 
@@ -616,36 +705,52 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     let subtotalTrasLineas = 0;
 
     const lineasCalculadas: LineaTicketFiscal[] = itemsRaw
-      .filter((it) => !it.nombre.includes('├─') && it.precio > 0)
+      .filter((it) => !it.nombre.includes('├─') && Number(it.precio) > 0)
       .map((it) => {
         const claveLinea = `${mesaKey}__${it.nombre}`;
         const dtoLinea = descuentosLineas[claveLinea] || 0;
-        const bruto = Number(it.precio) * Number(it.cantidad);
-        const netoLinea = Number((bruto * (1 - dtoLinea / 100)).toFixed(2));
-        subtotalBruto += bruto;
-        subtotalTrasLineas += netoLinea;
+        const bruto = redondearMoneda(Number(it.precio) * Number(it.cantidad));
+        const netoLinea = redondearMoneda(bruto * (1 - dtoLinea / 100));
+        subtotalBruto = redondearMoneda(subtotalBruto + bruto);
+        subtotalTrasLineas = redondearMoneda(subtotalTrasLineas + netoLinea);
 
-        const prodCarta = productosCarta.find((p) => p.nombre.trim() === it.nombre.trim());
+        const prodCarta = productosCarta.find(
+          (p) =>
+            (it.producto_id && p.id === it.producto_id) ||
+            p.nombre.trim().toLowerCase() === it.nombre.trim().toLowerCase()
+        );
+        const ivaVal =
+          Number(
+            it.porcentaje_iva ??
+              it.tipo_iva ??
+              prodCarta?.porcentaje_iva ??
+              prodCarta?.tipo_iva ??
+              configFiscal?.iva_defecto ??
+              10
+          ) === 21
+            ? 21
+            : 10;
 
         return {
           articulo_id: it.articulo_inventario_id || prodCarta?.articulo_inventario_id || undefined,
           nombre: it.nombre,
-          cantidad: it.cantidad,
-          precio_unitario: Number(it.precio),
+          cantidad: Number(it.cantidad),
+          precio_unitario: redondearMoneda(Number(it.precio)),
           descuento_porcentaje: dtoLinea,
           subtotal_linea: netoLinea,
-          tipo_iva: Number(it.porcentaje_iva ?? it.tipo_iva ?? prodCarta?.porcentaje_iva ?? prodCarta?.tipo_iva ?? configFiscal?.iva_defecto ?? 10) === 21 ? 21 : 10,
-          porcentaje_iva: Number(it.porcentaje_iva ?? it.tipo_iva ?? prodCarta?.porcentaje_iva ?? prodCarta?.tipo_iva ?? configFiscal?.iva_defecto ?? 10) === 21 ? 21 : 10
+          tipo_iva: ivaVal,
+          porcentaje_iva: ivaVal
         };
       });
 
     const dtoGeneralPorc = descuentoGeneralMesa[mesaKey] || 0;
-    const totalFinal = Number((subtotalTrasLineas * (1 - dtoGeneralPorc / 100)).toFixed(2));
-    const desgloseIva = calcularDesgloseImpuestosLineas(lineasCalculadas, dtoGeneralPorc);
-    const descuentoTotalImporte = Number((subtotalBruto - totalFinal).toFixed(2));
+    const totalFinalObjetivo = redondearMoneda(subtotalTrasLineas * (1 - dtoGeneralPorc / 100));
+    const desgloseIva = calcularDesgloseImpuestosLineas(lineasCalculadas, dtoGeneralPorc, totalFinalObjetivo);
+    const totalFinal = desgloseIva.totalGeneral;
+    const descuentoTotalImporte = redondearMoneda(subtotalBruto - totalFinal);
 
     return {
-      subtotalBruto: Number(subtotalBruto.toFixed(2)),
+      subtotalBruto: redondearMoneda(subtotalBruto),
       dtoGeneralPorc,
       descuentoTotalImporte,
       totalFinal,
@@ -666,16 +771,20 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     const pinLimpio = pinIntroducido.trim();
     if (!pinLimpio) return null;
 
-    const { data: empAdmin } = await supabase
-      .from('empleados')
-      .select('nombre, apellidos')
-      .eq('pin_acceso', pinLimpio)
-      .eq('rol', 'admin')
-      .eq('activo', true)
-      .maybeSingle();
+    try {
+      const { data: empAdmin } = await supabase
+        .from('empleados')
+        .select('nombre, apellidos')
+        .eq('pin_acceso', pinLimpio)
+        .eq('rol', 'admin')
+        .eq('activo', true)
+        .maybeSingle();
 
-    if (empAdmin) {
-      return `${empAdmin.nombre} ${empAdmin.apellidos || ''}`.trim();
+      if (empAdmin) {
+        return `${empAdmin.nombre} ${empAdmin.apellidos || ''}`.trim();
+      }
+    } catch (err) {
+      console.error('Error al verificar PIN de empleado admin:', err);
     }
 
     const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
@@ -689,46 +798,58 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const aplicarDescuentoAutorizado = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalAuthDescuento) return;
+    if (!modalAuthDescuento || procesandoDescuento) return;
 
-    const porc = Math.max(0, Math.min(100, parseFloat(modalAuthDescuento.porcentajePropuesto) || 0));
-    const nombreAdmin = await verificarAutorizacionAdmin(modalAuthDescuento.pinAdmin);
+    setProcesandoDescuento(true);
+    try {
+      const porc = Math.max(0, Math.min(100, parseFloat(modalAuthDescuento.porcentajePropuesto) || 0));
+      const nombreAdmin = await verificarAutorizacionAdmin(modalAuthDescuento.pinAdmin);
 
-    if (!nombreAdmin) {
-      mostrarAlerta('PIN de Administrador incorrecto o sin permisos de administrador.', 'error');
-      return;
+      if (!nombreAdmin) {
+        mostrarAlerta('PIN de Administrador incorrecto o sin permisos de administrador.', 'error');
+        return;
+      }
+
+      if (modalAuthDescuento.tipo === 'linea' && modalAuthDescuento.itemNombre) {
+        const claveLinea = `${modalAuthDescuento.mesaKey}__${modalAuthDescuento.itemNombre}`;
+        setDescuentosLineas((prev) => ({ ...prev, [claveLinea]: porc }));
+      } else {
+        setDescuentoGeneralMesa((prev) => ({ ...prev, [modalAuthDescuento.mesaKey]: porc }));
+      }
+
+      setAutorizadorDescuentoMesa((prev) => ({
+        ...prev,
+        [modalAuthDescuento.mesaKey]: nombreAdmin
+      }));
+
+      mostrarAlerta(`Descuento del ${porc}% autorizado por ${nombreAdmin}.`, 'exito');
+      setModalAuthDescuento(null);
+    } catch (err: any) {
+      mostrarAlerta('Error al autorizar descuento: ' + (err?.message || 'Error desconocido'), 'error');
+    } finally {
+      setProcesandoDescuento(false);
     }
-
-    if (modalAuthDescuento.tipo === 'linea' && modalAuthDescuento.itemNombre) {
-      const claveLinea = `${modalAuthDescuento.mesaKey}__${modalAuthDescuento.itemNombre}`;
-      setDescuentosLineas((prev) => ({ ...prev, [claveLinea]: porc }));
-    } else {
-      setDescuentoGeneralMesa((prev) => ({ ...prev, [modalAuthDescuento.mesaKey]: porc }));
-    }
-
-    setAutorizadorDescuentoMesa((prev) => ({
-      ...prev,
-      [modalAuthDescuento.mesaKey]: nombreAdmin
-    }));
-
-    mostrarAlerta(`Descuento del ${porc}% autorizado por ${nombreAdmin}.`, 'exito');
-    setModalAuthDescuento(null);
   };
 
   // --- TRASPASO DE MESAS ---
   const confirmarTraspasoMesa = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalTraspaso) return;
+    if (!modalTraspaso || modalTraspaso.procesando) return;
     setModalTraspaso({ ...modalTraspaso, procesando: true });
     try {
       const destinoFormateado = getNombreMesa(modalTraspaso.destino);
-      await supabase.from('comandas_cocina').update({ mesa: destinoFormateado }).eq('mesa', modalTraspaso.origen).eq('pagado', false);
+      const { error } = await supabase
+        .from('comandas_cocina')
+        .update({ mesa: destinoFormateado })
+        .eq('mesa', modalTraspaso.origen)
+        .eq('pagado', false);
+      if (error) throw error;
       mostrarAlerta(`Mesa traspasada con éxito a ${destinoFormateado}.`, 'exito');
       setModalTraspaso(null);
-      cargarMesasAbiertas();
+      await cargarMesasAbiertas();
     } catch (err: any) {
       mostrarAlerta('Error al traspasar mesa: ' + err.message, 'error');
-      setModalTraspaso({ ...modalTraspaso, procesando: false });
+      setModalTraspaso((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
@@ -753,7 +874,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const confirmarCobroParcial = async (metodo: 'efectivo' | 'tarjeta') => {
-    if (!modalCobroParcial || !camareroActivo) return;
+    if (!modalCobroParcial || !camareroActivo || modalCobroParcial.procesando) return;
     const itemsA_Cobrar = modalCobroParcial.itemsDisponibles.filter(i => i.cantidadSeleccionada > 0);
     if (itemsA_Cobrar.length === 0) {
       mostrarAlerta('Debes seleccionar al menos un artículo para cobrar.', 'aviso');
@@ -804,11 +925,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       const { data: comandasPendientes } = await supabase.from('comandas_cocina').select('*').eq('mesa', modalCobroParcial.mesaNombre).eq('pagado', false);
       
-      let itemsRestantesA_Descontar = itemsA_Cobrar.map(i => ({ nombre: i.nombre, pendienteDescontar: i.cantidadSeleccionada }));
+      const itemsRestantesA_Descontar = itemsA_Cobrar.map(i => ({ nombre: i.nombre, pendienteDescontar: i.cantidadSeleccionada }));
       
       if (comandasPendientes) {
         for (const comanda of comandasPendientes) {
-          let itemsModificados = [];
+          const itemsModificados = [];
           let comandaCambiada = false;
 
           for (const it of comanda.items) {
@@ -849,8 +970,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         numero_factura_legal: docEmitido.numero_completo
       }]);
 
-      const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0);
-      const nuevaTarjeta = Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? desglose.totalFinal : 0);
+      const nuevoEfectivo = redondearMoneda(Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0));
+      const nuevaTarjeta = redondearMoneda(Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? desglose.totalFinal : 0));
       await supabase.from('caja_diaria').update({ total_efectivo: nuevoEfectivo, total_tarjeta: nuevaTarjeta }).eq('id', cajaHoy.id);
 
       // Paso 3 y Paso 4 (VeriFactu): Calcular SHA-256 y guardar tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
@@ -865,63 +986,70 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         autorizadoPor: autorizadorDescuentoMesa[modalCobroParcial.mesaNombre] || null
       });
 
-      const { data: facturaCompleta } = await supabase.from('facturas_tickets').select('*').eq('id', docEmitido.id).single();
+      const { data: facturaCompleta } = await supabase.from('facturas_tickets').select('*').eq('id', docEmitido.id).maybeSingle();
       if (facturaCompleta) { imprimirDocumentoFiscalHTML(facturaCompleta, cfg); }
 
       await descontarInventarioSupabase(itemsProcesados);
 
       mostrarAlerta(`Cobro parcial de ${desglose.totalFinal.toFixed(2)} € registrado y descontado.`, 'exito');
       setModalCobroParcial(null);
-      cargarMesasAbiertas(); cargarCaja(); cargarProductosCarta();
+      await Promise.all([cargarMesasAbiertas(), cargarCaja(), cargarProductosCarta()]);
     } catch (err: any) {
       mostrarAlerta('Error en cobro parcial: ' + err.message, 'error');
-      setModalCobroParcial({ ...modalCobroParcial, procesando: false });
+      setModalCobroParcial((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
   // --- REGISTRAR MOVIMIENTO MANUAL CAJA ---
   const registrarMovimientoCaja = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalCajaManual || !cajaHoy) return;
+    if (!modalCajaManual || !cajaHoy || procesandoCajaManual) return;
     
-    const importe = parseFloat(cajaImporte);
+    const importe = redondearMoneda(parseFloat(cajaImporte));
     if (importe <= 0 || !cajaConcepto.trim()) return;
 
+    setProcesandoCajaManual(true);
     try {
-      await supabase.from('movimientos_caja_manual').insert([{
+      const { error: insertErr } = await supabase.from('movimientos_caja_manual').insert([{
         tipo: modalCajaManual.tipo,
         importe: importe,
         concepto: cajaConcepto.trim(),
         empleado: camareroActivo?.nombre || 'Desconocido'
       }]);
+      if (insertErr) throw insertErr;
 
       // Si es salida de caja, restamos del total efectivo. Si es entrada, sumamos.
       const factor = modalCajaManual.tipo === 'ENTRADA' ? 1 : -1;
-      const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (importe * factor);
+      const nuevoEfectivo = redondearMoneda(Number(cajaHoy.total_efectivo) + (importe * factor));
       
-      await supabase.from('caja_diaria').update({ total_efectivo: nuevoEfectivo }).eq('id', cajaHoy.id);
+      const { error: updateErr } = await supabase.from('caja_diaria').update({ total_efectivo: nuevoEfectivo }).eq('id', cajaHoy.id);
+      if (updateErr) throw updateErr;
       
       mostrarAlerta(`Registrada ${modalCajaManual.tipo} de caja por ${importe.toFixed(2)}€`, 'exito');
       setModalCajaManual(null);
       setCajaImporte('');
       setCajaConcepto('');
-      cargarCaja();
+      await cargarCaja();
     } catch (error: any) {
       mostrarAlerta('Error: ' + error.message, 'error');
+    } finally {
+      setProcesandoCajaManual(false);
     }
   };
 
   // --- APARCAR Y RECUPERAR CUENTAS ---
   const aparcarCuenta = async () => {
-    if (carritoActual.length === 0 || !nombreCuentaAparcada.trim()) return;
+    if (carritoActual.length === 0 || !nombreCuentaAparcada.trim() || procesandoCuentaAparcada) return;
 
+    setProcesandoCuentaAparcada(true);
     try {
-      await supabase.from('cuentas_abiertas').insert([{
+      const { error } = await supabase.from('cuentas_abiertas').insert([{
         nombre_mesa: nombreCuentaAparcada.trim(),
         lineas: carritoActual,
         total: totalCarritoActual,
         empleado: camareroActivo?.nombre || 'Desconocido'
       }]);
+      if (error) throw error;
       
       mostrarAlerta(`Cuenta aparcada como: ${nombreCuentaAparcada}`, 'exito');
       setCarritoActual([]);
@@ -929,21 +1057,39 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setModalCuentasAparcadas(false);
     } catch (error: any) {
       mostrarAlerta('Error al aparcar: ' + error.message, 'error');
+    } finally {
+      setProcesandoCuentaAparcada(false);
     }
   };
 
   const cargarCuentaAparcada = async (cuenta: any) => {
-    setCarritoActual(cuenta.lineas);
-    await supabase.from('cuentas_abiertas').update({ estado: 'COBRADA' }).eq('id', cuenta.id);
-    setModalCuentasAparcadas(false);
-    mostrarAlerta(`Cuenta cargada: ${cuenta.nombre_mesa}`, 'exito');
+    if (procesandoCuentaAparcada) return;
+    setProcesandoCuentaAparcada(true);
+    try {
+      const { error } = await supabase.from('cuentas_abiertas').update({ estado: 'COBRADA' }).eq('id', cuenta.id);
+      if (error) throw error;
+      setCarritoActual(Array.isArray(cuenta.lineas) ? cuenta.lineas : []);
+      setModalCuentasAparcadas(false);
+      mostrarAlerta(`Cuenta cargada: ${cuenta.nombre_mesa}`, 'exito');
+    } catch (error: any) {
+      mostrarAlerta('Error al cargar cuenta aparcada: ' + error.message, 'error');
+    } finally {
+      setProcesandoCuentaAparcada(false);
+    }
   };
 
   useEffect(() => {
     if (modalCuentasAparcadas) {
-      supabase.from('cuentas_abiertas').select('*').eq('estado', 'ABIERTA').then(({ data }) => {
-        if (data) setCuentasAparcadas(data);
-      });
+      const fetchAparcadas = async () => {
+        try {
+          const { data, error } = await supabase.from('cuentas_abiertas').select('*').eq('estado', 'ABIERTA');
+          if (error) throw error;
+          if (data) setCuentasAparcadas(data);
+        } catch (err) {
+          console.error('Error al cargar cuentas aparcadas:', err);
+        }
+      };
+      fetchAparcadas();
     }
   }, [modalCuentasAparcadas]);
 
@@ -1005,6 +1151,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           precio: 0,
           categoria: comboActivo.categoria,
           destino: seleccion.destino,
+          porcentaje_iva: comboActivo.porcentaje_iva ?? 10,
+          tipo_iva: comboActivo.tipo_iva ?? 10,
           cantidad: 1
         });
       }
@@ -1026,11 +1174,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           }
           return p;
         })
-        .filter(Boolean) as any
+        .filter(Boolean) as Array<Producto & { cantidad: number; idCarritoUnico: number }>
     );
   };
 
-  const totalCarritoActual = carritoActual.reduce((acc, item) => acc + Number(item.precio) * item.cantidad, 0);
+  const totalCarritoActual = redondearMoneda(
+    carritoActual.reduce((acc, item) => acc + Number(item.precio) * item.cantidad, 0)
+  );
   const desgloseMesaSeleccionada = calcularDesgloseMesa(
     getNombreMesa(mesaSeleccionada),
     cuentaMesaActual.concat(
@@ -1048,7 +1198,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   );
 
   const enviarPedidoCamarero = async () => {
-    if (carritoActual.length === 0 || !camareroActivo) return;
+    if (carritoActual.length === 0 || !camareroActivo || enviando) return;
     setEnviando(true);
 
     try {
@@ -1133,18 +1283,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         );
       }
 
-      await Promise.all(promesas);
+      const resultados = await Promise.all(promesas);
+      const errorInsercion = resultados.find((r) => r.error)?.error;
+      if (errorInsercion) throw errorInsercion;
 
-      mostrarAlerta(`¡Comanda enviada a Cocina/Barra correctamente! Actualizando...`, 'exito');
       setCarritoActual([]);
-      cargarMesasAbiertas();
-
-      setTimeout(() => {
-        window.location.reload();
-      }, 4000);
-
+      await cargarMesasAbiertas();
+      mostrarAlerta(`¡Comanda enviada a Cocina/Barra correctamente!`, 'exito');
     } catch (err: any) {
       mostrarAlerta('Error: ' + err.message, 'error');
+    } finally {
       setEnviando(false);
     }
   };
@@ -1163,68 +1311,67 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         (item) => item && !item.nombre.includes('├─') && Number(item.cantidad) > 0
       );
 
-      await Promise.all(
-        itemsValidos.map(async (item) => {
-          const prodLocal = productosCarta.find(
-            (p) =>
-              (item.producto_id && p.id === item.producto_id) ||
-              (item.id && p.id === item.id) ||
-              p.nombre.trim().toLowerCase() === item.nombre.trim().toLowerCase()
-          );
+      // Iteración secuencial para evitar condiciones de carrera cuando dos líneas comparten artículo
+      for (const item of itemsValidos) {
+        const prodLocal = productosCarta.find(
+          (p) =>
+            (item.producto_id && p.id === item.producto_id) ||
+            (item.id && p.id === item.id) ||
+            p.nombre.trim().toLowerCase() === item.nombre.trim().toLowerCase()
+        );
 
-          const prodId = prodLocal?.id || item.producto_id || item.id;
+        const prodId = prodLocal?.id || item.producto_id || item.id;
 
-          let productoDB: {
-            id: number;
-            stock_actual: number | null;
-            articulo_inventario_id?: string | null;
-          } | null = null;
+        let productoDB: {
+          id: number;
+          stock_actual: number | null;
+          articulo_inventario_id?: string | null;
+        } | null = null;
 
-          if (prodId) {
-            const { data, error } = await supabase
-              .from('productos_carta')
-              .select('id, stock_actual, articulo_inventario_id')
-              .eq('id', prodId)
-              .maybeSingle();
-
-            if (error) throw error;
-            productoDB = data;
-          }
-
-          if (!productoDB) {
-            const { data, error } = await supabase
-              .from('productos_carta')
-              .select('id, stock_actual, articulo_inventario_id')
-              .eq('nombre', item.nombre.trim())
-              .maybeSingle();
-
-            if (error) throw error;
-            productoDB = data;
-          }
-
-          if (!productoDB) return;
-
-          const stockActual = Number(productoDB.stock_actual ?? 0);
-          const nuevoStock = stockActual - Number(item.cantidad);
-
-          const { error: updateError } = await supabase
+        if (prodId) {
+          const { data, error } = await supabase
             .from('productos_carta')
+            .select('id, stock_actual, articulo_inventario_id')
+            .eq('id', prodId)
+            .maybeSingle();
+
+          if (error) throw error;
+          productoDB = data;
+        }
+
+        if (!productoDB) {
+          const { data, error } = await supabase
+            .from('productos_carta')
+            .select('id, stock_actual, articulo_inventario_id')
+            .eq('nombre', item.nombre.trim())
+            .maybeSingle();
+
+          if (error) throw error;
+          productoDB = data;
+        }
+
+        if (!productoDB) continue;
+
+        const stockActual = Number(productoDB.stock_actual ?? 0);
+        const nuevoStock = stockActual - Number(item.cantidad);
+
+        const { error: updateError } = await supabase
+          .from('productos_carta')
+          .update({ stock_actual: nuevoStock })
+          .eq('id', productoDB.id);
+
+        if (updateError) throw updateError;
+
+        const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
+        if (artInvId) {
+          const { error: updateMaestroError } = await supabase
+            .from('articulos_cafeteria')
             .update({ stock_actual: nuevoStock })
-            .eq('id', productoDB.id);
+            .eq('id', artInvId);
 
-          if (updateError) throw updateError;
-
-          const artInvId = item.articulo_inventario_id || productoDB.articulo_inventario_id;
-          if (artInvId) {
-            const { error: updateMaestroError } = await supabase
-              .from('articulos_cafeteria')
-              .update({ stock_actual: nuevoStock })
-              .eq('id', artInvId);
-
-            if (updateMaestroError) throw updateMaestroError;
-          }
-        })
-      );
+          if (updateMaestroError) throw updateMaestroError;
+        }
+      }
     } catch (invError) {
       console.error('Error al descontar inventario en Supabase:', invError);
     }
@@ -1257,15 +1404,15 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         hash_anterior
       );
 
-      const base10 = Number(desglose.base_imponible_10 ?? 0);
-      const iva10 = Number(desglose.iva_10 ?? 0);
-      const base21 = Number(desglose.base_imponible_21 ?? 0);
-      const iva21 = Number(desglose.iva_21 ?? 0);
-      const baseImponible = Number(
-        desglose.baseImponibleTotal ?? Number((desglose.totalFinal / (1 + ivaDefecto / 100)).toFixed(2))
+      const base10 = redondearMoneda(Number(desglose.base_imponible_10 ?? 0));
+      const iva10 = redondearMoneda(Number(desglose.iva_10 ?? 0));
+      const base21 = redondearMoneda(Number(desglose.base_imponible_21 ?? 0));
+      const iva21 = redondearMoneda(Number(desglose.iva_21 ?? 0));
+      const baseImponible = redondearMoneda(
+        Number(desglose.baseImponibleTotal ?? redondearMoneda(desglose.totalFinal / (1 + ivaDefecto / 100)))
       );
-      const cuotaIva = Number(
-        desglose.cuotaIvaTotal ?? Number((desglose.totalFinal - baseImponible).toFixed(2))
+      const cuotaIva = redondearMoneda(
+        Number(desglose.cuotaIvaTotal ?? redondearMoneda(desglose.totalFinal - baseImponible))
       );
 
       // Paso 3 (IVA) y Paso 4 (VeriFactu): Guardar desglose de impuestos (10% y 21%), tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
@@ -1341,6 +1488,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   };
 
   const cobrarMesaLegal = async (mesaNombre: string, metodo: 'efectivo' | 'tarjeta') => {
+    if (cobrandoMesa) return;
+
     if (cajaAtrasada) {
       mostrarAlerta('¡ATENCIÓN! Cierra primero la caja del día anterior antes de cobrar.', 'aviso');
       return;
@@ -1353,6 +1502,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
     const mesaObj = mesasAbiertas.find((m) => m.mesa === mesaNombre);
     if (!mesaObj || !camareroActivo) return;
+
+    setCobrandoMesa(mesaNombre);
 
     const desglose = calcularDesgloseMesa(mesaNombre, mesaObj.items);
     const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
@@ -1411,8 +1562,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .eq('mesa', mesaNombre)
         .eq('pagado', false);
 
-      const nuevoEfectivo = Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0);
-      const nuevaTarjeta = Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? desglose.totalFinal : 0);
+      const nuevoEfectivo = redondearMoneda(Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0));
+      const nuevaTarjeta = redondearMoneda(Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? desglose.totalFinal : 0));
 
       await supabase
         .from('caja_diaria')
@@ -1438,7 +1589,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .from('facturas_tickets')
         .select('*')
         .eq('id', docEmitido.id)
-        .single();
+        .maybeSingle();
 
       if (facturaCompleta) {
         imprimirDocumentoFiscalHTML(facturaCompleta, cfg);
@@ -1462,9 +1613,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         'exito'
       );
 
-      cargarMesasAbiertas();
-      cargarCaja();
-      cargarProductosCarta();
+      await Promise.all([cargarMesasAbiertas(), cargarCaja(), cargarProductosCarta()]);
     } catch (err: any) {
       try {
         const pedidoOffline = {
@@ -1517,12 +1666,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       mostrarAlerta('Sin conexión. Pedido guardado en cola local', 'aviso');
       console.warn('Venta almacenada en cola offline:', err);
+    } finally {
+      setCobrandoMesa(null);
     }
   };
 
   const confirmarFacturaRectificativa = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalRectificativa || !camareroActivo) return;
+    if (!modalRectificativa || !camareroActivo || modalRectificativa.procesando) return;
 
     if (!modalRectificativa.motivo.trim()) {
       mostrarAlerta('Debes indicar obligatoriamente el motivo de la rectificación/devolución.', 'aviso');
@@ -1540,15 +1691,30 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     try {
       const orig = modalRectificativa.factura;
       const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
-    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
-      const importeNegativo = -Math.abs(Number(orig.total_final));
-      const brutoNegativo = -Math.abs(Number(orig.subtotal_bruto));
+      const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
+      const importeNegativo = redondearMoneda(-Math.abs(Number(orig.total_final)));
+      const brutoNegativo = redondearMoneda(-Math.abs(Number(orig.subtotal_bruto)));
 
-      const lineasNegativas = (orig.lineas || []).map((l: any) => ({
+      const lineasNegativas: LineaTicketFiscal[] = (orig.lineas || []).map((l: any) => ({
         ...l,
         cantidad: -Math.abs(Number(l.cantidad)),
-        subtotal_linea: -Math.abs(Number(l.subtotal_linea))
+        subtotal_linea: redondearMoneda(-Math.abs(Number(l.subtotal_linea))),
+        porcentaje_iva: Number(l.porcentaje_iva ?? l.tipo_iva ?? orig.tipo_iva_aplicado ?? 10) === 21 ? 21 : 10,
+        tipo_iva: Number(l.porcentaje_iva ?? l.tipo_iva ?? orig.tipo_iva_aplicado ?? 10) === 21 ? 21 : 10
       }));
+
+      let hash_anterior = '';
+      try {
+        const { data: ultimoTicket } = await supabase
+          .from('facturas_tickets')
+          .select('hash_actual')
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        hash_anterior = ultimoTicket?.hash_actual || '';
+      } catch (errPrevHash) {
+        console.error('Error al obtener hash_anterior en Rectificativa:', errPrevHash);
+      }
 
       const { data: docRect, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'R',
@@ -1560,7 +1726,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         p_importe_tarjeta: orig.metodo_pago === 'tarjeta' ? importeNegativo : 0,
         p_subtotal_bruto: brutoNegativo,
         p_descuento_general_porc: orig.descuento_general_porcentaje || 0,
-        p_descuento_total_imp: 0,
+        p_descuento_total_imp: redondearMoneda(-Math.abs(Number(orig.descuento_total_importe || 0))),
         p_autorizado_por: nombreAdmin,
         p_tipo_iva: orig.tipo_iva_aplicado || cfg.iva_defecto || 10,
         p_total_final: importeNegativo,
@@ -1572,11 +1738,68 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       if (rpcError) throw rpcError;
 
+      // Encadenar VeriFactu y desglose exacto de IVA 10% y 21% negativo en la Factura Rectificativa
+      const desgloseNegativo = calcularDesgloseImpuestosLineas(
+        lineasNegativas,
+        Number(orig.descuento_general_porcentaje || 0),
+        importeNegativo
+      );
+      const fechaRect = String(docRect?.fecha_expedicion || new Date().toISOString());
+      const hash_actual = await calcularHashVeriFactu(
+        String(docRect.numero_completo),
+        fechaRect,
+        importeNegativo,
+        hash_anterior
+      );
+
+      await supabase
+        .from('facturas_tickets')
+        .update({
+          tipo_factura: 'R4',
+          base_imponible_10: desgloseNegativo.base_imponible_10,
+          iva_10: desgloseNegativo.iva_10,
+          base_imponible_21: desgloseNegativo.base_imponible_21,
+          iva_21: desgloseNegativo.iva_21,
+          base_imponible: desgloseNegativo.baseImponibleTotal,
+          cuota_iva: desgloseNegativo.cuotaIvaTotal,
+          hash_anterior,
+          hash_actual
+        })
+        .eq('id', docRect.id);
+
+      // Devolver stock al inventario de forma secuencial
+      for (const l of orig.lineas || []) {
+        const cantDevuelta = Math.abs(Number(l.cantidad || 0));
+        if (cantDevuelta <= 0 || String(l.nombre || '').includes('├─')) continue;
+        const prodMatch = productosCarta.find(
+          (p) =>
+            (l.articulo_id && p.articulo_inventario_id === l.articulo_id) ||
+            p.nombre.trim().toLowerCase() === String(l.nombre || '').trim().toLowerCase()
+        );
+        if (prodMatch) {
+          const { data: prodDB } = await supabase
+            .from('productos_carta')
+            .select('id, stock_actual, articulo_inventario_id')
+            .eq('id', prodMatch.id)
+            .maybeSingle();
+          if (prodDB) {
+            const nuevoStock = Number(prodDB.stock_actual ?? 0) + cantDevuelta;
+            await supabase.from('productos_carta').update({ stock_actual: nuevoStock }).eq('id', prodDB.id);
+            const artId = l.articulo_id || prodDB.articulo_inventario_id;
+            if (artId) {
+              await supabase.from('articulos_cafeteria').update({ stock_actual: nuevoStock }).eq('id', artId);
+            }
+          }
+        }
+      }
+
       if (cajaHoy && cajaHoy.estado === 'abierta') {
-        const nuevoEfectivo =
-          Number(cajaHoy.total_efectivo) + (orig.metodo_pago === 'efectivo' ? importeNegativo : 0);
-        const nuevaTarjeta =
-          Number(cajaHoy.total_tarjeta) + (orig.metodo_pago === 'tarjeta' ? importeNegativo : 0);
+        const nuevoEfectivo = redondearMoneda(
+          Number(cajaHoy.total_efectivo) + (orig.metodo_pago === 'efectivo' ? importeNegativo : 0)
+        );
+        const nuevaTarjeta = redondearMoneda(
+          Number(cajaHoy.total_tarjeta) + (orig.metodo_pago === 'tarjeta' ? importeNegativo : 0)
+        );
 
         await supabase
           .from('caja_diaria')
@@ -1591,7 +1814,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .from('facturas_tickets')
         .select('*')
         .eq('id', docRect.id)
-        .single();
+        .maybeSingle();
 
       if (rectCompleta) {
         imprimirDocumentoFiscalHTML(rectCompleta, cfg);
@@ -1599,17 +1822,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       mostrarAlerta(`Factura Rectificativa ${docRect.numero_completo} emitida e impresa.`, 'exito');
       setModalRectificativa(null);
-      cargarCaja();
-      cargarProductosCarta();
+      await Promise.all([cargarCaja(), cargarProductosCarta()]);
     } catch (err: any) {
       mostrarAlerta('Error al emitir factura rectificativa: ' + err.message, 'error');
-      setModalRectificativa({ ...modalRectificativa, procesando: false });
+      setModalRectificativa((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
   const confirmarFacturaNominativa = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modalFacturaNominativa || !camareroActivo) return;
+    if (!modalFacturaNominativa || !camareroActivo || modalFacturaNominativa.procesando) return;
 
     if (!modalFacturaNominativa.razonSocial.trim() || !modalFacturaNominativa.nifCif.trim()) {
       mostrarAlerta('Nombre/Razón Social y NIF/CIF del cliente son obligatorios por ley.', 'aviso');
@@ -1621,7 +1843,20 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     try {
       const orig = modalFacturaNominativa.factura;
       const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
-    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
+      const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
+
+      let hash_anterior = '';
+      try {
+        const { data: ultimoTicket } = await supabase
+          .from('facturas_tickets')
+          .select('hash_actual')
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        hash_anterior = ultimoTicket?.hash_actual || '';
+      } catch (errPrevHash) {
+        console.error('Error al obtener hash_anterior en Nominativa:', errPrevHash);
+      }
 
       const { data: docNom, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
         p_serie: 'F',
@@ -1648,11 +1883,39 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       if (rpcError) throw rpcError;
 
+      const desgloseNom = calcularDesgloseImpuestosLineas(
+        (orig.lineas || []) as LineaTicketFiscal[],
+        Number(orig.descuento_general_porcentaje || 0),
+        Number(orig.total_final || 0)
+      );
+      const fechaNom = String(docNom?.fecha_expedicion || new Date().toISOString());
+      const hash_actual = await calcularHashVeriFactu(
+        String(docNom.numero_completo),
+        fechaNom,
+        Number(orig.total_final || 0),
+        hash_anterior
+      );
+
+      await supabase
+        .from('facturas_tickets')
+        .update({
+          tipo_factura: 'F1',
+          base_imponible_10: orig.base_imponible_10 ?? desgloseNom.base_imponible_10,
+          iva_10: orig.iva_10 ?? desgloseNom.iva_10,
+          base_imponible_21: orig.base_imponible_21 ?? desgloseNom.base_imponible_21,
+          iva_21: orig.iva_21 ?? desgloseNom.iva_21,
+          base_imponible: orig.base_imponible ?? desgloseNom.baseImponibleTotal,
+          cuota_iva: orig.cuota_iva ?? desgloseNom.cuotaIvaTotal,
+          hash_anterior,
+          hash_actual
+        })
+        .eq('id', docNom.id);
+
       const { data: nomCompleta } = await supabase
         .from('facturas_tickets')
         .select('*')
         .eq('id', docNom.id)
-        .single();
+        .maybeSingle();
 
       if (nomCompleta) {
         imprimirDocumentoFiscalHTML(nomCompleta, cfg);
@@ -1660,25 +1923,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       mostrarAlerta(`Factura Nominativa ${docNom.numero_completo} generada e impresa correctamente.`, 'exito');
       setModalFacturaNominativa(null);
-      cargarCaja();
+      await cargarCaja();
     } catch (err: any) {
       mostrarAlerta('Error al generar factura nominativa: ' + err.message, 'error');
-      setModalFacturaNominativa({ ...modalFacturaNominativa, procesando: false });
+      setModalFacturaNominativa((prev) => (prev ? { ...prev, procesando: false } : null));
     }
   };
 
   const imprimirPreTicketCuenta = async () => {
-    if (desgloseMesaSeleccionada.totalFinal === 0) {
-      mostrarAlerta('La mesa está vacía, no hay cuenta para imprimir.', 'aviso');
+    if (desgloseMesaSeleccionada.totalFinal === 0 || imprimiendoPreTicket) {
+      if (desgloseMesaSeleccionada.totalFinal === 0) {
+        mostrarAlerta('La mesa está vacía, no hay cuenta para imprimir.', 'aviso');
+      }
       return;
     }
     setImprimiendoPreTicket(true);
     try {
       const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
-    const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
+      const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
       const ivaPorc = cfg.iva_defecto || 10;
-      const baseImp = Number((desgloseMesaSeleccionada.totalFinal / (1 + ivaPorc / 100)).toFixed(2));
-      const cuotaIva = Number((desgloseMesaSeleccionada.totalFinal - baseImp).toFixed(2));
 
       imprimirDocumentoFiscalHTML(
         {
@@ -1692,8 +1955,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           subtotal_bruto: desgloseMesaSeleccionada.subtotalBruto,
           descuento_general_porcentaje: desgloseMesaSeleccionada.dtoGeneralPorc,
           descuento_total_importe: desgloseMesaSeleccionada.descuentoTotalImporte,
-          base_imponible: baseImp,
-          cuota_iva: cuotaIva,
+          base_imponible_10: desgloseMesaSeleccionada.base_imponible_10,
+          iva_10: desgloseMesaSeleccionada.iva_10,
+          base_imponible_21: desgloseMesaSeleccionada.base_imponible_21,
+          iva_21: desgloseMesaSeleccionada.iva_21,
+          base_imponible: desgloseMesaSeleccionada.baseImponibleTotal,
+          cuota_iva: desgloseMesaSeleccionada.cuotaIvaTotal,
           tipo_iva_aplicado: ivaPorc,
           total_final: desgloseMesaSeleccionada.totalFinal,
           lineas: desgloseMesaSeleccionada.lineasCalculadas,
@@ -1713,6 +1980,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const confirmarAperturaCaja = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (procesandoApertura) return;
     const remanenteNum = parseFloat(remanenteAperturaInput);
     if (isNaN(remanenteNum) || remanenteNum < 0) {
       mostrarAlerta('Por favor, introduce un fondo de caja inicial válido.', 'error');
@@ -1722,7 +1990,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     setProcesandoApertura(true);
     try {
       const fechaHoy = new Date().toISOString().split('T')[0];
-      const remanente_apertura = Number(remanenteNum.toFixed(2));
+      const remanente_apertura = redondearMoneda(remanenteNum);
 
       const { data: nuevaCaja, error } = await supabase
         .from('caja_diaria')
@@ -1745,7 +2013,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setShowModalApertura(false);
       setCajaHoy(nuevaCaja as CajaDiaria);
       mostrarAlerta(`¡Caja / Turno abierto con éxito! Fondo inicial: ${remanente_apertura.toFixed(2)} €.`, 'exito');
-      cargarCaja();
+      await cargarCaja();
     } catch (err: any) {
       mostrarAlerta('Error al abrir la caja: ' + err.message, 'error');
     } finally {
@@ -1753,26 +2021,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  /*
-    const fechaHoy = new Date().toISOString().split('T')[0];
-    const remanente = parseFloat(remanenteAperturaInput) || 0;
-
-    await supabase.from('caja_diaria').insert([
-      {
-        fecha: fechaHoy,
-        remanente_apertura: remanente,
-        total_efectivo: 0,
-        total_tarjeta: 0,
-        estado: 'abierta'
-      }
-    ]);
-
-    mostrarAlerta(`Turno de hoy abierto con fondo de ${remanente.toFixed(2)} €.`, 'exito');
-    cargarCaja();
-  };
-
-  */
   const abrirModalCierreCaja = async () => {
+    if (cargandoCierreCaja || procesandoArqueo) return;
+    setCargandoCierreCaja(true);
     try {
       const { data, error } = await supabase
         .from('caja_diaria')
@@ -1794,21 +2045,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setDatosArqueoCaja({
         id,
         fecha: data.fecha,
-        remanente_apertura: Number(remanente_apertura || 0),
-        total_efectivo: Number(total_efectivo || 0),
-        total_tarjeta: Number(total_tarjeta || 0)
+        remanente_apertura: redondearMoneda(Number(remanente_apertura || 0)),
+        total_efectivo: redondearMoneda(Number(total_efectivo || 0)),
+        total_tarjeta: redondearMoneda(Number(total_tarjeta || 0))
       });
       setShowModalArqueo(true);
     } catch (err: any) {
       mostrarAlerta('Error al obtener el estado actual de la caja: ' + err.message, 'error');
+    } finally {
+      setCargandoCierreCaja(false);
     }
   };
 
   const confirmarCierreCaja = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!datosArqueoCaja) return;
+    if (!datosArqueoCaja || procesandoArqueo) return;
 
-    const efectivo_real = parseFloat(efectivoRealInput);
+    const efectivo_real = redondearMoneda(parseFloat(efectivoRealInput));
     if (isNaN(efectivo_real) || efectivo_real < 0) {
       mostrarAlerta('Por favor, introduce el dinero físico contado en el cajón.', 'error');
       return;
@@ -1818,10 +2071,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
     try {
       const { id, remanente_apertura, total_efectivo, total_tarjeta } = datosArqueoCaja;
-      const efectivoEsperado = Number((total_efectivo + remanente_apertura).toFixed(2));
-      const descuadre = Number((efectivo_real - (total_efectivo + remanente_apertura)).toFixed(2));
+      const efectivoEsperado = redondearMoneda(total_efectivo + remanente_apertura);
+      const descuadre = redondearMoneda(efectivo_real - efectivoEsperado);
       const remanente_cierre = 50.00;
-      const efectivo_retirado = Number((efectivo_real - 50.00).toFixed(2));
+      const efectivo_retirado = redondearMoneda(efectivo_real - remanente_cierre);
 
       const { error: updateError } = await supabase
         .from('caja_diaria')
@@ -1892,7 +2145,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         : `Cierre completado con descuadre de ${descuadre > 0 ? '+' : ''}${descuadre.toFixed(2)} €. Retirado: ${efectivo_retirado.toFixed(2)} €.`;
 
       mostrarAlerta(msgResumen, cuadrada ? 'exito' : 'aviso');
-      cargarCaja();
+      await cargarCaja();
     } catch (err: any) {
       mostrarAlerta('Error al cerrar la caja: ' + err.message, 'error');
     } finally {
@@ -1900,46 +2153,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  /*
-    const efectivoReal = parseFloat(efectivoRealInput) || 0;
-    const remanenteCierre = parseFloat(remanenteCierreInput) || 0;
-    const teoricoEfectivo = Number(caja.remanente_apertura) + Number(caja.total_efectivo);
-    const descuadre = efectivoReal - teoricoEfectivo;
-    const efectivoRetirado = efectivoReal - remanenteCierre;
-
-    await supabase
-      .from('caja_diaria')
-      .update({
-        efectivo_real: efectivoReal,
-        descuadre: descuadre,
-        remanente_cierre: remanenteCierre,
-        efectivo_retirado: efectivoRetirado,
-        estado: 'cerrada'
-      })
-      .eq('id', caja.id);
-
-    if (camareroActivo) {
-      await supabase.from('cierres_caja').insert([
-        {
-          usuario_nombre: camareroActivo.nombre,
-          fondo_inicial: Number(caja.remanente_apertura),
-          ventas_efectivo_sistema: Number(caja.total_efectivo),
-          ventas_tarjeta_sistema: Number(caja.total_tarjeta),
-          efectivo_esperado_caja: teoricoEfectivo,
-          efectivo_contado_trabajador: efectivoReal,
-          tarjeta_contada_trabajador: Number(caja.total_tarjeta),
-          descuadre_efectivo: descuadre,
-          descuadre_tarjeta: 0,
-          observaciones: `Cierre desde TPV Camarero (${caja.fecha})`
-        }
-      ]);
-    }
-
-    mostrarAlerta(`¡Caja de fecha ${caja.fecha} cerrada y registrada en el Backoffice!`, 'exito');
-    cargarCaja();
-  };
-
-  */
   const salirSesion = () => {
     setCamareroActivo(null);
     sessionStorage.removeItem('nexus_camarero_sesion');
@@ -1960,7 +2173,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           )}
         </div>
         <p className="text-[11px] text-slate-400">
-          {new Date(f.fecha_expedicion).toLocaleTimeString('es-ES')} · Atendido por: <strong>{f.vendedor_nombre}</strong> · Pago: <strong>{f.metodo_pago.toUpperCase()}</strong>
+          {new Date(f.fecha_expedicion).toLocaleTimeString('es-ES')} · Atendido por: <strong>{f.vendedor_nombre}</strong> · Pago: <strong>{String(f.metodo_pago || '').toUpperCase()}</strong>
           {f.cliente_nif && ` · Cliente: ${f.cliente_nombre_razon} (${f.cliente_nif})`}
         </p>
       </div>
@@ -2026,9 +2239,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             {loginError && <p className="text-xs text-rose-400 text-center font-bold">PIN incorrecto o usuario inactivo.</p>}
             <button
               type="submit"
-              className="w-full py-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+              disabled={procesandoLogin}
+              className="w-full py-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all disabled:opacity-50"
             >
-              Entrar a Cafetería
+              {procesandoLogin ? 'Verificando...' : 'Entrar a Cafetería'}
             </button>
             <button
               type="button"
@@ -2323,7 +2537,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             </div>
             <div className="flex gap-3 pt-2">
               <button type="button" onClick={() => setModalCajaManual(null)} className="flex-1 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold text-slate-300 text-xs cursor-pointer">Cancelar</button>
-              <button type="submit" className={`flex-1 py-3 rounded-xl font-black text-xs uppercase text-slate-950 cursor-pointer ${modalCajaManual.tipo === 'ENTRADA' ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-rose-500 hover:bg-rose-400'}`}>Guardar</button>
+              <button type="submit" disabled={procesandoCajaManual} className={`flex-1 py-3 rounded-xl font-black text-xs uppercase text-slate-950 cursor-pointer disabled:opacity-50 ${modalCajaManual.tipo === 'ENTRADA' ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-rose-500 hover:bg-rose-400'}`}>{procesandoCajaManual ? 'Guardando...' : 'Guardar'}</button>
             </div>
           </form>
         </div>
@@ -2345,7 +2559,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             {carritoActual.length > 0 && (
               <div className="bg-purple-950/20 p-4 rounded-2xl border border-purple-500/30 flex gap-2 mb-4">
                 <input type="text" placeholder="Asigna un nombre a esta cuenta (Ej: Chicos del fondo)" value={nombreCuentaAparcada} onChange={(e) => setNombreCuentaAparcada(e.target.value)} className="flex-1 bg-black/60 border border-white/20 rounded-xl px-4 py-2 text-white text-xs" />
-                <button onClick={aparcarCuenta} className="px-5 py-2 bg-purple-600 hover:bg-purple-500 font-bold text-white rounded-xl text-xs whitespace-nowrap flex items-center gap-2 cursor-pointer shadow-lg"><Save className="h-4 w-4" /> Aparcar Ticket</button>
+                <button onClick={aparcarCuenta} disabled={procesandoCuentaAparcada} className="px-5 py-2 bg-purple-600 hover:bg-purple-500 font-bold text-white rounded-xl text-xs whitespace-nowrap flex items-center gap-2 cursor-pointer shadow-lg disabled:opacity-50"><Save className="h-4 w-4" /> {procesandoCuentaAparcada ? 'Guardando...' : 'Aparcar Ticket'}</button>
               </div>
             )}
 
@@ -2362,7 +2576,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     </div>
                     <div className="flex items-center gap-4">
                       <span className="font-mono font-bold text-amber-400">{Number(cuenta.total).toFixed(2)} €</span>
-                      <button onClick={() => cargarCuentaAparcada(cuenta)} className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs shadow-md cursor-pointer transition-colors">Cargar</button>
+                      <button onClick={() => cargarCuentaAparcada(cuenta)} disabled={procesandoCuentaAparcada} className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs shadow-md cursor-pointer transition-colors disabled:opacity-50">Cargar</button>
                     </div>
                   </div>
                 ))
@@ -2475,7 +2689,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <div className="flex justify-between items-center mb-4">
                 <span className="text-xs font-bold text-slate-400 uppercase">Subtotal Seleccionado:</span>
                 <span className="text-xl font-black text-white font-mono">
-                  {modalCobroParcial.itemsDisponibles.reduce((acc, i) => acc + (i.precio * i.cantidadSeleccionada), 0).toFixed(2)} €
+                  {redondearMoneda(modalCobroParcial.itemsDisponibles.reduce((acc, i) => acc + (i.precio * i.cantidadSeleccionada), 0)).toFixed(2)} €
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -2570,9 +2784,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </button>
               <button
                 type="submit"
-                className="py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase cursor-pointer"
+                disabled={procesandoDescuento}
+                className="py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase cursor-pointer disabled:opacity-50"
               >
-                Aplicar Descuento
+                {procesandoDescuento ? 'Verificando...' : 'Aplicar Descuento'}
               </button>
             </div>
           </form>
@@ -2848,7 +3063,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
           <button
             onClick={toggleCocina}
-            className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md border cursor-pointer ${
+            disabled={procesandoCocina}
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md border cursor-pointer disabled:opacity-50 ${
               cocinaAbierta
                 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 hover:bg-emerald-500 hover:text-slate-950'
                 : 'bg-rose-500/20 text-rose-400 border-rose-500/40 hover:bg-rose-500 hover:text-slate-950'
@@ -3067,6 +3283,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </div>
               </div>
 
+              {desgloseMesaSeleccionada.totalFinal > 0 && (
+                <div className="text-[11px] bg-black/30 p-2.5 rounded-xl border border-white/5 space-y-1">
+                  {desgloseMesaSeleccionada.base_imponible_10 > 0 && (
+                    <div className="flex justify-between text-slate-400 font-mono">
+                      <span>IVA 10% (Base {desgloseMesaSeleccionada.base_imponible_10.toFixed(2)} €):</span>
+                      <span className="text-slate-300">{desgloseMesaSeleccionada.iva_10.toFixed(2)} €</span>
+                    </div>
+                  )}
+                  {desgloseMesaSeleccionada.base_imponible_21 > 0 && (
+                    <div className="flex justify-between text-slate-400 font-mono">
+                      <span>IVA 21% (Base {desgloseMesaSeleccionada.base_imponible_21.toFixed(2)} €):</span>
+                      <span className="text-slate-300">{desgloseMesaSeleccionada.iva_21.toFixed(2)} €</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-2 mt-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-400">Artículos pedidos (Sin cobrar):</span>
@@ -3097,7 +3330,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       const claveLinea = `${getNombreMesa(mesaSeleccionada)}__${item.nombre}`;
                       const dto = descuentosLineas[claveLinea] || 0;
                       const importeBruto = item.precio * item.cantidad;
-                      const importeNeto = importeBruto * (1 - dto / 100);
+                      const importeNeto = redondearMoneda(importeBruto * (1 - dto / 100));
 
                       return (
                         <div
@@ -3256,7 +3489,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                           <span className="font-bold text-white truncate max-w-[140px]">{item.nombre}</span>
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-cyan-400 font-bold">
-                              {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
+                              {item.nombre.includes('├─') ? '' : `${redondearMoneda(Number(item.precio) * item.cantidad).toFixed(2)} €`}
                             </span>
                             
                             <div className="flex gap-1 bg-white/5 px-1 py-0.5 rounded-lg items-center">
@@ -3307,7 +3540,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       onClick={enviarPedidoCamarero}
                       className="py-3 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg active:scale-95 disabled:opacity-50"
                     >
-                      <Send className="h-4 w-4" /> Enviar
+                      <Send className="h-4 w-4" /> {enviando ? 'Enviando...' : 'Enviar'}
                     </button>
                   </div>
                 </div>
@@ -3340,6 +3573,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {mesasAbiertas.map((m) => {
                 const desglose = calcularDesgloseMesa(m.mesa, m.items);
+                const estaCobrandoEstaMesa = cobrandoMesa === m.mesa;
                 return (
                   <div key={m.id} className="p-5 rounded-3xl bg-[#0d0f17] border border-white/10 space-y-4 shadow-xl">
                     <div className="flex justify-between items-center border-b border-white/10 pb-2">
@@ -3349,13 +3583,15 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
+                          disabled={cobrandoMesa !== null}
                           onClick={() => setModalTraspaso({ origen: m.mesa, destino: '1', procesando: false })}
-                          className="px-3 py-1.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-bold flex items-center gap-1 cursor-pointer hover:bg-sky-500 hover:text-slate-950 transition-colors"
+                          className="px-3 py-1.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-bold flex items-center gap-1 cursor-pointer hover:bg-sky-500 hover:text-slate-950 transition-colors disabled:opacity-50"
                         >
                           <ArrowRightLeft className="h-3 w-3" />
                         </button>
                         <button
                           type="button"
+                          disabled={cobrandoMesa !== null}
                           onClick={() =>
                             setModalAuthDescuento({
                               abierto: true,
@@ -3365,7 +3601,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                               pinAdmin: ''
                             })
                           }
-                          className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold flex items-center gap-1 cursor-pointer hover:bg-amber-500 hover:text-slate-950 transition-colors"
+                          className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold flex items-center gap-1 cursor-pointer hover:bg-amber-500 hover:text-slate-950 transition-colors disabled:opacity-50"
                         >
                           <Percent className="h-3 w-3" />
                         </button>
@@ -3386,7 +3622,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       {m.items.map((it, iIdx) => {
                         const claveLinea = `${m.mesa}__${it.nombre}`;
                         const dto = descuentosLineas[claveLinea] || 0;
-                        const neto = it.precio * it.cantidad * (1 - dto / 100);
+                        const neto = redondearMoneda(it.precio * it.cantidad * (1 - dto / 100));
                         return (
                           <div
                             key={iIdx}
@@ -3404,6 +3640,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                                 <span className="font-mono text-slate-300">{neto.toFixed(2)} €</span>
                                 <button
                                   type="button"
+                                  disabled={cobrandoMesa !== null}
                                   onClick={() =>
                                     setModalAuthDescuento({
                                       abierto: true,
@@ -3414,7 +3651,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                                       pinAdmin: ''
                                     })
                                   }
-                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-amber-500 hover:text-slate-950 text-slate-400 cursor-pointer transition-colors"
+                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-amber-500 hover:text-slate-950 text-slate-400 cursor-pointer transition-colors disabled:opacity-50"
                                 >
                                   <Percent className="h-3 w-3" />
                                 </button>
@@ -3423,6 +3660,20 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                           </div>
                         );
                       })}
+                    </div>
+
+                    {/* Desglose rápido de IVA (10% / 21%) */}
+                    <div className="flex flex-wrap gap-2 text-[10px] font-mono text-slate-400 pt-1">
+                      {desglose.base_imponible_10 > 0 && (
+                        <span className="bg-black/40 px-2 py-1 rounded-lg border border-white/5">
+                          Base 10%: {desglose.base_imponible_10.toFixed(2)} € | IVA 10%: {desglose.iva_10.toFixed(2)} €
+                        </span>
+                      )}
+                      {desglose.base_imponible_21 > 0 && (
+                        <span className="bg-black/40 px-2 py-1 rounded-lg border border-white/5">
+                          Base 21%: {desglose.base_imponible_21.toFixed(2)} € | IVA 21%: {desglose.iva_21.toFixed(2)} €
+                        </span>
+                      )}
                     </div>
 
                     {/* Sub-bloque dividido: Enviado a Cocina de esta mesa */}
@@ -3481,20 +3732,26 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-3 border-t border-white/10">
                       <button
+                        type="button"
+                        disabled={cobrandoMesa !== null}
                         onClick={() => cobrarMesaLegal(m.mesa, 'efectivo')}
-                        className="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
+                        className="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <DollarSign className="h-4 w-4" /> Efectivo
+                        <DollarSign className="h-4 w-4" /> {estaCobrandoEstaMesa ? 'Cobrando...' : 'Efectivo'}
                       </button>
                       <button
+                        type="button"
+                        disabled={cobrandoMesa !== null}
                         onClick={() => cobrarMesaLegal(m.mesa, 'tarjeta')}
-                        className="py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
+                        className="py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <CreditCard className="h-4 w-4" /> Tarjeta
+                        <CreditCard className="h-4 w-4" /> {estaCobrandoEstaMesa ? 'Cobrando...' : 'Tarjeta'}
                       </button>
                       <button
+                        type="button"
+                        disabled={cobrandoMesa !== null}
                         onClick={() => initCobroParcial(m)}
-                        className="py-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
+                        className="py-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Split className="h-4 w-4" /> Dividir
                       </button>
@@ -3520,10 +3777,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 de poder cobrar nada hoy.
               </p>
               <button
+                type="button"
+                disabled={cargandoCierreCaja || procesandoArqueo}
                 onClick={abrirModalCierreCaja}
-                className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
               >
-                Forzar Cierre de Caja Atrasada
+                {cargandoCierreCaja ? 'Cargando datos de caja...' : 'Forzar Cierre de Caja Atrasada'}
               </button>
             </div>
           )}
@@ -3546,8 +3805,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               </div>
               <button
                 type="button"
+                disabled={procesandoApertura}
                 onClick={abrirModalAperturaCaja}
-                className="w-full py-4 rounded-xl bg-amber-500 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                className="w-full py-4 rounded-xl bg-amber-500 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
               >
                 <LockOpen className="h-5 w-5" /> Abrir Caja / Turno
               </button>
@@ -3592,7 +3852,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 <div className="bg-sky-950/20 p-4 rounded-2xl border border-sky-500/30">
                   <span className="text-xs font-bold text-sky-400 uppercase">Teórico en Cajón:</span>
                   <p className="font-mono text-2xl font-black text-white mt-1">
-                    {(Number(cajaHoy.remanente_apertura) + Number(cajaHoy.total_efectivo)).toFixed(2)} €
+                    {redondearMoneda(Number(cajaHoy.remanente_apertura) + Number(cajaHoy.total_efectivo)).toFixed(2)} €
                   </p>
                 </div>
               </div>
@@ -3600,14 +3860,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => setModalCajaManual({ abierto: true, tipo: 'ENTRADA' })}
-                  disabled={cajaHoy.estado === 'cerrada'}
+                  disabled={cajaHoy.estado === 'cerrada' || procesandoCajaManual}
                   className="flex-1 py-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/30 font-black text-xs uppercase flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
                 >
                   <TrendingUp className="h-4 w-4" /> Entrada Manual
                 </button>
                 <button
                   onClick={() => setModalCajaManual({ abierto: true, tipo: 'SALIDA' })}
-                  disabled={cajaHoy.estado === 'cerrada'}
+                  disabled={cajaHoy.estado === 'cerrada' || procesandoCajaManual}
                   className="flex-1 py-3 rounded-xl bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 font-black text-xs uppercase flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
                 >
                   <TrendingDown className="h-4 w-4" /> Salida / Pago
@@ -3656,8 +3916,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               {cajaHoy.estado !== 'abierta' && (
                 <button
                   type="button"
+                  disabled={procesandoApertura}
                   onClick={abrirModalAperturaCaja}
-                  className="w-full py-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-[0_0_25px_rgba(16,185,129,0.4)]"
+                  className="w-full py-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-[0_0_25px_rgba(16,185,129,0.4)] disabled:opacity-50"
                 >
                   <LockOpen className="h-5 w-5" /> Abrir Caja / Turno
                 </button>
@@ -3690,10 +3951,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
                   <button
                     type="button"
+                    disabled={cargandoCierreCaja || procesandoArqueo}
                     onClick={abrirModalCierreCaja}
-                    className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-lg"
+                    className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm uppercase flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-lg disabled:opacity-50"
                   >
-                    <Lock className="h-5 w-5" /> Cerrar Caja y Terminar Turno
+                    <Lock className="h-5 w-5" /> {cargandoCierreCaja ? 'Cargando...' : 'Cerrar Caja y Terminar Turno'}
                   </button>
                 </>
               )}

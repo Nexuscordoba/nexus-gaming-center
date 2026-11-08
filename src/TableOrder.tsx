@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
+import { redondearMoneda } from './fiscalService';
 import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X, Lock } from 'lucide-react';
 
 interface OpcionCombo {
@@ -21,6 +22,9 @@ interface Producto {
   es_combo?: boolean;
   opciones_combo?: PasoCombo[];
   loyverse_variant_id?: string;
+  articulo_inventario_id?: string;
+  porcentaje_iva?: number;
+  tipo_iva?: number;
 }
 
 interface ItemPedido {
@@ -29,6 +33,8 @@ interface ItemPedido {
   precio: number;
   cantidad: number;
   destino: 'cocina' | 'barra';
+  porcentaje_iva?: number;
+  tipo_iva?: number;
 }
 
 export default function TableOrder() {
@@ -75,7 +81,7 @@ export default function TableOrder() {
         { event: '*', schema: 'public', table: 'comandas_cocina', filter: `mesa=eq.MESA ${mNum}` },
         (payload: any) => {
           const comanda = payload.new;
-          if (comanda && comanda.tipo_destino === 'cuenta' && comanda.estado === 'servido') {
+          if (comanda && ((comanda.tipo_destino === 'cuenta' && comanda.estado === 'servido') || comanda.pagado === true)) {
             setCuentaMesa([]);
             setCarritoActual([]);
             localStorage.removeItem(`nexus_mesa_${mNum}_cuenta`);
@@ -92,6 +98,13 @@ export default function TableOrder() {
           cargarConfiguracion();
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'productos_carta' },
+        () => {
+          cargarProductosCarta();
+        }
+      )
       .subscribe();
 
     return () => {
@@ -100,68 +113,128 @@ export default function TableOrder() {
   }, []);
 
   const cargarConfiguracion = async () => {
-    const { data } = await supabase
-      .from('configuracion_local')
-      .select('*')
-      .eq('id', 1)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('configuracion_local')
+        .select('*')
+        .eq('id', 1)
+        .maybeSingle();
 
-    if (data) {
-      setCocinaAbierta(data.cocina_abierta);
+      if (error) {
+        console.error('Error al cargar configuración de mesa digital:', error);
+        return;
+      }
+
+      if (data) {
+        setCocinaAbierta(Boolean(data.cocina_abierta));
+      }
+    } catch (err) {
+      console.error('Excepción al cargar configuración de mesa digital:', err);
     }
   };
 
   const cargarProductosCarta = async () => {
     setLoadingCarta(true);
-    const { data } = await supabase
-      .from('productos_carta')
-      .select('*')
-      .eq('activo', true)
-      .order('id', { ascending: true });
+    try {
+      const [{ data, error }, { data: articulosInv }] = await Promise.all([
+        supabase
+          .from('productos_carta')
+          .select('*')
+          .eq('activo', true)
+          .order('id', { ascending: true }),
+        supabase
+          .from('articulos_cafeteria')
+          .select('id, nombre, destino, tipo_iva, porcentaje_iva')
+      ]);
 
-    if (data && data.length > 0) {
-      setProductosCarta(data as Producto[]);
-      const catsUnicas = Array.from(new Set(data.map((p: any) => p.categoria || 'Cafetería'))) as string[];
-      if (catsUnicas.length > 0) {
-        setCategoriasDisponibles(catsUnicas);
-        setCategoriaActiva(prev => catsUnicas.includes(prev) ? prev : catsUnicas[0]);
+      if (error) {
+        console.error('Error al cargar productos de la carta:', error);
+        return;
       }
+
+      if (data && data.length > 0) {
+        const mapaPorId = new Map<string, any>();
+        const mapaPorNombre = new Map<string, any>();
+        (articulosInv || []).forEach((art: any) => {
+          if (art.id) mapaPorId.set(String(art.id), art);
+          if (art.nombre) mapaPorNombre.set(String(art.nombre).trim().toLowerCase(), art);
+        });
+
+        const productosNormalizados: Producto[] = data.map((p: any) => {
+          const artVinculado =
+            (p.articulo_inventario_id && mapaPorId.get(String(p.articulo_inventario_id))) ||
+            mapaPorNombre.get(String(p.nombre || '').trim().toLowerCase());
+          const ivaRaw = Number(
+            p.porcentaje_iva ?? p.tipo_iva ?? artVinculado?.porcentaje_iva ?? artVinculado?.tipo_iva ?? 10
+          );
+          const ivaFinal = ivaRaw === 21 ? 21 : 10;
+          const destRaw = String(p.destino || artVinculado?.destino || '').trim().toLowerCase();
+          return {
+            ...p,
+            destino: destRaw === 'cocina' ? 'cocina' : 'barra',
+            porcentaje_iva: ivaFinal,
+            tipo_iva: ivaFinal,
+          };
+        });
+
+        setProductosCarta(productosNormalizados);
+        const catsUnicas = Array.from(new Set(productosNormalizados.map((p) => p.categoria || 'Cafetería'))) as string[];
+        if (catsUnicas.length > 0) {
+          setCategoriasDisponibles(catsUnicas);
+          setCategoriaActiva(prev => catsUnicas.includes(prev) ? prev : catsUnicas[0]);
+        }
+      }
+    } catch (err) {
+      console.error('Excepción al cargar productos de la carta:', err);
+    } finally {
+      setLoadingCarta(false);
     }
-    setLoadingCarta(false);
   };
 
   const cargarCuentaDesdeSupabase = async (mNum: string) => {
-    const { data } = await supabase
-      .from('comandas_cocina')
-      .select('*')
-      .eq('mesa', `MESA ${mNum}`)
-      .neq('estado', 'servido')
-      .neq('tipo_destino', 'cuenta')
-      .eq('pagado', false);
+    try {
+      const { data, error } = await supabase
+        .from('comandas_cocina')
+        .select('*')
+        .eq('mesa', `MESA ${mNum}`)
+        .neq('estado', 'servido')
+        .neq('tipo_destino', 'cuenta')
+        .eq('pagado', false);
 
-    if (data && data.length > 0) {
-      const itemsAcumulados: ItemPedido[] = [];
-      data.forEach((comanda: any) => {
-        if (comanda.items && Array.isArray(comanda.items)) {
-          comanda.items.forEach((it: any) => {
-            const existente = itemsAcumulados.find(x => x.nombre === it.nombre);
-            if (existente) {
-              existente.cantidad += (it.cantidad || 1);
-            } else {
-              itemsAcumulados.push({
-                id: Math.random(),
-                nombre: it.nombre,
-                precio: Number(it.precio || 0),
-                cantidad: it.cantidad || 1,
-                destino: comanda.tipo_destino
-              });
-            }
-          });
-        }
-      });
-      setCuentaMesa(itemsAcumulados);
-    } else {
-      setCuentaMesa([]);
+      if (error) {
+        console.error('Error al cargar cuenta de la mesa:', error);
+        return;
+      }
+
+      if (data && data.length > 0) {
+        const itemsAcumulados: ItemPedido[] = [];
+        data.forEach((comanda: any) => {
+          if (comanda.items && Array.isArray(comanda.items)) {
+            comanda.items.forEach((it: any) => {
+              const existente = itemsAcumulados.find(x => x.nombre === it.nombre && Number(x.precio) === Number(it.precio || 0));
+              if (existente) {
+                existente.cantidad += (Number(it.cantidad) || 1);
+              } else {
+                const ivaItem = Number(it.porcentaje_iva ?? it.tipo_iva ?? 10) === 21 ? 21 : 10;
+                itemsAcumulados.push({
+                  id: Math.random(),
+                  nombre: it.nombre,
+                  precio: Number(it.precio || 0),
+                  cantidad: Number(it.cantidad) || 1,
+                  destino: comanda.tipo_destino === 'cocina' ? 'cocina' : 'barra',
+                  porcentaje_iva: ivaItem,
+                  tipo_iva: ivaItem,
+                });
+              }
+            });
+          }
+        });
+        setCuentaMesa(itemsAcumulados);
+      } else {
+        setCuentaMesa([]);
+      }
+    } catch (err) {
+      console.error('Excepción al cargar cuenta de la mesa:', err);
     }
   };
 
@@ -204,6 +277,8 @@ export default function TableOrder() {
           precio: 0,
           categoria: comboActivo.categoria,
           destino: seleccion.destino,
+          porcentaje_iva: comboActivo.porcentaje_iva ?? 10,
+          tipo_iva: comboActivo.tipo_iva ?? 10,
           cantidad: 1
         });
       }
@@ -224,15 +299,19 @@ export default function TableOrder() {
           return nuevaCant > 0 ? { ...p, cantidad: nuevaCant } : null;
         }
         return p;
-      }).filter(Boolean) as any;
+      }).filter(Boolean) as Array<Producto & { cantidad: number }>;
     });
   };
 
-  const totalCarritoActual = carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
-  const totalCuentaAcumulada = cuentaMesa.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0);
+  const totalCarritoActual = redondearMoneda(
+    carritoActual.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0)
+  );
+  const totalCuentaAcumulada = redondearMoneda(
+    cuentaMesa.reduce((acc, item) => acc + (Number(item.precio) * item.cantidad), 0)
+  );
 
   const enviarPedido = async () => {
-    if (carritoActual.length === 0) return;
+    if (carritoActual.length === 0 || enviando) return;
     
     const esDestinoCocina = (item: Producto) => {
       const dest = String(item.destino || '').trim().toLowerCase();
@@ -276,16 +355,23 @@ export default function TableOrder() {
             tipo_destino: 'cocina',
             estado: 'pendiente',
             pagado: false,
-            items: itemsCocina.map(i => ({ 
-              nombre: i.nombre, 
-              precio: Number(i.precio), 
-              cantidad: i.cantidad, 
-              variante: '', 
-              categoria: i.categoria || 'Cocina',
-              destino: 'cocina',
-              comentarios: 'Pedido desde QR mesa', 
-              es_menu: (i.categoria || '').toLowerCase().includes('menu') 
-            }))
+            items: itemsCocina.map(i => {
+              const ivaProd = Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10;
+              return { 
+                producto_id: i.id,
+                articulo_inventario_id: i.articulo_inventario_id || undefined,
+                nombre: i.nombre, 
+                precio: Number(i.precio), 
+                cantidad: i.cantidad, 
+                variante: '', 
+                categoria: i.categoria || 'Cocina',
+                destino: 'cocina',
+                porcentaje_iva: ivaProd,
+                tipo_iva: ivaProd,
+                comentarios: 'Pedido desde QR mesa', 
+                es_menu: (i.categoria || '').toLowerCase().includes('menu') 
+              };
+            })
           }])
         );
       }
@@ -298,41 +384,46 @@ export default function TableOrder() {
             tipo_destino: 'barra',
             estado: 'pendiente',
             pagado: false,
-            items: itemsBarra.map(i => ({ 
-              nombre: i.nombre, 
-              precio: Number(i.precio), 
-              cantidad: i.cantidad, 
-              variante: '', 
-              categoria: i.categoria || 'General',
-              destino: esDestinoCocina(i) ? 'cocina' : 'barra',
-              comentarios: 'Pedido desde QR mesa' 
-            }))
+            items: itemsBarra.map(i => {
+              const ivaProd = Number(i.porcentaje_iva ?? i.tipo_iva ?? 10) === 21 ? 21 : 10;
+              return { 
+                producto_id: i.id,
+                articulo_inventario_id: i.articulo_inventario_id || undefined,
+                nombre: i.nombre, 
+                precio: Number(i.precio), 
+                cantidad: i.cantidad, 
+                variante: '', 
+                categoria: i.categoria || 'General',
+                destino: esDestinoCocina(i) ? 'cocina' : 'barra',
+                porcentaje_iva: ivaProd,
+                tipo_iva: ivaProd,
+                comentarios: 'Pedido desde QR mesa' 
+              };
+            })
           }])
         );
       }
 
-      await Promise.all(promesas);
+      const resultados = await Promise.all(promesas);
+      const errorInsercion = resultados.find(r => r.error)?.error;
+      if (errorInsercion) throw errorInsercion;
       
       setCarritoActual([]);
-      setMensaje('¡Pedido enviado! Actualizando cuenta en unos segundos...');
-
-      // Recarga automática a los 4 segundos
-      setTimeout(() => {
-        window.location.reload();
-      }, 4000);
-
+      await cargarCuentaDesdeSupabase(mesaNum);
+      setMensaje('¡Pedido enviado correctamente! Tu cuenta ha sido actualizada.');
     } catch (err: any) {
-      setMensaje('Error al enviar el pedido: ' + err.message);
+      setMensaje('Error al enviar el pedido: ' + (err?.message || 'Error desconocido'));
+    } finally {
       setEnviando(false);
     }
   };
 
   const pedirCuenta = async () => {
-    if (totalCuentaAcumulada === 0) return;
+    if (totalCuentaAcumulada === 0 || enviandoCuenta) return;
     setEnviandoCuenta(true);
     try {
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
-      await supabase.from('comandas_cocina').insert([{
+      const { error } = await supabase.from('comandas_cocina').insert([{
         ticket_number: ticketNum,
         mesa: `MESA ${mesaNum}`,
         tipo_destino: 'cuenta',
@@ -346,9 +437,11 @@ export default function TableOrder() {
         }]
       }]);
 
+      if (error) throw error;
+
       setMensaje('¡Cuenta solicitada! Un camarero se acercará en breve.');
     } catch (err: any) {
-      setMensaje('Error al solicitar la cuenta: ' + err.message);
+      setMensaje('Error al solicitar la cuenta: ' + (err?.message || 'Error desconocido'));
     } finally {
       setEnviandoCuenta(false);
     }
@@ -426,7 +519,7 @@ export default function TableOrder() {
           onClick={pedirCuenta}
           disabled={enviandoCuenta || totalCuentaAcumulada === 0}
           className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-white font-bold text-xs shadow-lg transition-all ${
-            totalCuentaAcumulada === 0 
+            enviandoCuenta || totalCuentaAcumulada === 0 
               ? 'bg-slate-700 opacity-50 cursor-not-allowed' 
               : 'bg-gradient-to-r from-rose-600 to-orange-600 active:scale-95 cursor-pointer'
           }`}
@@ -457,7 +550,7 @@ export default function TableOrder() {
                     {item.nombre}
                   </span>
                   <span className="font-mono text-slate-300">
-                    {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
+                    {item.nombre.includes('├─') ? '' : `${redondearMoneda(Number(item.precio) * item.cantidad).toFixed(2)} €`}
                   </span>
                 </div>
               ))}
@@ -568,7 +661,7 @@ export default function TableOrder() {
                   <span className="font-bold text-white truncate max-w-[140px]">{item.nombre}</span>
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-cyan-400 font-bold">
-                      {item.nombre.includes('├─') ? '' : `${(Number(item.precio) * item.cantidad).toFixed(2)} €`}
+                      {item.nombre.includes('├─') ? '' : `${redondearMoneda(Number(item.precio) * item.cantidad).toFixed(2)} €`}
                     </span>
                     <div className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded-lg">
                       <button onClick={() => cambiarCantidadCarrito(item.id, -1)} className="text-slate-400 hover:text-white cursor-pointer">

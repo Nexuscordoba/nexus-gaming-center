@@ -26,37 +26,65 @@ export interface DesgloseImpuestosTicket {
   totalGeneral: number;
 }
 
+/**
+ * Redondeo monetario exacto a 2 decimales evitando errores de coma flotante IEEE 754
+ */
+export function redondearMoneda(valor: number): number {
+  const num = Number(valor || 0);
+  if (!Number.isFinite(num)) return 0;
+  const signo = num < 0 ? -1 : 1;
+  return (signo * Math.round((Math.abs(num) + Number.EPSILON) * 100)) / 100;
+}
+
 export function calcularDesgloseImpuestosLineas(
   lineas: LineaTicketFiscal[],
-  dtoGeneralPorc: number = 0
+  dtoGeneralPorc: number = 0,
+  totalFinalObjetivo?: number
 ): DesgloseImpuestosTicket {
   const factorDtoGeneral = 1 - Math.max(0, Math.min(100, Number(dtoGeneralPorc || 0))) / 100;
-  let totalConIva10 = 0;
-  let totalConIva21 = 0;
+  let suma10SinDtoGen = 0;
+  let suma21SinDtoGen = 0;
 
-  for (const linea of lineas) {
-    const subtotalLinea = Number(linea.subtotal_linea || 0) * factorDtoGeneral;
+  for (const linea of lineas || []) {
+    const subtotalLinea = Number(linea.subtotal_linea || 0);
     const porcentajeIva = Number(linea.porcentaje_iva ?? linea.tipo_iva ?? 10) === 21 ? 21 : 10;
     if (porcentajeIva === 21) {
-      totalConIva21 += subtotalLinea;
+      suma21SinDtoGen = redondearMoneda(suma21SinDtoGen + subtotalLinea);
     } else {
-      totalConIva10 += subtotalLinea;
+      suma10SinDtoGen = redondearMoneda(suma10SinDtoGen + subtotalLinea);
     }
   }
 
-  totalConIva10 = Number(totalConIva10.toFixed(2));
-  totalConIva21 = Number(totalConIva21.toFixed(2));
+  let totalConIva10 = redondearMoneda(suma10SinDtoGen * factorDtoGeneral);
+  let totalConIva21 = redondearMoneda(suma21SinDtoGen * factorDtoGeneral);
+
+  const objetivoTotal =
+    totalFinalObjetivo !== undefined && Number.isFinite(totalFinalObjetivo)
+      ? redondearMoneda(totalFinalObjetivo)
+      : redondearMoneda((suma10SinDtoGen + suma21SinDtoGen) * factorDtoGeneral);
+
+  // Ajuste de céntimo residual en caso de descuento general sobre ticket mixto (10% + 21%)
+  const diferenciaCentimos = redondearMoneda(objetivoTotal - (totalConIva10 + totalConIva21));
+  if (Math.abs(diferenciaCentimos) > 0 && Math.abs(diferenciaCentimos) <= 0.05) {
+    if (Math.abs(totalConIva21) > Math.abs(totalConIva10)) {
+      totalConIva21 = redondearMoneda(totalConIva21 + diferenciaCentimos);
+    } else if (Math.abs(totalConIva10) > 0) {
+      totalConIva10 = redondearMoneda(totalConIva10 + diferenciaCentimos);
+    } else if (Math.abs(totalConIva21) > 0) {
+      totalConIva21 = redondearMoneda(totalConIva21 + diferenciaCentimos);
+    }
+  }
 
   // Fórmula estándar: Base = TotalConIVA / (1 + (PorcentajeIVA / 100)) e Impuesto = TotalConIVA - Base
-  const base_imponible_10 = Number((totalConIva10 / (1 + 10 / 100)).toFixed(2));
-  const iva_10 = Number((totalConIva10 - base_imponible_10).toFixed(2));
+  const base_imponible_10 = redondearMoneda(totalConIva10 / 1.1);
+  const iva_10 = redondearMoneda(totalConIva10 - base_imponible_10);
 
-  const base_imponible_21 = Number((totalConIva21 / (1 + 21 / 100)).toFixed(2));
-  const iva_21 = Number((totalConIva21 - base_imponible_21).toFixed(2));
+  const base_imponible_21 = redondearMoneda(totalConIva21 / 1.21);
+  const iva_21 = redondearMoneda(totalConIva21 - base_imponible_21);
 
-  const baseImponibleTotal = Number((base_imponible_10 + base_imponible_21).toFixed(2));
-  const cuotaIvaTotal = Number((iva_10 + iva_21).toFixed(2));
-  const totalGeneral = Number((totalConIva10 + totalConIva21).toFixed(2));
+  const baseImponibleTotal = redondearMoneda(base_imponible_10 + base_imponible_21);
+  const cuotaIvaTotal = redondearMoneda(iva_10 + iva_21);
+  const totalGeneral = redondearMoneda(baseImponibleTotal + cuotaIvaTotal);
 
   return {
     totalConIva10,
@@ -83,8 +111,7 @@ export interface ConfiguracionFiscal {
 }
 
 /**
- * Convierte una cantidad desde la unidad usada en el escandallo a la unidad base del artículo ingrediente
- * Ejemplo: Si el café en grano se compra en 'kg' (coste 18€/kg) y la receta lleva 8 'g', el factor es 0.008
+ * Calcula la huella criptográfica SHA-256 encadenada conforme a VeriFactu (Ley 11/2021 Antifraude)
  */
 export async function calcularHashVeriFactu(
   numeroTicket: string,
@@ -92,7 +119,7 @@ export async function calcularHashVeriFactu(
   total: number | string,
   hashAnterior: string
 ): Promise<string> {
-  const totalStr = typeof total === 'number' ? total.toFixed(2) : String(total);
+  const totalStr = typeof total === 'number' ? redondearMoneda(total).toFixed(2) : String(total);
   const cadena = `${numeroTicket}${fechaExpedicion}${totalStr}${hashAnterior}`;
   const encoder = new TextEncoder();
   const data = encoder.encode(cadena);
@@ -101,6 +128,10 @@ export async function calcularHashVeriFactu(
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Convierte una cantidad desde la unidad usada en el escandallo a la unidad base del artículo ingrediente
+ * Ejemplo: Si el café en grano se compra en 'kg' (coste 18€/kg) y la receta lleva 8 'g', el factor es 0.008
+ */
 export function obtenerFactorConversion(unidadBase: UnidadMedida, unidadUso: UnidadMedida): number {
   if (unidadBase === unidadUso) return 1;
   // Peso
@@ -127,7 +158,7 @@ export function calcularCosteIngredienteEscandallo(
 ): number {
   const factor = obtenerFactorConversion(unidadBase, unidadUso);
   const cantidadConvertida = cantidadUsada * factor;
-  const factorMerma = 1 + (Number(mermaPorcentaje || 0) / 100);
+  const factorMerma = 1 + Number(mermaPorcentaje || 0) / 100;
   return Number((costeUnitarioBase * cantidadConvertida * factorMerma).toFixed(4));
 }
 
@@ -135,24 +166,29 @@ export function calcularCosteIngredienteEscandallo(
  * Obtiene los datos fiscales de la empresa desde Supabase
  */
 export async function obtenerConfiguracionFiscal(): Promise<ConfiguracionFiscal> {
-  const { data, error } = await supabase
-    .from('configuracion_fiscal')
-    .select('*')
-    .limit(1)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('configuracion_fiscal')
+      .select('*')
+      .limit(1)
+      .maybeSingle();
 
-  if (error || !data) {
-    return {
-      razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
-      nombre_comercial: 'NEXUS',
-      nif_cif: 'B00000000',
-      direccion_fiscal: 'Córdoba, España',
-      telefono: '',
-      iva_defecto: 10,
-      pin_administrador: '1234'
-    };
+    if (!error && data) {
+      return data as ConfiguracionFiscal;
+    }
+  } catch (err) {
+    console.warn('No se pudo cargar configuracion_fiscal desde Supabase, usando configuración por defecto:', err);
   }
-  return data;
+
+  return {
+    razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
+    nombre_comercial: 'NEXUS',
+    nif_cif: 'B00000000',
+    direccion_fiscal: 'Córdoba, España',
+    telefono: '',
+    iva_defecto: 10,
+    pin_administrador: '1234'
+  };
 }
 
 /**
@@ -189,13 +225,14 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
   const lineas: LineaTicketFiscal[] = Array.isArray(factura.lineas) ? factura.lineas : [];
   const desgloseIvaFactura = calcularDesgloseImpuestosLineas(
     lineas,
-    Number(factura.descuento_general_porcentaje || 0)
+    Number(factura.descuento_general_porcentaje || 0),
+    factura.total_final !== undefined ? Number(factura.total_final) : undefined
   );
-  const base10Print = Number(factura.base_imponible_10 ?? desgloseIvaFactura.base_imponible_10);
-  const iva10Print = Number(factura.iva_10 ?? desgloseIvaFactura.iva_10);
-  const base21Print = Number(factura.base_imponible_21 ?? desgloseIvaFactura.base_imponible_21);
-  const iva21Print = Number(factura.iva_21 ?? desgloseIvaFactura.iva_21);
-  const huellaCorta = factura.hash_actual ? `${factura.hash_actual.substring(0, 16)}...` : 'N/A';
+  const base10Print = redondearMoneda(Number(factura.base_imponible_10 ?? desgloseIvaFactura.base_imponible_10));
+  const iva10Print = redondearMoneda(Number(factura.iva_10 ?? desgloseIvaFactura.iva_10));
+  const base21Print = redondearMoneda(Number(factura.base_imponible_21 ?? desgloseIvaFactura.base_imponible_21));
+  const iva21Print = redondearMoneda(Number(factura.iva_21 ?? desgloseIvaFactura.iva_21));
+  const huellaCorta = factura.hash_actual ? `${String(factura.hash_actual).substring(0, 16)}...` : 'N/A';
 
   const filasHTML = lineas
     .map(
@@ -300,7 +337,7 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
 
       <table class="totales">
         ${
-          Number(factura.descuento_total_importe) > 0
+          Math.abs(Number(factura.descuento_total_importe || 0)) > 0
             ? `
           <tr>
             <td>Subtotal Bruto:</td>
@@ -308,21 +345,13 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
           </tr>
           <tr>
             <td>Descuento Aplicado ${factura.descuento_general_porcentaje > 0 ? `(${factura.descuento_general_porcentaje}%)` : ''}:</td>
-            <td style="text-align: right;">-${Number(factura.descuento_total_importe).toFixed(2)} €</td>
+            <td style="text-align: right;">-${Math.abs(Number(factura.descuento_total_importe)).toFixed(2)} €</td>
           </tr>
         `
             : ''
-        }
-        <tr>
-
-
-        </tr>
-        <tr>
-
-
-        </tr>
+      }
         ${
-          base10Print > 0 || (base10Print === 0 && base21Print === 0)
+          Math.abs(base10Print) > 0 || (Math.abs(base10Print) === 0 && Math.abs(base21Print) === 0)
             ? `
         <tr>
           <td>Base Imponible (10%):</td>
@@ -335,7 +364,7 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
             : ''
         }
         ${
-          base21Print > 0
+          Math.abs(base21Print) > 0
             ? `
         <tr>
           <td>Base Imponible (21%):</td>
@@ -397,9 +426,12 @@ export function exportarTicketsAExcelCSV(tickets: any[], nombreArchivo: string =
     'Método Pago',
     'Subtotal Bruto (€)',
     'Descuento (€)',
-    'Base Imponible (€)',
-    'IVA (%)',
-    'Cuota IVA (€)',
+    'Base Imponible 10% (€)',
+    'Cuota IVA 10% (€)',
+    'Base Imponible 21% (€)',
+    'Cuota IVA 21% (€)',
+    'Base Imponible Total (€)',
+    'Cuota IVA Total (€)',
     'Total Final (€)',
     'Estado Fiscal',
     'Doc. Origen',
@@ -408,26 +440,43 @@ export function exportarTicketsAExcelCSV(tickets: any[], nombreArchivo: string =
     'Hash SHA-256'
   ];
 
-  const filas = tickets.map((t) => [
-    t.numero_completo,
-    t.serie,
-    t.tipo_documento,
-    new Date(t.fecha_expedicion).toLocaleString('es-ES'),
-    t.mesa || 'Barra',
-    t.vendedor_nombre || '',
-    t.metodo_pago || '',
-    Number(t.subtotal_bruto || 0).toFixed(2).replace('.', ','),
-    Number(t.descuento_total_importe || 0).toFixed(2).replace('.', ','),
-    Number(t.base_imponible || 0).toFixed(2).replace('.', ','),
-    Number(t.tipo_iva_aplicado || 10).toFixed(2).replace('.', ','),
-    Number(t.cuota_iva || 0).toFixed(2).replace('.', ','),
-    Number(t.total_final || 0).toFixed(2).replace('.', ','),
-    t.estado_fiscal || 'EMITIDO',
-    t.ticket_origen_numero || '',
-    t.cliente_nif || '',
-    `"${(t.cliente_nombre_razon || '').replace(/"/g, '""')}"`,
-    t.hash_actual || ''
-  ]);
+  const filas = tickets.map((t) => {
+    const desglose = calcularDesgloseImpuestosLineas(
+      Array.isArray(t.lineas) ? t.lineas : [],
+      Number(t.descuento_general_porcentaje || 0),
+      t.total_final !== undefined ? Number(t.total_final) : undefined
+    );
+    const b10 = Number(t.base_imponible_10 ?? desglose.base_imponible_10);
+    const i10 = Number(t.iva_10 ?? desglose.iva_10);
+    const b21 = Number(t.base_imponible_21 ?? desglose.base_imponible_21);
+    const i21 = Number(t.iva_21 ?? desglose.iva_21);
+    const bTot = Number(t.base_imponible ?? desglose.baseImponibleTotal);
+    const iTot = Number(t.cuota_iva ?? desglose.cuotaIvaTotal);
+
+    return [
+      t.numero_completo,
+      t.serie,
+      t.tipo_documento,
+      new Date(t.fecha_expedicion).toLocaleString('es-ES'),
+      t.mesa || 'Barra',
+      t.vendedor_nombre || '',
+      t.metodo_pago || '',
+      Number(t.subtotal_bruto || 0).toFixed(2).replace('.', ','),
+      Number(t.descuento_total_importe || 0).toFixed(2).replace('.', ','),
+      b10.toFixed(2).replace('.', ','),
+      i10.toFixed(2).replace('.', ','),
+      b21.toFixed(2).replace('.', ','),
+      i21.toFixed(2).replace('.', ','),
+      bTot.toFixed(2).replace('.', ','),
+      iTot.toFixed(2).replace('.', ','),
+      Number(t.total_final || 0).toFixed(2).replace('.', ','),
+      t.estado_fiscal || 'EMITIDO',
+      t.ticket_origen_numero || '',
+      t.cliente_nif || '',
+      `"${(t.cliente_nombre_razon || '').replace(/"/g, '""')}"`,
+      t.hash_actual || ''
+    ];
+  });
 
   const contenidoCSV =
     '\uFEFF' + // BOM UTF-8 para que Excel en España reconozca tildes y símbolo € perfectamente
@@ -453,9 +502,9 @@ export function exportarTicketsAPDF(
   config: ConfiguracionFiscal,
   tituloInforme: string = 'INFORME HISTÓRICO DE FACTURACIÓN Y TICKETS'
 ) {
-  const totalGeneral = tickets.reduce((acc, t) => acc + Number(t.total_final || 0), 0);
-  const baseGeneral = tickets.reduce((acc, t) => acc + Number(t.base_imponible || 0), 0);
-  const ivaGeneral = tickets.reduce((acc, t) => acc + Number(t.cuota_iva || 0), 0);
+  const totalGeneral = redondearMoneda(tickets.reduce((acc, t) => acc + Number(t.total_final || 0), 0));
+  const baseGeneral = redondearMoneda(tickets.reduce((acc, t) => acc + Number(t.base_imponible || 0), 0));
+  const ivaGeneral = redondearMoneda(tickets.reduce((acc, t) => acc + Number(t.cuota_iva || 0), 0));
 
   const filasHTML = tickets
     .map(
@@ -466,9 +515,9 @@ export function exportarTicketsAPDF(
         <td>${new Date(t.fecha_expedicion).toLocaleString('es-ES')}</td>
         <td>${t.vendedor_nombre || '-'}</td>
         <td>${(t.metodo_pago || '').toUpperCase()}</td>
-        <td style="text-align:right;">${Number(t.base_imponible).toFixed(2)} €</td>
-        <td style="text-align:right;">${Number(t.cuota_iva).toFixed(2)} €</td>
-        <td style="text-align:right; font-weight:bold;">${Number(t.total_final).toFixed(2)} €</td>
+        <td style="text-align:right;">${Number(t.base_imponible || 0).toFixed(2)} €</td>
+        <td style="text-align:right;">${Number(t.cuota_iva || 0).toFixed(2)} €</td>
+        <td style="text-align:right; font-weight:bold;">${Number(t.total_final || 0).toFixed(2)} €</td>
         <td>${t.estado_fiscal}</td>
       </tr>
     `

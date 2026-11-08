@@ -52,32 +52,37 @@ export default function KitchenDisplay() {
   }, []);
 
   const cargarComandas = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('comandas_cocina')
-      .select('*')
-      .neq('tipo_destino', 'cuenta')
-      .in('estado', ['pendiente', 'listo'])
-      .order('created_at', { ascending: true });
+    try {
+      const { data, error } = await supabase
+        .from('comandas_cocina')
+        .select('*')
+        .neq('tipo_destino', 'cuenta')
+        .in('estado', ['pendiente', 'listo'])
+        .order('created_at', { ascending: true });
 
-    if (!error && data) {
-      const filtradasCocina = (data as Comanda[]).filter((c) => {
-        const tieneItemsCocina =
-          String(c.tipo_destino || '').trim().toLowerCase() === 'cocina' ||
-          (Array.isArray(c.items) && c.items.some((it) => esItemCocina(it, c.tipo_destino)));
+      if (!error && data) {
+        const filtradasCocina = (data as Comanda[]).filter((c) => {
+          const tieneItemsCocina =
+            String(c.tipo_destino || '').trim().toLowerCase() === 'cocina' ||
+            (Array.isArray(c.items) && c.items.some((it) => esItemCocina(it, c.tipo_destino)));
 
-        if (!tieneItemsCocina) return false;
+          if (!tieneItemsCocina) return false;
 
-        // Mantener visible mientras exista al menos un plato de cocina que no haya sido entregado por el camarero
-        const itemsReales = Array.isArray(c.items) ? c.items : [];
-        const todosEntregados =
-          itemsReales.length > 0 &&
-          itemsReales.every((it) => Boolean(it.entregado) || it.estado_cocina === 'servido');
+          // Mantener visible mientras exista al menos un plato de cocina que no haya sido entregado por el camarero
+          const itemsReales = Array.isArray(c.items) ? c.items : [];
+          const todosEntregados =
+            itemsReales.length > 0 &&
+            itemsReales.every((it) => Boolean(it.entregado) || it.estado_cocina === 'servido');
 
-        return !todosEntregados;
-      });
-      setComandas(filtradasCocina);
+          return !todosEntregados;
+        });
+        setComandas(filtradasCocina);
+      }
+    } catch (err) {
+      console.error('Error al cargar comandas en Cocina:', err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [esItemCocina]);
 
   useEffect(() => {
