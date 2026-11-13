@@ -9,6 +9,8 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE TABLE IF NOT EXISTS public.guisos_programados (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   fecha date NOT NULL,
+  fecha_corte date,
+  hora_corte text NOT NULL DEFAULT '21:00',
   nombre_plato text NOT NULL,
   descripcion text DEFAULT '',
   min_raciones integer NOT NULL DEFAULT 8 CHECK (min_raciones > 0),
@@ -16,9 +18,17 @@ CREATE TABLE IF NOT EXISTS public.guisos_programados (
   precio_takeaway numeric(10, 2) NOT NULL DEFAULT 0.00 CHECK (precio_takeaway >= 0),
   imagen_url text DEFAULT '',
   estado text NOT NULL DEFAULT 'buscando_minimo' CHECK (estado IN ('buscando_minimo', 'confirmado', 'cancelado')),
-  hora_corte text NOT NULL DEFAULT '21:00',
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Asegurar que la columna fecha_corte exista si la tabla fue creada previamente
+ALTER TABLE public.guisos_programados
+  ADD COLUMN IF NOT EXISTS fecha_corte date;
+
+-- Rellenar fecha_corte por defecto (1 día antes de fecha) en registros previos que no la tengan
+UPDATE public.guisos_programados
+   SET fecha_corte = (fecha - INTERVAL '1 day')::date
+ WHERE fecha_corte IS NULL;
 
 -- Índices para optimizar consultas por calendario semanal y estado
 CREATE INDEX IF NOT EXISTS idx_guisos_programados_fecha ON public.guisos_programados (fecha);
@@ -60,7 +70,6 @@ ALTER TABLE public.reservas_guisos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.newsletter_guisos ENABLE ROW LEVEL SECURITY;
 
 -- Políticas para guisos_programados:
--- Lectura pública para la vista #guisos y escritura/actualización para el panel y auto-confirmación
 DROP POLICY IF EXISTS "Lectura publica de guisos_programados" ON public.guisos_programados;
 CREATE POLICY "Lectura publica de guisos_programados"
   ON public.guisos_programados
@@ -91,8 +100,6 @@ CREATE POLICY "Eliminacion de guisos_programados"
   USING (true);
 
 -- Políticas para reservas_guisos:
--- Lectura para cómputo de progreso en tiempo real y panel de administración;
--- Inserción abierta para clientes desde #guisos; Actualización/Borrado para gestión de pagos.
 DROP POLICY IF EXISTS "Lectura publica de reservas_guisos" ON public.reservas_guisos;
 CREATE POLICY "Lectura publica de reservas_guisos"
   ON public.reservas_guisos
@@ -147,8 +154,6 @@ CREATE POLICY "Actualizacion newsletter_guisos"
 
 -- ============================================================================
 -- FUNCIÓN Y TRIGGER AUTOMÁTICO DE CONFIRMACIÓN POR UMBRAL DE RACIONES
--- Si al insertar o actualizar en reservas_guisos se alcanza min_raciones,
--- el guiso pasa automáticamente de 'buscando_minimo' a 'confirmado'.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.fn_verificar_minimo_guiso()
@@ -187,7 +192,7 @@ CREATE TRIGGER trg_auto_confirmar_guiso
   FOR EACH ROW
   EXECUTE FUNCTION public.fn_verificar_minimo_guiso();
 
--- Habilitar Realtime para ambas tablas (ignora si ya pertenecen a la publicación)
+-- Habilitar Realtime para ambas tablas
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN

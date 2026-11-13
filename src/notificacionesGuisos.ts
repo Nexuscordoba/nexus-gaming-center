@@ -8,6 +8,8 @@ export type EstadoPagoReservaGuiso = 'pendiente' | 'pagado';
 export interface GuisoProgramado {
   id: string;
   fecha: string;
+  fecha_corte?: string | null;
+  hora_corte: string;
   nombre_plato: string;
   descripcion: string;
   min_raciones: number;
@@ -15,7 +17,6 @@ export interface GuisoProgramado {
   precio_takeaway: number;
   imagen_url: string;
   estado: EstadoGuiso;
-  hora_corte: string;
   created_at?: string;
 }
 
@@ -60,6 +61,33 @@ export const normalizarTelefonoWhatsApp = (telefonoRaw: string): string => {
   return soloDigitos;
 };
 
+/**
+ * Calcula una fecha YYYY-MM-DD restando N días a la fecha de servicio del guiso.
+ */
+export const calcularFechaCorteMenosDias = (fechaServicioISO: string, diasRestar: number = 1): string => {
+  if (!fechaServicioISO) return '';
+  try {
+    const d = new Date(`${fechaServicioISO}T12:00:00`);
+    if (isNaN(d.getTime())) return fechaServicioISO;
+    d.setDate(d.getDate() - diasRestar);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  } catch {
+    return fechaServicioISO;
+  }
+};
+
+export const obtenerFechaCorteEfectiva = (
+  guiso: Pick<GuisoProgramado, 'fecha' | 'fecha_corte'>
+): string => {
+  if (guiso.fecha_corte && String(guiso.fecha_corte).trim()) {
+    return String(guiso.fecha_corte).trim();
+  }
+  return calcularFechaCorteMenosDias(guiso.fecha, 1);
+};
+
 export const formatearFechaHumana = (fechaISO: string): string => {
   if (!fechaISO) return '';
   try {
@@ -71,6 +99,25 @@ export const formatearFechaHumana = (fechaISO: string): string => {
     });
   } catch {
     return fechaISO;
+  }
+};
+
+export const formatearFechaCorteHumana = (
+  guiso: Pick<GuisoProgramado, 'fecha' | 'fecha_corte' | 'hora_corte'>
+): string => {
+  const fCorte = obtenerFechaCorteEfectiva(guiso);
+  const hCorte = (guiso.hora_corte || '21:00').trim();
+  if (!fCorte) return `${hCorte}h`;
+  try {
+    const d = new Date(`${fCorte}T12:00:00`);
+    const diaTexto = d.toLocaleDateString('es-ES', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short'
+    });
+    return `${diaTexto} · ${hCorte}h`;
+  } catch {
+    return `${fCorte} · ${hCorte}h`;
   }
 };
 
@@ -93,26 +140,36 @@ export const calcularImporteReserva = (
 };
 
 /**
+ * Comprueba si ya se ha superado la fecha y hora exactas de corte de preventa (`fecha_corte` + `hora_corte`).
+ */
+export const haSuperadoFechaHoraCorte = (
+  guiso: Pick<GuisoProgramado, 'fecha' | 'fecha_corte' | 'hora_corte'>
+): boolean => {
+  try {
+    const fechaCorteRef = obtenerFechaCorteEfectiva(guiso);
+    if (!fechaCorteRef) return false;
+    const horaCorteLimpia = (guiso.hora_corte || '21:00').trim();
+    const matchHora = horaCorteLimpia.match(/^(\d{1,2}):(\d{2})/);
+    const hh = matchHora ? String(matchHora[1]).padStart(2, '0') : '21';
+    const mm = matchHora ? String(matchHora[2]).padStart(2, '0') : '00';
+    const fechaHoraCorte = new Date(`${fechaCorteRef}T${hh}:${mm}:00`);
+    if (isNaN(fechaHoraCorte.getTime())) return false;
+    return Date.now() > fechaHoraCorte.getTime();
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Determina si un guiso debe activar el "Plan B" inteligente:
  * - Si su estado es explícitamente 'cancelado'
- * - O si sigue en 'buscando_minimo', no ha alcanzado min_raciones y ya se superó la hora_corte de su fecha.
+ * - O si sigue en 'buscando_minimo', no ha alcanzado min_raciones y ya se superó la fecha_corte + hora_corte.
  */
 export const estaEnPlanB = (guiso: GuisoProgramado, racionesReservadas: number): boolean => {
   if (guiso.estado === 'cancelado') return true;
   if (guiso.estado === 'confirmado') return false;
   if (racionesReservadas >= Number(guiso.min_raciones || 1)) return false;
-
-  try {
-    const horaCorteLimpia = (guiso.hora_corte || '21:00').trim();
-    const matchHora = horaCorteLimpia.match(/^(\d{1,2}):(\d{2})/);
-    const hh = matchHora ? String(matchHora[1]).padStart(2, '0') : '21';
-    const mm = matchHora ? String(matchHora[2]).padStart(2, '0') : '00';
-    const fechaCorte = new Date(`${guiso.fecha}T${hh}:${mm}:00`);
-    if (isNaN(fechaCorte.getTime())) return false;
-    return Date.now() > fechaCorte.getTime();
-  } catch {
-    return false;
-  }
+  return haSuperadoFechaHoraCorte(guiso);
 };
 
 /**
@@ -153,8 +210,6 @@ export const generarEnlaceWhatsAppAdminAClienteConfirmacion = (
 
 /**
  * Generador de enlace wa.me para el CLIENTE (Vista Pública #guisos):
- * Permite al cliente contactar con el bar con un toque para formalizar el abono directo
- * (especialmente cuando se apunta a un guiso que ya está confirmado) o enviar su resguardo.
  */
 export const generarEnlaceWhatsAppClienteABar = (
   reserva: Pick<ReservaGuiso, 'nombre_cliente' | 'telefono' | 'raciones' | 'modalidad'>,
@@ -209,7 +264,6 @@ export const guardarSuscripcionNewsletterGuisos = async (datos: {
   if (!emailLimpio || !emailLimpio.includes('@')) return false;
 
   try {
-    // 1. Intentar guardar en Supabase (tabla newsletter_guisos)
     const { error } = await supabase.from('newsletter_guisos').upsert(
       [
         {
@@ -223,7 +277,6 @@ export const guardarSuscripcionNewsletterGuisos = async (datos: {
     );
 
     if (error) {
-      // Fallback local en caso de que la tabla opcional aún no esté migrada
       const raw = localStorage.getItem('nexus_newsletter_guisos');
       const lista: Array<{ email: string; nombre: string; telefono: string; fecha: string }> = raw
         ? JSON.parse(raw)
@@ -245,8 +298,7 @@ export const guardarSuscripcionNewsletterGuisos = async (datos: {
 };
 
 /**
- * Envía el email de confirmación de reserva mediante Resend (vía endpoint o API directa con VITE_RESEND_API_KEY)
- * y registra el correo en la newsletter de guisos de la casa.
+ * Envía el email de confirmación de reserva mediante Resend y registra el correo en la newsletter.
  */
 export const enviarEmailConfirmacionReservaGuiso = async (params: {
   reserva: ReservaGuiso;
@@ -289,7 +341,7 @@ export const enviarEmailConfirmacionReservaGuiso = async (params: {
           ? recienConfirmadoPorEstaReserva
             ? '🎉 ¡Con tu reserva acabamos de alcanzar el mínimo de raciones! El plato queda oficialmente <strong>CONFIRMADO</strong> y se cocinará sin falta.'
             : '⚡ Este guiso ya ha alcanzado su mínimo y está <strong>CONFIRMADO</strong> en los fogones. Tu ración queda reservada.'
-          : 'Hemos registrado tu reserva gratuita en nuestra preventa. En cuanto alcancemos el mínimo de raciones antes de la hora de corte, te avisaremos para confirmar fogones.'
+          : 'Hemos registrado tu reserva gratuita en nuestra preventa. En cuanto alcancemos el mínimo de raciones antes del cierre de preventa, te avisaremos para confirmar fogones.'
       }</p>
       <div style="background: #131722; border-radius: 12px; padding: 16px; margin: 20px 0; border: 1px solid #ffffff1a;">
         <p style="margin: 4px 0;"><strong>Plato:</strong> ${guiso.nombre_plato}</p>
@@ -303,7 +355,6 @@ export const enviarEmailConfirmacionReservaGuiso = async (params: {
   `;
 
   try {
-    // 1. Intentar envío a través del endpoint backend del proyecto (evita CORS en navegador)
     const responseEndpoint = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -359,7 +410,7 @@ export const enviarEmailConfirmacionReservaGuiso = async (params: {
         };
       }
     } catch {
-      // Ignorar fallo de red/CORS en cliente para no bloquear la experiencia
+      // Ignorar fallo de red/CORS en cliente
     }
   }
 

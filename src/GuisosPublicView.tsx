@@ -18,13 +18,16 @@ import {
   X,
   AlertTriangle,
   MessageCircle,
-  CreditCard
+  CreditCard,
+  Lock
 } from 'lucide-react';
 import { supabase } from './supabase';
 import {
   estaEnPlanB,
+  haSuperadoFechaHoraCorte,
   calcularImporteReserva,
   formatearFechaHumana,
+  formatearFechaCorteHumana,
   generarEnlaceWhatsAppClienteABar,
   enviarEmailConfirmacionReservaGuiso,
   type GuisoProgramado,
@@ -161,13 +164,15 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
   const guisosSemanaActiva = useMemo(() => {
     const enSemana = guisos.filter((g) => fechasDeLaSemanaSet.has(g.fecha));
-    // Si en la semana actual no hay guisos pero hay guisos programados en otras fechas cercanas y estamos en vista TODOS, mostrarlos también
     const base = enSemana.length > 0 || semanaOffset !== 0 ? enSemana : guisos;
     if (diaSeleccionado === 'TODOS') return base;
     return base.filter((g) => g.fecha === diaSeleccionado);
   }, [guisos, fechasDeLaSemanaSet, diaSeleccionado, semanaOffset]);
 
   const abrirModalReserva = (guiso: GuisoProgramado) => {
+    if (haSuperadoFechaHoraCorte(guiso)) {
+      return;
+    }
     setGuisoActivoModal(guiso);
     setReservaCompletada(null);
     setErrorReserva(null);
@@ -184,6 +189,13 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   const handleConfirmarReserva = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!guisoActivoModal || enviandoReserva) return;
+
+    if (haSuperadoFechaHoraCorte(guisoActivoModal)) {
+      setErrorReserva(
+        `El plazo de preventa para este plato finalizó (${formatearFechaCorteHumana(guisoActivoModal)}).`
+      );
+      return;
+    }
 
     if (nombreCliente.trim().length < 2) {
       setErrorReserva('Por favor, indica tu nombre para anotar tu ración.');
@@ -251,7 +263,6 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         platoConfirmadoFinal
       );
 
-      // Disparar notificación por correo Resend + guardar newsletter en segundo plano
       enviarEmailConfirmacionReservaGuiso({
         reserva: reservaFinalObj,
         guiso: guisoActualizado,
@@ -368,7 +379,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   setSemanaOffset(0);
                   setDiaSeleccionado('TODOS');
                 }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-black whitespace-nowrap transition-all cursor-pointer border ${
                   semanaOffset === 0
                     ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
                     : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
@@ -382,7 +393,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   setSemanaOffset(1);
                   setDiaSeleccionado('TODOS');
                 }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-black whitespace-nowrap transition-all cursor-pointer border ${
                   semanaOffset === 1
                     ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
                     : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
@@ -503,6 +514,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                 Math.round((racionesActuales / minRequerido) * 100)
               );
               const mostrarPlanB = estaEnPlanB(guiso, racionesActuales);
+              const preventaCerradaPorFecha = haSuperadoFechaHoraCorte(guiso);
 
               // Otros guisos de ese mismo día que SÍ están confirmados (para el Plan B Inteligente)
               const otrosGuisosConfirmadosHoy = guisos.filter(
@@ -535,7 +547,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           {guiso.nombre_plato}
                         </h3>
                         <p className="text-xs text-slate-400 mt-1">
-                          Este guiso no alcanzó el mínimo de raciones antes de la hora de corte ({guiso.hora_corte}h) o ha sido sustituido hoy.
+                          Este guiso no alcanzó el mínimo de raciones antes de la fecha y hora de corte ({formatearFechaCorteHumana(guiso)}) o ha sido sustituido hoy.
                         </p>
                       </div>
 
@@ -550,37 +562,46 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
                         {otrosGuisosConfirmadosHoy.length > 0 ? (
                           <div className="space-y-2.5">
-                            {otrosGuisosConfirmadosHoy.map((alt) => (
-                              <div
-                                key={alt.id}
-                                className="flex items-center justify-between gap-3 bg-[#0c0d14]/90 border border-emerald-500/30 rounded-xl p-3"
-                              >
-                                <div className="flex items-center gap-3">
-                                  <img
-                                    src={
-                                      alt.imagen_url ||
-                                      'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=300&q=80'
-                                    }
-                                    alt={alt.nombre_plato}
-                                    className="w-12 h-12 rounded-xl object-cover shrink-0 border border-white/10"
-                                  />
-                                  <div>
-                                    <h4 className="text-xs font-black text-white">{alt.nombre_plato}</h4>
-                                    <p className="text-[11px] text-emerald-400 font-bold">
-                                      🪑 {Number(alt.precio_barra).toFixed(2)}€ · 🛍️{' '}
-                                      {Number(alt.precio_takeaway).toFixed(2)}€
-                                    </p>
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => abrirModalReserva(alt)}
-                                  className="px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] shrink-0 cursor-pointer transition-all"
+                            {otrosGuisosConfirmadosHoy.map((alt) => {
+                              const cerradoAlt = haSuperadoFechaHoraCorte(alt);
+                              return (
+                                <div
+                                  key={alt.id}
+                                  className="flex items-center justify-between gap-3 bg-[#0c0d14]/90 border border-emerald-500/30 rounded-xl p-3"
                                 >
-                                  ⚡ Reservar
-                                </button>
-                              </div>
-                            ))}
+                                  <div className="flex items-center gap-3">
+                                    <img
+                                      src={
+                                        alt.imagen_url ||
+                                        'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=300&q=80'
+                                      }
+                                      alt={alt.nombre_plato}
+                                      className="w-12 h-12 rounded-xl object-cover shrink-0 border border-white/10"
+                                    />
+                                    <div>
+                                      <h4 className="text-xs font-black text-white">{alt.nombre_plato}</h4>
+                                      <p className="text-[11px] text-emerald-400 font-bold">
+                                        🪑 {Number(alt.precio_barra).toFixed(2)}€ · 🛍️{' '}
+                                        {Number(alt.precio_takeaway).toFixed(2)}€
+                                      </p>
+                                    </div>
+                                  </div>
+                                  {!cerradoAlt ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => abrirModalReserva(alt)}
+                                      className="px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] shrink-0 cursor-pointer transition-all"
+                                    >
+                                      ⚡ Reservar
+                                    </button>
+                                  ) : (
+                                    <span className="text-[10px] font-bold text-amber-300 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 shrink-0">
+                                      En barra
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : (
                           <p className="text-xs text-slate-300">
@@ -648,9 +669,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       </div>
 
                       <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between text-[11px] text-slate-300">
-                        <span className="inline-flex items-center gap-1 bg-black/70 backdrop-blur px-2.5 py-1 rounded-lg border border-white/10">
+                        <span className="inline-flex items-center gap-1.5 bg-black/75 backdrop-blur px-3 py-1 rounded-lg border border-white/10">
                           <Clock className="h-3.5 w-3.5 text-amber-400" />
-                          Hora límite preventa: <strong>{guiso.hora_corte}h</strong>
+                          <span>
+                            Cierre preventa: <strong className="text-amber-300">{formatearFechaCorteHumana(guiso)}</strong>
+                          </span>
                         </span>
                       </div>
                     </div>
@@ -725,37 +748,46 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                         </div>
 
                         <p className="text-[11px] text-slate-400">
-                          {esConfirmado
-                            ? '⚡ Este plato ya ha alcanzado el mínimo y sale seguro. ¡Asegura tu ración antes de que se agote la olla!'
+                          {preventaCerradaPorFecha
+                            ? '🔒 El plazo online de preventa ha finalizado. Consulta disponibilidad de raciones directamente en barra.'
+                            : esConfirmado
+                            ? '⚡ Este plato ya ha alcanzado el mínimo y sale seguro. ¡Asegura tu ración antes del cierre!'
                             : '💡 Apúntate gratis sin pagar ahora. Si llegamos al mínimo, pasa automáticamente a confirmado.'}
                         </p>
                       </div>
                     </div>
                   </div>
 
-                  {/* BOTÓN DE RESERVA */}
+                  {/* BOTÓN DE RESERVA (BLOQUEADO SI SE SUPERÓ LA FECHA Y HORA DE CORTE) */}
                   <div className="px-6 pb-6">
-                    <button
-                      type="button"
-                      onClick={() => abrirModalReserva(guiso)}
-                      className={`w-full py-4 px-5 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer transition-all shadow-lg ${
-                        esConfirmado
-                          ? 'bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 shadow-[0_0_25px_rgba(16,185,129,0.35)] hover:opacity-95'
-                          : 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:opacity-95'
-                      }`}
-                    >
-                      {esConfirmado ? (
-                        <>
-                          <Sparkles className="h-4 w-4" />
-                          <span>⚡ Reservar Ración Asegurada</span>
-                        </>
-                      ) : (
-                        <>
-                          <ChefHat className="h-4 w-4" />
-                          <span>🍲 Apuntarme Gratis (0 € ahora)</span>
-                        </>
-                      )}
-                    </button>
+                    {preventaCerradaPorFecha ? (
+                      <div className="w-full py-4 px-5 rounded-2xl bg-slate-900 border border-white/10 text-slate-400 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2">
+                        <Lock className="h-4 w-4 text-rose-400" />
+                        <span>Preventa Cerrada ({formatearFechaCorteHumana(guiso)})</span>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => abrirModalReserva(guiso)}
+                        className={`w-full py-4 px-5 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer transition-all shadow-lg ${
+                          esConfirmado
+                            ? 'bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 shadow-[0_0_25px_rgba(16,185,129,0.35)] hover:opacity-95'
+                            : 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:opacity-95'
+                        }`}
+                      >
+                        {esConfirmado ? (
+                          <>
+                            <Sparkles className="h-4 w-4" />
+                            <span>⚡ Reservar Ración Asegurada</span>
+                          </>
+                        ) : (
+                          <>
+                            <ChefHat className="h-4 w-4" />
+                            <span>🍲 Apuntarme Gratis (0 € ahora)</span>
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -778,7 +810,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
             <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
               <div>
                 <span className="text-[10px] font-black uppercase tracking-wider text-amber-400 block">
-                  📅 {formatearFechaHumana(guisoActivoModal.fecha)}
+                  📅 {formatearFechaHumana(guisoActivoModal.fecha)} · 🛑 Corte: {formatearFechaCorteHumana(guisoActivoModal)}
                 </span>
                 <h3 className="text-xl font-black text-white mt-0.5">
                   {guisoActivoModal.nombre_plato}

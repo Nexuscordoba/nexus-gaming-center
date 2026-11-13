@@ -4,7 +4,10 @@ import { supabase } from './supabase';
 import {
   generarEnlaceWhatsAppAdminAClienteConfirmacion,
   calcularImporteReserva,
+  calcularFechaCorteMenosDias,
+  obtenerFechaCorteEfectiva,
   formatearFechaHumana,
+  formatearFechaCorteHumana,
   type GuisoProgramado,
   type ReservaGuiso,
   type EstadoGuiso,
@@ -14,10 +17,20 @@ import {
 interface ArticuloCatalogo {
   id: string | number;
   nombre: string;
+  descripcion?: string;
   categoria?: string;
   precio_venta?: number;
   precio?: number;
   imagen_url?: string;
+}
+
+export interface PlantillaGuiso {
+  nombre: string;
+  descripcion: string;
+  precio_barra: number;
+  precio_takeaway: number;
+  min_raciones: number;
+  imagen_url: string;
 }
 
 interface GuisosAdminPanelProps {
@@ -25,14 +38,9 @@ interface GuisosAdminPanelProps {
   notificar: (texto: string, tipo?: 'ok' | 'error' | 'info') => void;
 }
 
-const SUGERENCIAS_GUISOS_CASA: Array<{
-  nombre: string;
-  descripcion: string;
-  precio_barra: number;
-  precio_takeaway: number;
-  min_raciones: number;
-  imagen_url: string;
-}> = [
+const STORAGE_KEY_PLANTILLAS = 'nexus_plantillas_guisos_v1';
+
+const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
   {
     nombre: 'Rabo de Toro Cordobés Tradicional',
     descripcion: 'Estofado a fuego lento en vino Montilla-Moriles con verduras de la huerta y patatas fritas en dados.',
@@ -116,17 +124,44 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   const [cargando, setCargando] = useState<boolean>(true);
   const [guardandoGuiso, setGuardandoGuiso] = useState<boolean>(false);
 
+  // Plantillas de guisos editables y persistidas en localStorage
+  const [plantillasGuisos, setPlantillasGuisos] = useState<PlantillaGuiso[]>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_PLANTILLAS);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Error leyendo plantillas de guisos de localStorage:', e);
+    }
+    return PLANTILLAS_GUISOS_INICIALES;
+  });
+
+  const guardarPlantillasEnStorage = (nuevas: PlantillaGuiso[]) => {
+    setPlantillasGuisos(nuevas);
+    try {
+      localStorage.setItem(STORAGE_KEY_PLANTILLAS, JSON.stringify(nuevas));
+    } catch (e) {
+      console.warn('No se pudieron guardar las plantillas en localStorage:', e);
+    }
+  };
+
   // Estado del formulario de creación / edición
+  const hoyInicial = useMemo(() => formatFechaISO(new Date()), []);
   const [editandoGuisoId, setEditandoGuisoId] = useState<string | null>(null);
   const [semanaSelectorOffset, setSemanaSelectorOffset] = useState<number>(0);
-  const [fechaPlato, setFechaPlato] = useState<string>(() => formatFechaISO(new Date()));
+  const [fechaPlato, setFechaPlato] = useState<string>(hoyInicial);
+  const [fechaCorte, setFechaCorte] = useState<string>(() => calcularFechaCorteMenosDias(hoyInicial, 1));
+  const [horaCorte, setHoraCorte] = useState<string>('21:00');
   const [nombrePlato, setNombrePlato] = useState<string>('');
   const [descripcionPlato, setDescripcionPlato] = useState<string>('');
   const [minRaciones, setMinRaciones] = useState<string>('8');
   const [precioBarra, setPrecioBarra] = useState<string>('9.50');
   const [precioTakeaway, setPrecioTakeaway] = useState<string>('8.50');
   const [imagenUrl, setImagenUrl] = useState<string>('');
-  const [horaCorte, setHoraCorte] = useState<string>('21:00');
   const [estadoPlato, setEstadoPlato] = useState<EstadoGuiso>('buscando_minimo');
 
   // Selector visual de fotos del catálogo existente
@@ -144,46 +179,59 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
 
   const diasSemanaFormulario = useMemo(() => obtenerDiasSemana(semanaSelectorOffset), [semanaSelectorOffset]);
 
-  // Combinar catálogo de artículos reales con sugerencias de guisos para autocompletar y fotos
+  // Combinar plantillas personalizadas de guisos + catálogo de artículos reales del TPV
   const opcionesCatalogoUnificadas = useMemo(() => {
     const mapa = new Map<
       string,
-      {
-        nombre: string;
-        descripcion: string;
-        precio_barra: number;
-        precio_takeaway: number;
-        min_raciones: number;
-        imagen_url: string;
-        origen: 'catalogo' | 'recetario';
+      PlantillaGuiso & {
+        origen: 'plantilla' | 'catalogo';
       }
     >();
 
-    for (const art of articulosCatalogo) {
-      if (!art?.nombre) continue;
-      const pvp = Number(art.precio_venta ?? art.precio ?? 8.5);
-      mapa.set(art.nombre.toLowerCase(), {
-        nombre: art.nombre,
-        descripcion: art.categoria ? `Especialidad de nuestra carta (${art.categoria}).` : '',
-        precio_barra: pvp > 0 ? pvp : 8.5,
-        precio_takeaway: pvp > 1 ? Number((pvp - 0.8).toFixed(2)) : pvp,
-        min_raciones: 8,
-        imagen_url: art.imagen_url || '',
-        origen: 'catalogo'
+    // Primero nuestras plantillas de guisos (tienen prioridad en descripción, precios y fotos de guisos)
+    for (const p of plantillasGuisos) {
+      if (!p?.nombre) continue;
+      mapa.set(p.nombre.trim().toLowerCase(), {
+        nombre: p.nombre.trim(),
+        descripcion: p.descripcion || '',
+        precio_barra: Number(p.precio_barra ?? 9.5),
+        precio_takeaway: Number(p.precio_takeaway ?? 8.5),
+        min_raciones: Number(p.min_raciones || 8),
+        imagen_url: p.imagen_url || '',
+        origen: 'plantilla'
       });
     }
 
-    for (const sug of SUGERENCIAS_GUISOS_CASA) {
-      if (!mapa.has(sug.nombre.toLowerCase())) {
-        mapa.set(sug.nombre.toLowerCase(), {
-          ...sug,
-          origen: 'recetario'
+    // Después los artículos del catálogo TPV que no estén ya como plantilla personalizada
+    for (const art of articulosCatalogo) {
+      if (!art?.nombre) continue;
+      const clave = art.nombre.trim().toLowerCase();
+      if (!mapa.has(clave)) {
+        const pvp = Number(art.precio_venta ?? art.precio ?? 8.5);
+        mapa.set(clave, {
+          nombre: art.nombre.trim(),
+          descripcion: art.descripcion
+            ? String(art.descripcion)
+            : art.categoria
+            ? `Especialidad de nuestra carta (${art.categoria}).`
+            : '',
+          precio_barra: pvp > 0 ? pvp : 8.5,
+          precio_takeaway: pvp > 1 ? Number((pvp - 0.8).toFixed(2)) : pvp,
+          min_raciones: 8,
+          imagen_url: art.imagen_url || '',
+          origen: 'catalogo'
         });
       }
     }
 
     return Array.from(mapa.values());
-  }, [articulosCatalogo]);
+  }, [plantillasGuisos, articulosCatalogo]);
+
+  const existeComoPlantilla = useMemo(() => {
+    const limpio = nombrePlato.trim().toLowerCase();
+    if (!limpio) return false;
+    return plantillasGuisos.some((p) => p.nombre.trim().toLowerCase() === limpio);
+  }, [nombrePlato, plantillasGuisos]);
 
   const fotosDisponiblesCatalogo = useMemo(() => {
     const lista: Array<{ nombre: string; url: string }> = [];
@@ -281,6 +329,21 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     };
   }, [guisos, reservas]);
 
+  // Al cambiar la fecha en que se sirve el guiso, autocompletar por defecto fecha_corte (-1 día) y hora_corte ('21:00')
+  const cambiarFechaServicio = (nuevaFechaServicio: string) => {
+    setFechaPlato(nuevaFechaServicio);
+    if (nuevaFechaServicio) {
+      setFechaCorte(calcularFechaCorteMenosDias(nuevaFechaServicio, 1));
+      setHoraCorte('21:00');
+    }
+  };
+
+  const aplicarCorteRapido = (diasAntes: number, hora: string = '21:00') => {
+    if (!fechaPlato) return;
+    setFechaCorte(calcularFechaCorteMenosDias(fechaPlato, diasAntes));
+    setHoraCorte(hora);
+  };
+
   const limpiarFormulario = () => {
     setEditandoGuisoId(null);
     setNombrePlato('');
@@ -289,32 +352,74 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     setPrecioBarra('9.50');
     setPrecioTakeaway('8.50');
     setImagenUrl('');
+    setFechaCorte(calcularFechaCorteMenosDias(fechaPlato, 1));
     setHoraCorte('21:00');
     setEstadoPlato('buscando_minimo');
   };
 
+  // SIEMPRE actualiza descripción, precios, mínimo de raciones y foto cuando el plato coincide con una plantilla o artículo del catálogo
   const handleSeleccionarPlatoCatalogo = (nombreInput: string) => {
     setNombrePlato(nombreInput);
     const encontrado = opcionesCatalogoUnificadas.find(
       (op) => op.nombre.toLowerCase() === nombreInput.trim().toLowerCase()
     );
     if (encontrado) {
-      if (!descripcionPlato.trim() && encontrado.descripcion) {
-        setDescripcionPlato(encontrado.descripcion);
-      }
-      if (encontrado.precio_barra > 0) {
-        setPrecioBarra(encontrado.precio_barra.toFixed(2));
-      }
-      if (encontrado.precio_takeaway > 0) {
-        setPrecioTakeaway(encontrado.precio_takeaway.toFixed(2));
-      }
-      if (encontrado.min_raciones > 0) {
-        setMinRaciones(String(encontrado.min_raciones));
-      }
-      if (encontrado.imagen_url) {
-        setImagenUrl(encontrado.imagen_url);
-      }
+      setDescripcionPlato(encontrado.descripcion || '');
+      setPrecioBarra(Number(encontrado.precio_barra || 0).toFixed(2));
+      setPrecioTakeaway(Number(encontrado.precio_takeaway || 0).toFixed(2));
+      setMinRaciones(String(encontrado.min_raciones || 8));
+      setImagenUrl(encontrado.imagen_url || '');
     }
+  };
+
+  const guardarPlatoActualComoPlantilla = () => {
+    const nombreLimpio = nombrePlato.trim();
+    if (!nombreLimpio) {
+      notificar('Escribe primero el nombre del guiso para guardarlo como plantilla.', 'info');
+      return;
+    }
+
+    const nuevaPlantilla: PlantillaGuiso = {
+      nombre: nombreLimpio,
+      descripcion: descripcionPlato.trim(),
+      precio_barra: Math.max(0, parseFloat(precioBarra) || 0),
+      precio_takeaway: Math.max(0, parseFloat(precioTakeaway) || 0),
+      min_raciones: Math.max(1, parseInt(minRaciones, 10) || 8),
+      imagen_url:
+        imagenUrl.trim() ||
+        'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80'
+    };
+
+    const idxExistente = plantillasGuisos.findIndex(
+      (p) => p.nombre.trim().toLowerCase() === nombreLimpio.toLowerCase()
+    );
+
+    if (idxExistente >= 0) {
+      const actualizadas = [...plantillasGuisos];
+      actualizadas[idxExistente] = nuevaPlantilla;
+      guardarPlantillasEnStorage(actualizadas);
+      notificar(`Plantilla "${nombreLimpio}" actualizada con su descripción, precios y foto.`, 'ok');
+    } else {
+      guardarPlantillasEnStorage([nuevaPlantilla, ...plantillasGuisos]);
+      notificar(`Plato "${nombreLimpio}" guardado en tus plantillas predefinidas.`, 'ok');
+    }
+  };
+
+  const quitarPlatoActualDePlantillas = () => {
+    const nombreLimpio = nombrePlato.trim();
+    if (!nombreLimpio) return;
+
+    const filtradas = plantillasGuisos.filter(
+      (p) => p.nombre.trim().toLowerCase() !== nombreLimpio.toLowerCase()
+    );
+
+    if (filtradas.length === plantillasGuisos.length) {
+      notificar(`"${nombreLimpio}" no está en las plantillas personalizadas.`, 'info');
+      return;
+    }
+
+    guardarPlantillasEnStorage(filtradas);
+    notificar(`"${nombreLimpio}" eliminado del catálogo de plantillas.`, 'info');
   };
 
   const manejarSubidaImagenGuiso = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -352,11 +457,13 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     const minNum = Math.max(1, parseInt(minRaciones, 10) || 8);
     const pBarra = Math.max(0, parseFloat(precioBarra) || 0);
     const pTakeaway = Math.max(0, parseFloat(precioTakeaway) || 0);
+    const fechaCorteFinal = fechaCorte || calcularFechaCorteMenosDias(fechaPlato, 1);
 
     setGuardandoGuiso(true);
     try {
-      const payload = {
+      const payloadBase = {
         fecha: fechaPlato,
+        hora_corte: (horaCorte || '21:00').trim(),
         nombre_plato: nombrePlato.trim(),
         descripcion: descripcionPlato.trim(),
         min_raciones: minNum,
@@ -365,21 +472,39 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         imagen_url:
           imagenUrl.trim() ||
           'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80',
-        estado: estadoPlato,
-        hora_corte: (horaCorte || '21:00').trim()
+        estado: estadoPlato
+      };
+
+      const payloadConFechaCorte = {
+        ...payloadBase,
+        fecha_corte: fechaCorteFinal
       };
 
       if (editandoGuisoId) {
         const { error } = await supabase
           .from('guisos_programados')
-          .update(payload)
+          .update(payloadConFechaCorte)
           .eq('id', editandoGuisoId);
-        if (error) throw error;
-        notificar(`Guiso "${payload.nombre_plato}" actualizado correctamente.`, 'ok');
+
+        if (error) {
+          // Fallback en caso de que falte ejecutar ALTER TABLE ADD COLUMN fecha_corte en Supabase
+          const { error: fallbackErr } = await supabase
+            .from('guisos_programados')
+            .update(payloadBase)
+            .eq('id', editandoGuisoId);
+          if (fallbackErr) throw fallbackErr;
+        }
+        notificar(`Guiso "${payloadBase.nombre_plato}" actualizado correctamente.`, 'ok');
       } else {
-        const { error } = await supabase.from('guisos_programados').insert([payload]);
-        if (error) throw error;
-        notificar(`Guiso "${payload.nombre_plato}" programado para el ${formatearFechaHumana(payload.fecha)}.`, 'ok');
+        const { error } = await supabase.from('guisos_programados').insert([payloadConFechaCorte]);
+        if (error) {
+          const { error: fallbackErr } = await supabase.from('guisos_programados').insert([payloadBase]);
+          if (fallbackErr) throw fallbackErr;
+        }
+        notificar(
+          `Guiso "${payloadBase.nombre_plato}" programado para el ${formatearFechaHumana(payloadBase.fecha)}.`,
+          'ok'
+        );
       }
 
       limpiarFormulario();
@@ -394,13 +519,14 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   const cargarParaEditar = (guiso: GuisoProgramado) => {
     setEditandoGuisoId(guiso.id);
     setFechaPlato(guiso.fecha);
+    setFechaCorte(obtenerFechaCorteEfectiva(guiso));
+    setHoraCorte(guiso.hora_corte || '21:00');
     setNombrePlato(guiso.nombre_plato);
     setDescripcionPlato(guiso.descripcion || '');
     setMinRaciones(String(guiso.min_raciones || 8));
     setPrecioBarra(Number(guiso.precio_barra || 0).toFixed(2));
     setPrecioTakeaway(Number(guiso.precio_takeaway || 0).toFixed(2));
     setImagenUrl(guiso.imagen_url || '');
-    setHoraCorte(guiso.hora_corte || '21:00');
     setEstadoPlato(guiso.estado);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -526,7 +652,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
           <button
             type="button"
             onClick={cargarGuisosYReservas}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-2xl font-bold text-xs transition-all"
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-2xl font-bold text-xs transition-all cursor-pointer"
           >
             🔄 Sincronizar
           </button>
@@ -585,44 +711,47 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
               <button
                 type="button"
                 onClick={limpiarFormulario}
-                className="text-xs font-bold text-rose-400 hover:underline"
+                className="text-xs font-bold text-rose-400 hover:underline cursor-pointer"
               >
                 Cancelar edición
               </button>
             )}
           </div>
 
-          {/* SELECTOR ÁGIL DE DÍA DE LA SEMANA + FECHA */}
-          <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <label className="text-[10px] font-black uppercase text-amber-400">
+          {/* BLOQUE 1: SELECTOR ÁGIL DE DÍA DE LA SEMANA + FECHA Y HORA DE CORTE */}
+          <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 space-y-3">
+            {/* TÍTULO ARRIBA Y BOTONES DE NAVEGACIÓN DE SEMANA EN UNA SOLA LÍNEA CON WHITESPACE-NOWRAP */}
+            <div className="space-y-2">
+              <label className="block text-[10px] font-black uppercase tracking-wider text-amber-400">
                 📅 1. Elige Día de la Semana o Fecha Exacta
               </label>
-              <div className="flex items-center gap-1">
+
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setSemanaSelectorOffset((prev) => prev - 1)}
-                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300"
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-bold text-slate-300 whitespace-nowrap text-center transition-colors cursor-pointer"
                 >
                   ◀ Sem. ant.
                 </button>
                 <button
                   type="button"
                   onClick={() => setSemanaSelectorOffset(0)}
-                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-cyan-300"
+                  className="px-3 py-1.5 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/40 text-[11px] font-black text-cyan-300 whitespace-nowrap text-center transition-colors cursor-pointer"
                 >
                   Actual
                 </button>
                 <button
                   type="button"
                   onClick={() => setSemanaSelectorOffset((prev) => prev + 1)}
-                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300"
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-bold text-slate-300 whitespace-nowrap text-center transition-colors cursor-pointer"
                 >
                   Sem. sig. ▶
                 </button>
               </div>
             </div>
 
+            {/* PÍLDORAS DE LUNES A DOMINGO */}
             <div className="grid grid-cols-7 gap-1">
               {diasSemanaFormulario.map((d) => {
                 const activo = fechaPlato === d.fecha;
@@ -630,8 +759,8 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                   <button
                     key={d.fecha}
                     type="button"
-                    onClick={() => setFechaPlato(d.fecha)}
-                    className={`py-2 px-1 rounded-xl text-center transition-all border ${
+                    onClick={() => cambiarFechaServicio(d.fecha)}
+                    className={`py-2 px-1 rounded-xl text-center transition-all border cursor-pointer ${
                       activo
                         ? 'bg-amber-500 text-slate-950 border-amber-400 font-black shadow-md'
                         : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700 font-bold'
@@ -644,72 +773,192 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
               })}
             </div>
 
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <div>
-                <label className="text-[10px] font-bold text-slate-400">Fecha seleccionada</label>
-                <input
-                  type="date"
-                  required
-                  value={fechaPlato}
-                  onChange={(e) => setFechaPlato(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-white mt-0.5"
-                />
+            {/* FECHA DEL GUISO */}
+            <div className="pt-1">
+              <label className="text-[10px] font-bold text-slate-300 block">
+                🍽️ Fecha en que se sirve el Guiso
+              </label>
+              <input
+                type="date"
+                required
+                value={fechaPlato}
+                onChange={(e) => cambiarFechaServicio(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 focus:border-amber-400 rounded-xl px-3 py-2 text-xs font-bold text-white mt-1 outline-none"
+              />
+            </div>
+
+            {/* FECHA DE CORTE PREVENTA + HORA DE CORTE PREVENTA */}
+            <div className="pt-2 border-t border-slate-800/90 space-y-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-amber-300 block">
+                    🛑 Fecha de Corte Preventa
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={fechaCorte}
+                    onChange={(e) => setFechaCorte(e.target.value)}
+                    className="w-full bg-slate-900 border border-amber-500/40 focus:border-amber-400 rounded-xl px-3 py-2 text-xs font-bold text-amber-200 mt-1 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-amber-300 block">
+                    ⏰ Hora de Corte Preventa
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={horaCorte}
+                    onChange={(e) => setHoraCorte(e.target.value)}
+                    className="w-full bg-slate-900 border border-amber-500/40 focus:border-amber-400 rounded-xl px-3 py-2 text-xs font-bold text-amber-200 mt-1 outline-none"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="text-[10px] font-bold text-slate-400">Hora de Corte Preventa</label>
-                <input
-                  type="time"
-                  required
-                  value={horaCorte}
-                  onChange={(e) => setHoraCorte(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-amber-300 mt-0.5"
-                />
+
+              {/* BOTONES RÁPIDOS DE CORTE: -1 DÍA (21:00) y -2 DÍAS (21:00) */}
+              <div className="flex items-center justify-between gap-2 pt-0.5">
+                <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">
+                  Ajuste rápido cierre:
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => aplicarCorteRapido(1, '21:00')}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 border border-amber-500/30 text-amber-300 text-[10px] font-black whitespace-nowrap transition-colors cursor-pointer"
+                  >
+                    -1 día (21:00)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => aplicarCorteRapido(2, '21:00')}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-300 text-[10px] font-black whitespace-nowrap transition-colors cursor-pointer"
+                  >
+                    -2 días (21:00)
+                  </button>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* NOMBRE DEL PLATO CON AUTOCOMPLETADO DEL CATÁLOGO */}
-          <div>
-            <div className="flex items-center justify-between">
-              <label className="text-[10px] font-black uppercase text-slate-400">
+          {/* BLOQUE 2: NOMBRE DEL PLATO, AUTOCOMPLETADO Y PLANTILLAS EDITABLES */}
+          <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-[10px] font-black uppercase tracking-wider text-amber-400">
                 🍲 2. Nombre del Guiso / Plato *
               </label>
               <span className="text-[10px] text-indigo-400 font-bold">
-                Autocompletado desde catálogo activo
+                {plantillasGuisos.length} plantillas guardadas
               </span>
             </div>
-            <input
-              type="text"
-              required
-              list="catalogo-platos-nexus"
-              value={nombrePlato}
-              onChange={(e) => handleSeleccionarPlatoCatalogo(e.target.value)}
-              placeholder="Escribe o elige del catálogo (ej: Rabo de Toro, Carrillada...)"
-              className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white mt-1 outline-none"
-            />
-            <datalist id="catalogo-platos-nexus">
-              {opcionesCatalogoUnificadas.map((op) => (
-                <option
-                  key={op.nombre}
-                  value={op.nombre}
-                  label={`${op.origen === 'catalogo' ? '📋 Catálogo TPV' : '🍲 Recetario'} · ${op.precio_barra.toFixed(2)}€`}
-                />
-              ))}
-            </datalist>
-          </div>
 
-          {/* DESCRIPCIÓN */}
-          <div>
-            <label className="text-[10px] font-black uppercase text-slate-400">
-              Descripción / Ingredientes / Guarnición
-            </label>
-            <textarea
-              rows={2}
-              value={descripcionPlato}
-              onChange={(e) => setDescripcionPlato(e.target.value)}
-              placeholder="Ej: Cocinado a fuego lento con vino de la tierra, acompañado de patatas fritas caseras y pan..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white mt-1"
-            />
+            {/* DESPLEGABLE DIRECTO DE PLANTILLAS DE GUISOS Y CATÁLOGO */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 block mb-1">
+                📋 Elegir de mis Plantillas de Guisos o Catálogo (Autocompleta todo el plato):
+              </label>
+              <select
+                value={
+                  opcionesCatalogoUnificadas.some(
+                    (op) => op.nombre.toLowerCase() === nombrePlato.trim().toLowerCase()
+                  )
+                    ? opcionesCatalogoUnificadas.find(
+                        (op) => op.nombre.toLowerCase() === nombrePlato.trim().toLowerCase()
+                      )?.nombre || ''
+                    : ''
+                }
+                onChange={(e) => {
+                  if (e.target.value) {
+                    handleSeleccionarPlatoCatalogo(e.target.value);
+                  }
+                }}
+                className="w-full bg-slate-900 border border-slate-700 focus:border-amber-400 rounded-xl px-3 py-2 text-xs font-bold text-amber-300 outline-none"
+              >
+                <option value="">-- Seleccionar plantilla o plato predefinido --</option>
+                <optgroup label="🍲 Mis Plantillas de Guisos">
+                  {opcionesCatalogoUnificadas
+                    .filter((op) => op.origen === 'plantilla')
+                    .map((op) => (
+                      <option key={`pl-${op.nombre}`} value={op.nombre}>
+                        {op.nombre} ({op.precio_barra.toFixed(2)}€ Barra / {op.precio_takeaway.toFixed(2)}€ Llevar)
+                      </option>
+                    ))}
+                </optgroup>
+                {opcionesCatalogoUnificadas.some((op) => op.origen === 'catalogo') && (
+                  <optgroup label="📋 Artículos de Carta / TPV">
+                    {opcionesCatalogoUnificadas
+                      .filter((op) => op.origen === 'catalogo')
+                      .map((op) => (
+                        <option key={`cat-${op.nombre}`} value={op.nombre}>
+                          {op.nombre} ({op.precio_barra.toFixed(2)}€)
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+
+            {/* INPUT DE TEXTO LIBRE CON DATALIST SINCRONIZADO */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 block mb-1">
+                Nombre del plato (puedes escribir uno nuevo o modificar el seleccionado):
+              </label>
+              <input
+                type="text"
+                required
+                list="catalogo-platos-nexus"
+                value={nombrePlato}
+                onChange={(e) => handleSeleccionarPlatoCatalogo(e.target.value)}
+                placeholder="Ej: Rabo de Toro Cordobés, Lentejas Estofadas..."
+                className="w-full bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white outline-none"
+              />
+              <datalist id="catalogo-platos-nexus">
+                {opcionesCatalogoUnificadas.map((op) => (
+                  <option
+                    key={op.nombre}
+                    value={op.nombre}
+                    label={`${op.origen === 'plantilla' ? '🍲 Plantilla' : '📋 Catálogo TPV'} · ${op.precio_barra.toFixed(2)}€`}
+                  />
+                ))}
+              </datalist>
+            </div>
+
+            {/* DESCRIPCIÓN */}
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">
+                Descripción / Ingredientes / Guarnición
+              </label>
+              <textarea
+                rows={2}
+                value={descripcionPlato}
+                onChange={(e) => setDescripcionPlato(e.target.value)}
+                placeholder="Ej: Cocinado a fuego lento con vino de la tierra, acompañado de patatas fritas caseras y pan..."
+                className="w-full bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2 text-xs text-white mt-1 outline-none"
+              />
+            </div>
+
+            {/* BOTONES DE GESTIÓN DE PLANTILLAS DE GUISOS */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
+              <button
+                type="button"
+                onClick={guardarPlatoActualComoPlantilla}
+                className="flex-1 px-3 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/35 border border-emerald-500/40 text-emerald-300 text-[11px] font-black whitespace-nowrap transition-all cursor-pointer"
+                title="Guarda el nombre, descripción, precios, mínimo de raciones y foto actuales como plantilla reutilizable"
+              >
+                💾 Guardar plato actual como plantilla
+              </button>
+
+              {existeComoPlantilla && (
+                <button
+                  type="button"
+                  onClick={quitarPlatoActualDePlantillas}
+                  className="px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-300 text-[11px] font-bold whitespace-nowrap transition-all cursor-pointer"
+                  title="Quitar este plato del listado de plantillas predefinidas"
+                >
+                  🗑️ Quitar de plantillas
+                </button>
+              )}
+            </div>
           </div>
 
           {/* MÍNIMO DE RACIONES Y PRECIOS BARRA / TAKEAWAY */}
@@ -782,7 +1031,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
               <button
                 type="button"
                 onClick={() => setMostrarGaleriaCatalogo((prev) => !prev)}
-                className="text-[10px] bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 rounded-lg font-bold"
+                className="text-[10px] bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 rounded-lg font-bold cursor-pointer"
               >
                 {mostrarGaleriaCatalogo ? 'Cerrar galería' : '🖼️ Elegir foto del catálogo'}
               </button>
@@ -815,7 +1064,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
             {mostrarGaleriaCatalogo && (
               <div className="bg-slate-950 border border-indigo-500/30 rounded-2xl p-3 space-y-2 max-h-56 overflow-y-auto">
                 <p className="text-[10px] font-bold text-indigo-300">
-                  Haz clic en cualquier plato de tu catálogo o recetario para usar su foto:
+                  Haz clic en cualquier plato de tus plantillas o catálogo para usar su foto (o cargar el plato):
                 </p>
                 <div className="grid grid-cols-3 gap-2">
                   {fotosDisponiblesCatalogo.map((item, idx) => (
@@ -829,7 +1078,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                         }
                         setMostrarGaleriaCatalogo(false);
                       }}
-                      className="group relative rounded-xl overflow-hidden border border-slate-800 hover:border-amber-400 text-left h-20"
+                      className="group relative rounded-xl overflow-hidden border border-slate-800 hover:border-amber-400 text-left h-20 cursor-pointer"
                     >
                       <img src={item.url} alt={item.nombre} className="w-full h-full object-cover" />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent p-1.5 flex items-end">
@@ -873,7 +1122,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                     key={f.id}
                     type="button"
                     onClick={() => setFiltroEstadoVista(f.id as any)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                       filtroEstadoVista === f.id
                         ? 'bg-indigo-600 text-white shadow'
                         : 'bg-slate-900 text-slate-400 hover:text-white'
@@ -957,7 +1206,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-amber-300">
-                                📅 {formatearFechaHumana(guiso.fecha)} · ⏰ Corte {guiso.hora_corte}h
+                                📅 {formatearFechaHumana(guiso.fecha)} · 🛑 Corte: {formatearFechaCorteHumana(guiso)}
                               </span>
                               {guiso.estado === 'confirmado' && (
                                 <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300">
@@ -977,6 +1226,11 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                             </div>
 
                             <h4 className="text-base font-black text-white mt-1">{guiso.nombre_plato}</h4>
+                            {guiso.descripcion && (
+                              <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">
+                                {guiso.descripcion}
+                              </p>
+                            )}
                             <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300 mt-1">
                               <span>
                                 🪑 Barra: <strong className="text-emerald-400">{Number(guiso.precio_barra).toFixed(2)}€</strong>
