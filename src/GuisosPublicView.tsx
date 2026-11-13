@@ -49,6 +49,24 @@ const NOMBRES_DIAS_SEMANA = [
   'Domingo'
 ];
 
+// URLs genéricas de Unsplash antiguas para descartar y no mostrar fotos falsas
+const URLS_UNSPLASH_DESCARTADAS = new Set([
+  'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80',
+  'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=300&q=80',
+  'https://images.unsplash.com/photo-1534939561126-855b8675edd7?auto=format&fit=crop&w=900&q=80',
+  'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=900&q=80',
+  'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?auto=format&fit=crop&w=900&q=80',
+  'https://images.unsplash.com/photo-1512058564366-18510be2db19?auto=format&fit=crop&w=900&q=80',
+  'https://images.unsplash.com/photo-1574484284002-952d92456975?auto=format&fit=crop&w=900&q=80'
+]);
+
+const obtenerImagenRealGuiso = (url?: string | null): string => {
+  if (!url) return '';
+  const limpia = url.trim();
+  if (!limpia || URLS_UNSPLASH_DESCARTADAS.has(limpia)) return '';
+  return limpia;
+};
+
 const formatFechaISO = (d: Date): string => {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -84,7 +102,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   const [reservas, setReservas] = useState<ReservaGuiso[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Navegación del Calendario Semanal (Lunes a Domingo)
+  // Navegación estricta del Calendario Semanal (0 = Esta semana, 1 = Próxima semana)
   const [semanaOffset, setSemanaOffset] = useState<number>(0);
   const [diaSeleccionado, setDiaSeleccionado] = useState<string>('TODOS');
 
@@ -109,6 +127,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   } | null>(null);
 
   const diasSemana = useMemo(() => construirDiasSemana(semanaOffset), [semanaOffset]);
+  const diasEstaSemana = useMemo(() => construirDiasSemana(0), []);
+  const diasProximaSemana = useMemo(() => construirDiasSemana(1), []);
 
   const cargarDatos = async () => {
     try {
@@ -158,16 +178,32 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     return mapa;
   }, [reservas]);
 
+  // Conjuntos estrictos de los 7 días (Lunes a Domingo) para no mezclar semanas nunca
   const fechasDeLaSemanaSet = useMemo(() => {
     return new Set(diasSemana.map((d) => d.fecha));
   }, [diasSemana]);
 
+  const cantidadGuisosEstaSemana = useMemo(() => {
+    const setActual = new Set(diasEstaSemana.map((d) => d.fecha));
+    return guisos.filter((g) => setActual.has(g.fecha)).length;
+  }, [guisos, diasEstaSemana]);
+
+  const cantidadGuisosProximaSemana = useMemo(() => {
+    const setSig = new Set(diasProximaSemana.map((d) => d.fecha));
+    return guisos.filter((g) => setSig.has(g.fecha)).length;
+  }, [guisos, diasProximaSemana]);
+
+  // FILTRO ESTRICTO: "Semana completa" muestra ÚNICAMENTE los guisos entre Lunes y Domingo de la semana seleccionada
   const guisosSemanaActiva = useMemo(() => {
     const enSemana = guisos.filter((g) => fechasDeLaSemanaSet.has(g.fecha));
-    const base = enSemana.length > 0 || semanaOffset !== 0 ? enSemana : guisos;
-    if (diaSeleccionado === 'TODOS') return base;
-    return base.filter((g) => g.fecha === diaSeleccionado);
-  }, [guisos, fechasDeLaSemanaSet, diaSeleccionado, semanaOffset]);
+    if (diaSeleccionado === 'TODOS') return enSemana;
+    return enSemana.filter((g) => g.fecha === diaSeleccionado);
+  }, [guisos, fechasDeLaSemanaSet, diaSeleccionado]);
+
+  const rangoSemanaTexto = useMemo(() => {
+    if (diasSemana.length < 7) return '';
+    return `${diasSemana[0].diaMes} — ${diasSemana[6].diaMes}`;
+  }, [diasSemana]);
 
   const abrirModalReserva = (guiso: GuisoProgramado) => {
     if (haSuperadoFechaHoraCorte(guiso)) {
@@ -291,66 +327,60 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
   return (
     <main className="flex-grow">
-      {/* HERO DE GUISOS DE LA CASA (#guisos) */}
-      <section className="relative overflow-hidden py-14 sm:py-20 border-b border-white/[0.06]">
-        <div className="absolute inset-0 z-0">
-          <img
-            src="https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=2000&q=80"
-            alt="Guisos Caseros Bajo Demanda Nexus"
-            className="w-full h-full object-cover object-center opacity-35"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/85 to-[#08090d]/60" />
-        </div>
-
+      {/* HERO COMPACTO DE GUISOS DE LA CASA (#guisos) */}
+      <section className="relative overflow-hidden py-10 sm:py-14 border-b border-white/[0.06] bg-gradient-to-b from-[#12101b] via-[#0c0d14] to-[#08090d]">
         <div className="max-w-5xl mx-auto px-5 text-center relative z-10">
-          <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-950/80 backdrop-blur-md px-4 py-1.5 text-xs font-bold text-amber-300 mb-5 shadow-[0_0_25px_rgba(245,158,11,0.25)]">
-            <Flame className="w-4 h-4 text-amber-400 animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-950/80 backdrop-blur-md px-3.5 py-1 text-[11px] font-bold text-amber-300 mb-4 shadow-[0_0_25px_rgba(245,158,11,0.2)]">
+            <Flame className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
             <span>Cocina Casera Bajo Demanda · Cero Desperdicio · Chinales 45</span>
           </div>
 
-          <h1 className="text-3xl sm:text-6xl font-black text-white tracking-tight uppercase leading-tight">
-            🍲 Guisos de la <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-400 via-orange-400 to-yellow-300">Casa</span>
+          <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight uppercase leading-tight">
+            🍲 Guisos de la{' '}
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-400 via-orange-400 to-yellow-300">
+              Casa
+            </span>
           </h1>
 
-          <p className="mt-4 text-sm sm:text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
+          <p className="mt-3 text-xs sm:text-base text-slate-300 max-w-2xl mx-auto leading-relaxed">
             Cada día proponemos nuestros mejores guisos tradicionales de cuchara.{' '}
             <strong className="text-amber-300">Apúntate gratis a tu plato favorito:</strong> en cuanto alcanzamos el mínimo de raciones, encendemos los fogones y te avisamos.
           </p>
 
-          {/* PASOS EXPLICATIVOS RÁPIDOS */}
-          <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl mx-auto text-left">
-            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-4 flex items-start gap-3">
-              <div className="h-8 w-8 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center font-black text-xs shrink-0">
+          {/* PASOS EXPLICATIVOS COMPACTOS */}
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5 max-w-3xl mx-auto text-left">
+            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3 flex items-start gap-2.5">
+              <div className="h-7 w-7 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center font-black text-xs shrink-0">
                 1
               </div>
               <div>
-                <h3 className="text-xs font-black text-white uppercase">Elige día y plato</h3>
+                <h3 className="text-[11px] font-black text-white uppercase">Elige día y plato</h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Reserva tus raciones para tomar en el bar o para llevar en tupper.
+                  Reserva para tomar en el bar o para llevar.
                 </p>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-4 flex items-start gap-3">
-              <div className="h-8 w-8 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-black text-xs shrink-0">
+            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3 flex items-start gap-2.5">
+              <div className="h-7 w-7 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-black text-xs shrink-0">
                 2
               </div>
               <div>
-                <h3 className="text-xs font-black text-white uppercase">Alcanzamos el mínimo</h3>
+                <h3 className="text-[11px] font-black text-white uppercase">Alcanzamos el mínimo</h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  No pagas nada al apuntarte mientras esté buscando el mínimo.
+                  No pagas nada al apuntarte mientras busca mínimo.
                 </p>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-4 flex items-start gap-3">
-              <div className="h-8 w-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0">
+            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3 flex items-start gap-2.5">
+              <div className="h-7 w-7 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0">
                 3
               </div>
               <div>
-                <h3 className="text-xs font-black text-white uppercase">¡A los fogones!</h3>
+                <h3 className="text-[11px] font-black text-white uppercase">¡A los fogones!</h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Al confirmarse el guiso, formalizas tu reserva y lo disfrutas recién hecho.
+                  Al confirmarse, formalizas tu reserva y lo disfrutas.
                 </p>
               </div>
             </div>
@@ -358,20 +388,23 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         </div>
       </section>
 
-      {/* CALENDARIO SEMANAL INTERACTIVO (LUNES A DOMINGO) */}
-      <section className="max-w-6xl mx-auto px-5 py-12 space-y-8">
-        <div className="bg-[#0c0d14] border border-white/10 rounded-3xl p-5 sm:p-6 shadow-xl space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* CALENDARIO SEMANAL INTERACTIVO ESTRICTO (LUNES A DOMINGO) */}
+      <section className="max-w-6xl mx-auto px-5 py-8 space-y-6">
+        <div className="bg-[#0c0d14] border border-white/10 rounded-3xl p-4 sm:p-5 shadow-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <div className="inline-flex items-center gap-2 text-amber-400 text-xs font-black uppercase tracking-wider">
-                <CalendarDays className="h-4 w-4" />
-                <span>Calendario Semanal en Vivo</span>
+              <div className="inline-flex items-center gap-2 text-amber-400 text-[11px] font-black uppercase tracking-wider">
+                <CalendarDays className="h-3.5 w-3.5" />
+                <span>
+                  {semanaOffset === 0 ? 'Esta Semana' : 'Próxima Semana'} ({rangoSemanaTexto})
+                </span>
               </div>
-              <h2 className="text-xl sm:text-2xl font-black text-white mt-0.5">
+              <h2 className="text-lg sm:text-xl font-black text-white mt-0.5">
                 Programación de Lunes a Domingo
               </h2>
             </div>
 
+            {/* SELECTOR LIMPIO ESTA SEMANA / PRÓXIMA SEMANA SIN MEZCLAR SEMANAS */}
             <div className="flex items-center gap-2 self-start sm:self-auto">
               <button
                 type="button"
@@ -379,44 +412,66 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   setSemanaOffset(0);
                   setDiaSeleccionado('TODOS');
                 }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black whitespace-nowrap transition-all cursor-pointer border ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-black whitespace-nowrap transition-all cursor-pointer border flex items-center gap-1.5 ${
                   semanaOffset === 0
                     ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
                     : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
                 }`}
               >
-                Esta Semana
+                <span>Esta semana</span>
+                <span
+                  className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                    semanaOffset === 0
+                      ? 'bg-slate-950/20 text-slate-950'
+                      : 'bg-white/10 text-amber-300'
+                  }`}
+                >
+                  {cantidadGuisosEstaSemana}
+                </span>
               </button>
+
               <button
                 type="button"
                 onClick={() => {
                   setSemanaOffset(1);
                   setDiaSeleccionado('TODOS');
                 }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black whitespace-nowrap transition-all cursor-pointer border ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-black whitespace-nowrap transition-all cursor-pointer border flex items-center gap-1.5 ${
                   semanaOffset === 1
                     ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
                     : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
                 }`}
               >
-                Próxima Semana ▶
+                <span>Próxima semana ▶</span>
+                <span
+                  className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                    semanaOffset === 1
+                      ? 'bg-slate-950/20 text-slate-950'
+                      : 'bg-white/10 text-amber-300'
+                  }`}
+                >
+                  {cantidadGuisosProximaSemana}
+                </span>
               </button>
             </div>
           </div>
 
-          {/* PESTAÑAS INTERACTIVAS: VER TODA LA SEMANA + LUNES A DOMINGO */}
+          {/* PESTAÑAS INTERACTIVAS: SEMANA COMPLETA (ESTRICTA 7 DÍAS) + LUNES A DOMINGO */}
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
             <button
               type="button"
               onClick={() => setDiaSeleccionado('TODOS')}
-              className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+              className={`p-2.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
                 diaSeleccionado === 'TODOS'
                   ? 'bg-gradient-to-br from-amber-500/25 to-orange-500/10 border-amber-400 text-white shadow-[0_0_20px_rgba(245,158,11,0.2)]'
                   : 'bg-[#131722]/80 border-white/10 text-slate-300 hover:border-white/25'
               }`}
             >
-              <span className="text-[10px] font-black uppercase text-amber-400">Semana Completa</span>
-              <span className="text-sm font-black mt-1 block">Lunes - Domingo</span>
+              <span className="text-[10px] font-black uppercase text-amber-400">Semana completa</span>
+              <div>
+                <span className="text-xs font-black mt-0.5 block">Lun - Dom</span>
+                <span className="text-[10px] text-slate-400 block">{rangoSemanaTexto}</span>
+              </div>
             </button>
 
             {diasSemana.map((dia) => {
@@ -429,7 +484,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   key={dia.fecha}
                   type="button"
                   onClick={() => setDiaSeleccionado(dia.fecha)}
-                  className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between relative ${
+                  className={`p-2.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between relative ${
                     seleccionado
                       ? 'bg-gradient-to-br from-cyan-500/25 to-blue-600/15 border-cyan-400 text-white shadow-[0_0_20px_rgba(0,242,254,0.2)]'
                       : 'bg-[#131722]/80 border-white/10 text-slate-300 hover:border-white/25'
@@ -465,47 +520,68 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
           </div>
         </div>
 
-        {/* LISTADO DE TARJETAS DE GUISOS O BLOQUES "PLAN B" */}
+        {/* LISTADO COMPACTO DE TARJETAS DE GUISOS O BLOQUES "PLAN B" */}
         {loading ? (
-          <div className="rounded-3xl border border-white/10 bg-[#0c0d14] p-16 text-center space-y-3">
-            <ChefHat className="h-10 w-10 text-amber-400 mx-auto animate-bounce" />
-            <p className="text-sm font-bold text-slate-300">
+          <div className="rounded-3xl border border-white/10 bg-[#0c0d14] p-12 text-center space-y-3">
+            <ChefHat className="h-9 w-9 text-amber-400 mx-auto animate-bounce" />
+            <p className="text-xs font-bold text-slate-300">
               Consultando el estado de los fogones en tiempo real...
             </p>
           </div>
         ) : guisosSemanaActiva.length === 0 ? (
-          <div className="rounded-3xl border border-amber-500/25 bg-gradient-to-b from-[#131722] to-[#0c0d14] p-10 sm:p-14 text-center space-y-5">
-            <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
-              <ChefHat className="h-7 w-7" />
+          <div className="rounded-3xl border border-amber-500/25 bg-gradient-to-b from-[#131722] to-[#0c0d14] p-8 sm:p-10 text-center space-y-4">
+            <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
+              <ChefHat className="h-6 w-6" />
             </div>
-            <h3 className="text-2xl font-black text-white">
-              No hay guisos programados para este filtro de fecha
+            <h3 className="text-xl font-black text-white">
+              {diaSeleccionado === 'TODOS'
+                ? semanaOffset === 0
+                  ? 'No hay guisos programados para esta semana (Lunes a Domingo)'
+                  : 'No hay guisos programados para la próxima semana'
+                : 'No hay guisos programados para este día'}
             </h3>
-            <p className="text-sm text-slate-400 max-w-xl mx-auto">
-              Puedes consultar el resto de días de la semana o descubrir directamente nuestra carta habitual de sala y desayunos en Café Bar Nexus.
+            <p className="text-xs sm:text-sm text-slate-400 max-w-xl mx-auto">
+              {semanaOffset === 0 && cantidadGuisosProximaSemana > 0
+                ? `Tenemos ${cantidadGuisosProximaSemana} ${
+                    cantidadGuisosProximaSemana === 1 ? 'guiso programado' : 'guisos programados'
+                  } para la próxima semana. Puedes cambiar a "Próxima semana" o visitar nuestra carta principal.`
+                : 'Puedes consultar otros días de la semana o descubrir nuestra carta habitual de sala y desayunos en Café Bar Nexus.'}
             </p>
-            <div className="flex flex-wrap justify-center gap-3 pt-2">
+            <div className="flex flex-wrap justify-center gap-2.5 pt-1">
               {diaSeleccionado !== 'TODOS' && (
                 <button
                   type="button"
                   onClick={() => setDiaSeleccionado('TODOS')}
-                  className="px-5 py-3 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-black uppercase tracking-wider cursor-pointer"
+                  className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-black uppercase tracking-wider cursor-pointer"
                 >
-                  Ver toda la semana
+                  Ver semana completa
+                </button>
+              )}
+              {semanaOffset === 0 && cantidadGuisosProximaSemana > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSemanaOffset(1);
+                    setDiaSeleccionado('TODOS');
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-300 text-xs font-black uppercase tracking-wider cursor-pointer"
+                >
+                  Ver Próxima Semana ({cantidadGuisosProximaSemana}) ▶
                 </button>
               )}
               <button
                 type="button"
                 onClick={onIrACartaBar}
-                className="px-6 py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 text-xs font-black uppercase tracking-wider shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:opacity-95 cursor-pointer flex items-center gap-2"
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 text-xs font-black uppercase tracking-wider shadow-[0_0_20px_rgba(245,158,11,0.3)] hover:opacity-95 cursor-pointer flex items-center gap-2"
               >
-                <UtensilsCrossed className="h-4 w-4" />
-                <span>Ir a la Carta Principal de Sala (#bar)</span>
+                <UtensilsCrossed className="h-3.5 w-3.5" />
+                <span>Ir a la Carta Principal (#bar)</span>
               </button>
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          /* GRID COMPACTO (grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4) Y ANCHO MÁXIMO ESTRICTO (max-w-[360px]) */
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 justify-items-center sm:justify-items-start">
             {guisosSemanaActiva.map((guiso) => {
               const racionesActuales = racionesPorGuiso.get(guiso.id) || 0;
               const minRequerido = Math.max(1, Number(guiso.min_raciones || 1));
@@ -515,6 +591,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
               );
               const mostrarPlanB = estaEnPlanB(guiso, racionesActuales);
               const preventaCerradaPorFecha = haSuperadoFechaHoraCorte(guiso);
+              const imagenReal = obtenerImagenRealGuiso(guiso.imagen_url);
 
               // Otros guisos de ese mismo día que SÍ están confirmados (para el Plan B Inteligente)
               const otrosGuisosConfirmadosHoy = guisos.filter(
@@ -525,62 +602,66 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
               );
 
               if (mostrarPlanB) {
-                /* ================= BLOQUE "PLAN B" INTELIGENTE ================= */
+                /* ================= BLOQUE "PLAN B" INTELIGENTE COMPACTO ================= */
                 return (
                   <div
                     key={guiso.id}
-                    className="rounded-3xl border border-amber-500/40 bg-gradient-to-b from-[#16131f] to-[#0c0d14] p-6 sm:p-7 flex flex-col justify-between shadow-2xl space-y-5 relative overflow-hidden"
+                    className="w-full max-w-[360px] rounded-2xl border border-amber-500/40 bg-gradient-to-b from-[#16131f] to-[#0c0d14] p-4 flex flex-col justify-between shadow-xl space-y-3.5 relative overflow-hidden"
                   >
-                    <div className="space-y-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-[11px] font-black uppercase px-3 py-1 rounded-full bg-white/5 border border-white/10 text-slate-300">
+                    <div className="space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300">
                           📅 {formatearFechaHumana(guiso.fecha)}
                         </span>
-                        <span className="text-[11px] font-black uppercase px-3 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 flex items-center gap-1.5">
-                          <AlertTriangle className="h-3.5 w-3.5" />
-                          Preventa cerrada sin mínimo
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" />
+                          Sin mínimo
                         </span>
                       </div>
 
                       <div>
-                        <h3 className="text-lg font-black text-slate-300 line-through decoration-rose-500/70">
+                        <h3 className="text-base font-black text-slate-300 line-through decoration-rose-500/70">
                           {guiso.nombre_plato}
                         </h3>
-                        <p className="text-xs text-slate-400 mt-1">
-                          Este guiso no alcanzó el mínimo de raciones antes de la fecha y hora de corte ({formatearFechaCorteHumana(guiso)}) o ha sido sustituido hoy.
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          No alcanzó el mínimo antes del cierre ({formatearFechaCorteHumana(guiso)}).
                         </p>
                       </div>
 
                       {/* 1º ALTERNATIVA DINÁMICA: OTROS GUISOS DE ESE MISMO DÍA QUE SÍ ESTÁN CONFIRMADOS */}
-                      <div className="rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-4 space-y-3">
-                        <p className="text-xs font-black text-emerald-300 flex items-center gap-1.5">
-                          <Flame className="h-4 w-4 text-emerald-400 shrink-0" />
-                          <span>
-                            ¡No te quedes con hambre! Estos guisos de hoy ya están confirmados y en los fogones:
-                          </span>
+                      <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3 space-y-2">
+                        <p className="text-[11px] font-black text-emerald-300 flex items-center gap-1">
+                          <Flame className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                          <span>¡No te quedes con hambre! Guisos confirmados hoy:</span>
                         </p>
 
                         {otrosGuisosConfirmadosHoy.length > 0 ? (
-                          <div className="space-y-2.5">
+                          <div className="space-y-2">
                             {otrosGuisosConfirmadosHoy.map((alt) => {
                               const cerradoAlt = haSuperadoFechaHoraCorte(alt);
+                              const fotoAlt = obtenerImagenRealGuiso(alt.imagen_url);
                               return (
                                 <div
                                   key={alt.id}
-                                  className="flex items-center justify-between gap-3 bg-[#0c0d14]/90 border border-emerald-500/30 rounded-xl p-3"
+                                  className="flex items-center justify-between gap-2 bg-[#0c0d14]/90 border border-emerald-500/30 rounded-xl p-2"
                                 >
-                                  <div className="flex items-center gap-3">
-                                    <img
-                                      src={
-                                        alt.imagen_url ||
-                                        'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=300&q=80'
-                                      }
-                                      alt={alt.nombre_plato}
-                                      className="w-12 h-12 rounded-xl object-cover shrink-0 border border-white/10"
-                                    />
-                                    <div>
-                                      <h4 className="text-xs font-black text-white">{alt.nombre_plato}</h4>
-                                      <p className="text-[11px] text-emerald-400 font-bold">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    {fotoAlt ? (
+                                      <img
+                                        src={fotoAlt}
+                                        alt={alt.nombre_plato}
+                                        className="w-9 h-9 rounded-lg object-cover shrink-0 border border-white/10"
+                                      />
+                                    ) : (
+                                      <div className="w-9 h-9 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-sm shrink-0">
+                                        🍲
+                                      </div>
+                                    )}
+                                    <div className="min-w-0">
+                                      <h4 className="text-[11px] font-black text-white truncate">
+                                        {alt.nombre_plato}
+                                      </h4>
+                                      <p className="text-[10px] text-emerald-400 font-bold">
                                         🪑 {Number(alt.precio_barra).toFixed(2)}€ · 🛍️{' '}
                                         {Number(alt.precio_takeaway).toFixed(2)}€
                                       </p>
@@ -590,12 +671,12 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                                     <button
                                       type="button"
                                       onClick={() => abrirModalReserva(alt)}
-                                      className="px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] shrink-0 cursor-pointer transition-all"
+                                      className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[10px] shrink-0 cursor-pointer transition-all"
                                     >
                                       ⚡ Reservar
                                     </button>
                                   ) : (
-                                    <span className="text-[10px] font-bold text-amber-300 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 shrink-0">
+                                    <span className="text-[9px] font-bold text-amber-300 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 shrink-0">
                                       En barra
                                     </span>
                                   )}
@@ -604,8 +685,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                             })}
                           </div>
                         ) : (
-                          <p className="text-xs text-slate-300">
-                            Hoy tenemos nuestra cocina de sala a pleno rendimiento con todos los platos habituales de nuestra carta.
+                          <p className="text-[11px] text-slate-300">
+                            Tenemos nuestra cocina de sala a pleno rendimiento con toda la carta principal.
                           </p>
                         )}
                       </div>
@@ -616,11 +697,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       <button
                         type="button"
                         onClick={onIrACartaBar}
-                        className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-95 text-slate-950 font-black text-xs uppercase tracking-wider shadow-[0_0_25px_rgba(245,158,11,0.3)] flex items-center justify-center gap-2 cursor-pointer transition-all"
+                        className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-95 text-slate-950 font-black text-[11px] uppercase tracking-wider shadow-[0_0_20px_rgba(245,158,11,0.25)] flex items-center justify-center gap-1.5 cursor-pointer transition-all"
                       >
-                        <UtensilsCrossed className="h-4 w-4" />
-                        <span>Ver Menú General de Sala y Carta Principal (#bar)</span>
-                        <ArrowRight className="h-4 w-4" />
+                        <UtensilsCrossed className="h-3.5 w-3.5" />
+                        <span>Ver Carta Principal (#bar)</span>
+                        <ArrowRight className="h-3.5 w-3.5" />
                       </button>
                     </div>
                   </div>
@@ -629,114 +710,149 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
               const esConfirmado = guiso.estado === 'confirmado';
 
-              /* ================= TARJETA DE GUISO ACTIVO ================= */
+              /* ================= TARJETA COMPACTA DE GUISO ACTIVO (max-w-[360px]) ================= */
               return (
                 <div
                   key={guiso.id}
-                  className={`rounded-3xl border bg-[#0c0d14]/95 overflow-hidden flex flex-col justify-between transition-all shadow-2xl group ${
+                  className={`w-full max-w-[360px] rounded-2xl border bg-[#0c0d14]/95 overflow-hidden flex flex-col justify-between transition-all shadow-xl group ${
                     esConfirmado
-                      ? 'border-emerald-500/50 shadow-[0_0_35px_rgba(16,185,129,0.12)]'
+                      ? 'border-emerald-500/50 shadow-[0_0_25px_rgba(16,185,129,0.12)]'
                       : 'border-white/10 hover:border-amber-400/50'
                   }`}
                 >
                   <div>
-                    {/* IMAGEN Y BADGES DE ESTADO EN VIVO */}
-                    <div className="relative h-56 overflow-hidden bg-slate-900">
-                      <img
-                        src={
-                          guiso.imagen_url ||
-                          'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80'
-                        }
-                        alt={guiso.nombre_plato}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-[#0c0d14] via-[#0c0d14]/25 to-transparent" />
+                    {/* CABECERA CON IMAGEN REAL (h-36) O ENCABEZADO ELEGANTE CON ICONO 🍲 SIN FOTO INVENTADA */}
+                    {imagenReal ? (
+                      <div className="relative h-36 overflow-hidden bg-slate-900">
+                        <img
+                          src={imagenReal}
+                          alt={guiso.nombre_plato}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-[#0c0d14] via-[#0c0d14]/25 to-transparent" />
 
-                      <div className="absolute top-3.5 left-3.5 right-3.5 flex flex-wrap items-center justify-between gap-2">
-                        <span className="px-3 py-1 rounded-full bg-black/80 backdrop-blur-md border border-white/15 text-[11px] font-black text-white capitalize">
-                          📅 {formatearFechaHumana(guiso.fecha)}
-                        </span>
+                        <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between gap-1.5">
+                          <span className="px-2.5 py-0.5 rounded-full bg-black/80 backdrop-blur-md border border-white/15 text-[10px] font-black text-white capitalize">
+                            📅 {formatearFechaHumana(guiso.fecha)}
+                          </span>
 
-                        {esConfirmado ? (
-                          <span className="px-3.5 py-1 rounded-full bg-emerald-500 text-slate-950 text-xs font-black shadow-[0_0_20px_rgba(16,185,129,0.6)] flex items-center gap-1">
-                            🟢 ¡Confirmado para cocinar!
+                          {esConfirmado ? (
+                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                              🟢 Confirmado
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                              🟡 Preventa
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="absolute bottom-2 left-2.5 right-2.5 flex items-center justify-between text-[10px] text-slate-200">
+                          <span className="inline-flex items-center gap-1 bg-black/75 backdrop-blur px-2 py-0.5 rounded-md border border-white/10">
+                            <Clock className="h-3 w-3 text-amber-400" />
+                            <span>
+                              Corte: <strong className="text-amber-300">{formatearFechaCorteHumana(guiso)}</strong>
+                            </span>
                           </span>
-                        ) : (
-                          <span className="px-3.5 py-1 rounded-full bg-amber-400 text-slate-950 text-xs font-black shadow-[0_0_20px_rgba(251,191,36,0.5)] flex items-center gap-1">
-                            🟡 Buscando mínimo
-                          </span>
-                        )}
+                        </div>
                       </div>
-
-                      <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between text-[11px] text-slate-300">
-                        <span className="inline-flex items-center gap-1.5 bg-black/75 backdrop-blur px-3 py-1 rounded-lg border border-white/10">
-                          <Clock className="h-3.5 w-3.5 text-amber-400" />
-                          <span>
-                            Cierre preventa: <strong className="text-amber-300">{formatearFechaCorteHumana(guiso)}</strong>
+                    ) : (
+                      /* ENCABEZADO LIMPIO Y COMPACTO SIN FOTO INVENTADA */
+                      <div className="relative px-4 pt-3.5 pb-3 bg-gradient-to-br from-[#171926] via-[#10131e] to-[#0c0d14] border-b border-white/[0.07]">
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] border border-white/10 text-[10px] font-black text-amber-300 capitalize">
+                            📅 {formatearFechaHumana(guiso.fecha)}
                           </span>
-                        </span>
-                      </div>
-                    </div>
 
-                    {/* CONTENIDO DEL PLATO */}
-                    <div className="p-6 space-y-5">
+                          {esConfirmado ? (
+                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                              🟢 Confirmado
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                              🟡 Buscando mínimo
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-2.5 flex items-center justify-between gap-2">
+                          <div className="inline-flex items-center gap-1.5 text-[10px] text-slate-300 bg-black/40 px-2.5 py-1 rounded-lg border border-white/10">
+                            <Clock className="h-3 w-3 text-amber-400 shrink-0" />
+                            <span>
+                              Cierre preventa:{' '}
+                              <strong className="text-amber-300">{formatearFechaCorteHumana(guiso)}</strong>
+                            </span>
+                          </div>
+                          <div className="h-8 w-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-base shrink-0">
+                            🍲
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CONTENIDO COMPACTO DEL PLATO (p-4) */}
+                    <div className="p-4 space-y-3">
                       <div>
-                        <h3 className="text-xl sm:text-2xl font-black text-white leading-snug">
+                        <h3 className="text-base font-black text-white leading-snug line-clamp-1">
                           {guiso.nombre_plato}
                         </h3>
                         {guiso.descripcion && (
-                          <p className="text-xs sm:text-sm text-slate-400 mt-1.5 leading-relaxed">
+                          <p className="text-xs text-slate-400 mt-1 leading-relaxed line-clamp-2">
                             {guiso.descripcion}
                           </p>
                         )}
                       </div>
 
-                      {/* PRECIOS: EN BARRA vs PARA LLEVAR */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="rounded-2xl border border-amber-500/25 bg-amber-950/20 p-3.5">
-                          <span className="text-[10px] font-black uppercase text-amber-300 block">
-                            🪑 Para tomar en el Bar
+                      {/* BLOQUES DE PRECIO COMPACTOS Y ESTILIZADOS */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="rounded-xl border border-amber-500/25 bg-amber-950/20 px-2.5 py-2 flex flex-col justify-between">
+                          <span className="text-[9px] font-black uppercase text-amber-300 tracking-wide">
+                            🪑 En el Bar
                           </span>
-                          <span className="text-2xl font-black text-white mt-0.5 block">
-                            {Number(guiso.precio_barra).toFixed(2)} €
-                          </span>
-                          <span className="text-[10px] text-slate-400">Servicio en mesa o barra</span>
+                          <div className="flex items-baseline justify-between mt-0.5">
+                            <span className="text-base font-black text-white">
+                              {Number(guiso.precio_barra).toFixed(2)}€
+                            </span>
+                            <span className="text-[9px] text-slate-400">Sala/Mesa</span>
+                          </div>
                         </div>
 
-                        <div className="rounded-2xl border border-cyan-500/25 bg-cyan-950/20 p-3.5">
-                          <span className="text-[10px] font-black uppercase text-cyan-300 block">
-                            🛍️ Para llevar / Takeaway
+                        <div className="rounded-xl border border-cyan-500/25 bg-cyan-950/20 px-2.5 py-2 flex flex-col justify-between">
+                          <span className="text-[9px] font-black uppercase text-cyan-300 tracking-wide">
+                            🛍️ Para llevar
                           </span>
-                          <span className="text-2xl font-black text-white mt-0.5 block">
-                            {Number(guiso.precio_takeaway).toFixed(2)} €
-                          </span>
-                          <span className="text-[10px] text-slate-400">Listo para recoger</span>
+                          <div className="flex items-baseline justify-between mt-0.5">
+                            <span className="text-base font-black text-white">
+                              {Number(guiso.precio_takeaway).toFixed(2)}€
+                            </span>
+                            <span className="text-[9px] text-slate-400">Takeaway</span>
+                          </div>
                         </div>
                       </div>
 
-                      {/* BARRA DE PROGRESO DE DEMANDA EN VIVO */}
-                      <div className="rounded-2xl bg-[#131722] border border-white/10 p-4 space-y-2">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-black text-white flex items-center gap-1.5">
+                      {/* BARRA DE RACIONES ESTILIZADA Y PEQUEÑA */}
+                      <div className="rounded-xl bg-[#131722] border border-white/10 p-2.5 space-y-1.5">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-black text-white flex items-center gap-1">
                             <Flame
-                              className={`h-4 w-4 ${
+                              className={`h-3.5 w-3.5 ${
                                 esConfirmado ? 'text-emerald-400' : 'text-amber-400'
                               }`}
                             />
-                            {racionesActuales} de {minRequerido} raciones reservadas
+                            {racionesActuales}/{minRequerido} raciones
                           </span>
                           <span
-                            className={`font-black text-[11px] ${
+                            className={`font-black text-[10px] ${
                               esConfirmado ? 'text-emerald-400' : 'text-amber-300'
                             }`}
                           >
                             {esConfirmado
-                              ? '¡Fogones en marcha!'
-                              : `Faltan ${Math.max(0, minRequerido - racionesActuales)} raciones`}
+                              ? '¡En fogones!'
+                              : `Faltan ${Math.max(0, minRequerido - racionesActuales)}`}
                           </span>
                         </div>
 
-                        <div className="w-full h-3 bg-black/60 rounded-full overflow-hidden border border-white/10">
+                        <div className="w-full h-2 bg-black/60 rounded-full overflow-hidden border border-white/10">
                           <div
                             className={`h-full rounded-full transition-all duration-700 ${
                               esConfirmado
@@ -747,43 +863,43 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           />
                         </div>
 
-                        <p className="text-[11px] text-slate-400">
+                        <p className="text-[10px] text-slate-400 leading-tight">
                           {preventaCerradaPorFecha
-                            ? '🔒 El plazo online de preventa ha finalizado. Consulta disponibilidad de raciones directamente en barra.'
+                            ? '🔒 Preventa online finalizada. Consulta en barra.'
                             : esConfirmado
-                            ? '⚡ Este plato ya ha alcanzado el mínimo y sale seguro. ¡Asegura tu ración antes del cierre!'
-                            : '💡 Apúntate gratis sin pagar ahora. Si llegamos al mínimo, pasa automáticamente a confirmado.'}
+                            ? '⚡ Mínimo alcanzado: tu ración queda asegurada.'
+                            : '💡 Apúntate gratis (0€). Se confirma al llegar al mínimo.'}
                         </p>
                       </div>
                     </div>
                   </div>
 
-                  {/* BOTÓN DE RESERVA (BLOQUEADO SI SE SUPERÓ LA FECHA Y HORA DE CORTE) */}
-                  <div className="px-6 pb-6">
+                  {/* BOTÓN DE RESERVA COMPACTO */}
+                  <div className="px-4 pb-4">
                     {preventaCerradaPorFecha ? (
-                      <div className="w-full py-4 px-5 rounded-2xl bg-slate-900 border border-white/10 text-slate-400 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2">
-                        <Lock className="h-4 w-4 text-rose-400" />
-                        <span>Preventa Cerrada ({formatearFechaCorteHumana(guiso)})</span>
+                      <div className="w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-white/10 text-slate-400 font-black text-[11px] uppercase tracking-wider flex items-center justify-center gap-1.5">
+                        <Lock className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+                        <span className="truncate">Cerrado ({formatearFechaCorteHumana(guiso)})</span>
                       </div>
                     ) : (
                       <button
                         type="button"
                         onClick={() => abrirModalReserva(guiso)}
-                        className={`w-full py-4 px-5 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer transition-all shadow-lg ${
+                        className={`w-full py-2.5 px-4 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer transition-all shadow-md ${
                           esConfirmado
-                            ? 'bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 shadow-[0_0_25px_rgba(16,185,129,0.35)] hover:opacity-95'
-                            : 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:opacity-95'
+                            ? 'bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:opacity-95'
+                            : 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-[0_0_20px_rgba(245,158,11,0.25)] hover:opacity-95'
                         }`}
                       >
                         {esConfirmado ? (
                           <>
-                            <Sparkles className="h-4 w-4" />
-                            <span>⚡ Reservar Ración Asegurada</span>
+                            <Sparkles className="h-3.5 w-3.5" />
+                            <span>⚡ Reservar Ración</span>
                           </>
                         ) : (
                           <>
-                            <ChefHat className="h-4 w-4" />
-                            <span>🍲 Apuntarme Gratis (0 € ahora)</span>
+                            <ChefHat className="h-3.5 w-3.5" />
+                            <span>🍲 Apuntarme Gratis (0€)</span>
                           </>
                         )}
                       </button>
@@ -810,7 +926,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
             <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
               <div>
                 <span className="text-[10px] font-black uppercase tracking-wider text-amber-400 block">
-                  📅 {formatearFechaHumana(guisoActivoModal.fecha)} · 🛑 Corte: {formatearFechaCorteHumana(guisoActivoModal)}
+                  📅 {formatearFechaHumana(guisoActivoModal.fecha)} · 🛑 Corte:{' '}
+                  {formatearFechaCorteHumana(guisoActivoModal)}
                 </span>
                 <h3 className="text-xl font-black text-white mt-0.5">
                   {guisoActivoModal.nombre_plato}

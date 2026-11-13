@@ -38,8 +38,9 @@ interface GuisosAdminPanelProps {
   notificar: (texto: string, tipo?: 'ok' | 'error' | 'info') => void;
 }
 
-const STORAGE_KEY_PLANTILLAS = 'nexus_plantillas_guisos_v1';
+const STORAGE_KEY_PLANTILLAS = 'nexus_plantillas_guisos_v2';
 
+// Plantillas por defecto SIN URLs falsas de Unsplash (imagen_url vacío por defecto)
 const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
   {
     nombre: 'Rabo de Toro Cordobés Tradicional',
@@ -47,7 +48,7 @@ const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
     precio_barra: 11.5,
     precio_takeaway: 10.5,
     min_raciones: 8,
-    imagen_url: 'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80'
+    imagen_url: ''
   },
   {
     nombre: 'Carrillada Ibérica al Pedro Ximénez',
@@ -55,7 +56,7 @@ const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
     precio_barra: 10.5,
     precio_takeaway: 9.5,
     min_raciones: 8,
-    imagen_url: 'https://images.unsplash.com/photo-1534939561126-855b8675edd7?auto=format&fit=crop&w=900&q=80'
+    imagen_url: ''
   },
   {
     nombre: 'Potaje de Garbanzos con Chocos y Langostinos',
@@ -63,7 +64,7 @@ const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
     precio_barra: 8.5,
     precio_takeaway: 7.9,
     min_raciones: 10,
-    imagen_url: 'https://images.unsplash.com/photo-1547592166-23ac45744acd?auto=format&fit=crop&w=900&q=80'
+    imagen_url: ''
   },
   {
     nombre: 'Arroz Caldoso con Costillejas y Setas',
@@ -71,7 +72,7 @@ const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
     precio_barra: 9.0,
     precio_takeaway: 8.2,
     min_raciones: 8,
-    imagen_url: 'https://images.unsplash.com/photo-1512058564366-18510be2db19?auto=format&fit=crop&w=900&q=80'
+    imagen_url: ''
   },
   {
     nombre: 'Lentejas Estofadas con Chorizo Ibérico y Morcilla',
@@ -79,7 +80,7 @@ const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
     precio_barra: 7.5,
     precio_takeaway: 6.9,
     min_raciones: 10,
-    imagen_url: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=900&q=80'
+    imagen_url: ''
   },
   {
     nombre: 'Albóndigas de Choco y Gambas en Salsa Verde',
@@ -87,7 +88,7 @@ const PLANTILLAS_GUISOS_INICIALES: PlantillaGuiso[] = [
     precio_barra: 9.5,
     precio_takeaway: 8.5,
     min_raciones: 8,
-    imagen_url: 'https://images.unsplash.com/photo-1529042410759-befb1204b468?auto=format&fit=crop&w=900&q=80'
+    imagen_url: ''
   }
 ];
 
@@ -118,20 +119,29 @@ const obtenerDiasSemana = (offsetSemanas: number = 0): Array<{ label: string; fe
   });
 };
 
+const limpiarUrlUnsplashFalsa = (url?: string | null): string => {
+  const limpia = String(url || '').trim();
+  if (!limpia || limpia.includes('images.unsplash.com')) return '';
+  return limpia;
+};
+
 export default function GuisosAdminPanel({ articulosCatalogo, notificar }: GuisosAdminPanelProps) {
   const [guisos, setGuisos] = useState<GuisoProgramado[]>([]);
   const [reservas, setReservas] = useState<ReservaGuiso[]>([]);
   const [cargando, setCargando] = useState<boolean>(true);
   const [guardandoGuiso, setGuardandoGuiso] = useState<boolean>(false);
 
-  // Plantillas de guisos editables y persistidas en localStorage
+  // Plantillas de guisos editables y persistidas en localStorage (sin URLs falsas de Unsplash)
   const [plantillasGuisos, setPlantillasGuisos] = useState<PlantillaGuiso[]>(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY_PLANTILLAS);
+      const raw = localStorage.getItem(STORAGE_KEY_PLANTILLAS) || localStorage.getItem('nexus_plantillas_guisos_v1');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          return parsed.map((p: PlantillaGuiso) => ({
+            ...p,
+            imagen_url: limpiarUrlUnsplashFalsa(p.imagen_url)
+          }));
         }
       }
     } catch (e) {
@@ -164,11 +174,12 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   const [imagenUrl, setImagenUrl] = useState<string>('');
   const [estadoPlato, setEstadoPlato] = useState<EstadoGuiso>('buscando_minimo');
 
-  // Selector visual de fotos del catálogo existente
+  // Selector visual de fotos reales del catálogo existente
   const [mostrarGaleriaCatalogo, setMostrarGaleriaCatalogo] = useState<boolean>(false);
 
   // Control de listado y desgloses desplegables
   const [filtroEstadoVista, setFiltroEstadoVista] = useState<'TODOS' | EstadoGuiso>('TODOS');
+  const [filtroSemanaListado, setFiltroSemanaListado] = useState<'TODAS' | 'ACTUAL' | 'SIGUIENTE'>('TODAS');
   const [guisoDesplegadoId, setGuisoDesplegadoId] = useState<string | null>(null);
   const [enlacePagoConfig, setEnlacePagoConfig] = useState<string>(() => {
     return (
@@ -178,6 +189,14 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   });
 
   const diasSemanaFormulario = useMemo(() => obtenerDiasSemana(semanaSelectorOffset), [semanaSelectorOffset]);
+  const fechasSemanaActualSet = useMemo(
+    () => new Set(obtenerDiasSemana(0).map((d) => d.fecha)),
+    []
+  );
+  const fechasSemanaSiguienteSet = useMemo(
+    () => new Set(obtenerDiasSemana(1).map((d) => d.fecha)),
+    []
+  );
 
   // Combinar plantillas personalizadas de guisos + catálogo de artículos reales del TPV
   const opcionesCatalogoUnificadas = useMemo(() => {
@@ -188,7 +207,6 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
       }
     >();
 
-    // Primero nuestras plantillas de guisos (tienen prioridad en descripción, precios y fotos de guisos)
     for (const p of plantillasGuisos) {
       if (!p?.nombre) continue;
       mapa.set(p.nombre.trim().toLowerCase(), {
@@ -197,12 +215,11 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         precio_barra: Number(p.precio_barra ?? 9.5),
         precio_takeaway: Number(p.precio_takeaway ?? 8.5),
         min_raciones: Number(p.min_raciones || 8),
-        imagen_url: p.imagen_url || '',
+        imagen_url: limpiarUrlUnsplashFalsa(p.imagen_url),
         origen: 'plantilla'
       });
     }
 
-    // Después los artículos del catálogo TPV que no estén ya como plantilla personalizada
     for (const art of articulosCatalogo) {
       if (!art?.nombre) continue;
       const clave = art.nombre.trim().toLowerCase();
@@ -218,7 +235,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
           precio_barra: pvp > 0 ? pvp : 8.5,
           precio_takeaway: pvp > 1 ? Number((pvp - 0.8).toFixed(2)) : pvp,
           min_raciones: 8,
-          imagen_url: art.imagen_url || '',
+          imagen_url: limpiarUrlUnsplashFalsa(art.imagen_url),
           origen: 'catalogo'
         });
       }
@@ -233,12 +250,13 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     return plantillasGuisos.some((p) => p.nombre.trim().toLowerCase() === limpio);
   }, [nombrePlato, plantillasGuisos]);
 
+  // Solo fotos reales subidas en articulos_cafeteria / productos_carta o plantillas propias
   const fotosDisponiblesCatalogo = useMemo(() => {
     const lista: Array<{ nombre: string; url: string }> = [];
     const vistas = new Set<string>();
 
     for (const op of opcionesCatalogoUnificadas) {
-      const url = (op.imagen_url || '').trim();
+      const url = limpiarUrlUnsplashFalsa(op.imagen_url);
       if (url && !vistas.has(url)) {
         vistas.add(url);
         lista.push({ nombre: op.nombre, url });
@@ -357,7 +375,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     setEstadoPlato('buscando_minimo');
   };
 
-  // SIEMPRE actualiza descripción, precios, mínimo de raciones y foto cuando el plato coincide con una plantilla o artículo del catálogo
+  // SIEMPRE actualiza descripción, precios, mínimo de raciones y foto (o la deja vacía si no tiene)
   const handleSeleccionarPlatoCatalogo = (nombreInput: string) => {
     setNombrePlato(nombreInput);
     const encontrado = opcionesCatalogoUnificadas.find(
@@ -368,7 +386,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
       setPrecioBarra(Number(encontrado.precio_barra || 0).toFixed(2));
       setPrecioTakeaway(Number(encontrado.precio_takeaway || 0).toFixed(2));
       setMinRaciones(String(encontrado.min_raciones || 8));
-      setImagenUrl(encontrado.imagen_url || '');
+      setImagenUrl(limpiarUrlUnsplashFalsa(encontrado.imagen_url));
     }
   };
 
@@ -385,9 +403,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
       precio_barra: Math.max(0, parseFloat(precioBarra) || 0),
       precio_takeaway: Math.max(0, parseFloat(precioTakeaway) || 0),
       min_raciones: Math.max(1, parseInt(minRaciones, 10) || 8),
-      imagen_url:
-        imagenUrl.trim() ||
-        'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80'
+      imagen_url: imagenUrl.trim()
     };
 
     const idxExistente = plantillasGuisos.findIndex(
@@ -398,7 +414,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
       const actualizadas = [...plantillasGuisos];
       actualizadas[idxExistente] = nuevaPlantilla;
       guardarPlantillasEnStorage(actualizadas);
-      notificar(`Plantilla "${nombreLimpio}" actualizada con su descripción, precios y foto.`, 'ok');
+      notificar(`Plantilla "${nombreLimpio}" actualizada correctamente.`, 'ok');
     } else {
       guardarPlantillasEnStorage([nuevaPlantilla, ...plantillasGuisos]);
       notificar(`Plato "${nombreLimpio}" guardado en tus plantillas predefinidas.`, 'ok');
@@ -469,9 +485,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         min_raciones: minNum,
         precio_barra: Number(pBarra.toFixed(2)),
         precio_takeaway: Number(pTakeaway.toFixed(2)),
-        imagen_url:
-          imagenUrl.trim() ||
-          'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80',
+        imagen_url: imagenUrl.trim(), // Vacío si no se ha asignado foto real
         estado: estadoPlato
       };
 
@@ -487,7 +501,6 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
           .eq('id', editandoGuisoId);
 
         if (error) {
-          // Fallback en caso de que falte ejecutar ALTER TABLE ADD COLUMN fecha_corte en Supabase
           const { error: fallbackErr } = await supabase
             .from('guisos_programados')
             .update(payloadBase)
@@ -526,7 +539,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     setMinRaciones(String(guiso.min_raciones || 8));
     setPrecioBarra(Number(guiso.precio_barra || 0).toFixed(2));
     setPrecioTakeaway(Number(guiso.precio_takeaway || 0).toFixed(2));
-    setImagenUrl(guiso.imagen_url || '');
+    setImagenUrl(limpiarUrlUnsplashFalsa(guiso.imagen_url));
     setEstadoPlato(guiso.estado);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -622,10 +635,12 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
 
   const guisosFiltrados = useMemo(() => {
     return guisos.filter((g) => {
-      if (filtroEstadoVista === 'TODOS') return true;
-      return g.estado === filtroEstadoVista;
+      if (filtroEstadoVista !== 'TODOS' && g.estado !== filtroEstadoVista) return false;
+      if (filtroSemanaListado === 'ACTUAL' && !fechasSemanaActualSet.has(g.fecha)) return false;
+      if (filtroSemanaListado === 'SIGUIENTE' && !fechasSemanaSiguienteSet.has(g.fecha)) return false;
+      return true;
     });
-  }, [guisos, filtroEstadoVista]);
+  }, [guisos, filtroEstadoVista, filtroSemanaListado, fechasSemanaActualSet, fechasSemanaSiguienteSet]);
 
   return (
     <div className="space-y-6">
@@ -701,10 +716,10 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         {/* ================= COLUMNA IZQUIERDA: FORMULARIO ÁGIL DE GUISOS ================= */}
         <form
           onSubmit={guardarGuiso}
-          className="lg:col-span-5 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 self-start"
+          className="lg:col-span-5 bg-[#0f172a] border border-slate-800 rounded-3xl p-5 space-y-4 self-start"
         >
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <h3 className="text-lg font-black text-white">
+            <h3 className="text-base font-black text-white">
               {editandoGuisoId ? '✏️ Editando Guiso Programado' : '➕ Programar Guiso del Día'}
             </h3>
             {editandoGuisoId && (
@@ -910,7 +925,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                 value={nombrePlato}
                 onChange={(e) => handleSeleccionarPlatoCatalogo(e.target.value)}
                 placeholder="Ej: Rabo de Toro Cordobés, Lentejas Estofadas..."
-                className="w-full bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white outline-none"
+                className="w-full bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2 text-xs font-bold text-white outline-none"
               />
               <datalist id="catalogo-platos-nexus">
                 {opcionesCatalogoUnificadas.map((op) => (
@@ -973,7 +988,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                 required
                 value={minRaciones}
                 onChange={(e) => setMinRaciones(e.target.value)}
-                className="w-full bg-slate-950 border border-amber-500/40 rounded-xl px-3 py-2.5 text-sm font-black text-amber-300 mt-1 text-center"
+                className="w-full bg-slate-950 border border-amber-500/40 rounded-xl px-3 py-2 text-sm font-black text-amber-300 mt-1 text-center"
               />
             </div>
 
@@ -988,7 +1003,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                 required
                 value={precioBarra}
                 onChange={(e) => setPrecioBarra(e.target.value)}
-                className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-3 py-2.5 text-sm font-black text-emerald-400 mt-1 text-right"
+                className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-3 py-2 text-sm font-black text-emerald-400 mt-1 text-right"
               />
             </div>
 
@@ -1003,7 +1018,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                 required
                 value={precioTakeaway}
                 onChange={(e) => setPrecioTakeaway(e.target.value)}
-                className="w-full bg-slate-950 border border-cyan-500/40 rounded-xl px-3 py-2.5 text-sm font-black text-cyan-300 mt-1 text-right"
+                className="w-full bg-slate-950 border border-cyan-500/40 rounded-xl px-3 py-2 text-sm font-black text-cyan-300 mt-1 text-right"
               />
             </div>
           </div>
@@ -1014,7 +1029,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
             <select
               value={estadoPlato}
               onChange={(e) => setEstadoPlato(e.target.value as EstadoGuiso)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-bold text-white mt-1"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-white mt-1"
             >
               <option value="buscando_minimo">🟡 Buscando mínimo (Preventa abierta sin pago previo)</option>
               <option value="confirmado">🟢 ¡Confirmado para cocinar! (Pago inmediato activado)</option>
@@ -1022,28 +1037,53 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
             </select>
           </div>
 
-          {/* FOTO DEL PLATO: URL, SUBIDA O ELEGIR DESDE CATÁLOGO EXISTENTE */}
-          <div className="space-y-2 pt-1 border-t border-slate-800">
-            <div className="flex items-center justify-between">
+          {/* FOTO DEL PLATO: OPCIONAL (SIN FOTOS INVENTADAS) + BOTÓN PARA QUITAR IMAGEN */}
+          <div className="space-y-2 pt-2 border-t border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="text-[10px] font-black uppercase text-slate-400">
-                📸 Fotografía del Plato
+                📸 Fotografía del Plato (Opcional)
               </label>
-              <button
-                type="button"
-                onClick={() => setMostrarGaleriaCatalogo((prev) => !prev)}
-                className="text-[10px] bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 rounded-lg font-bold cursor-pointer"
-              >
-                {mostrarGaleriaCatalogo ? 'Cerrar galería' : '🖼️ Elegir foto del catálogo'}
-              </button>
+              <div className="flex items-center gap-1.5">
+                {imagenUrl.trim() !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setImagenUrl('')}
+                    className="text-[10px] bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40 px-2.5 py-1 rounded-lg font-bold cursor-pointer whitespace-nowrap"
+                  >
+                    🗑️ Quitar imagen / Dejar sin foto
+                  </button>
+                )}
+                {fotosDisponiblesCatalogo.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setMostrarGaleriaCatalogo((prev) => !prev)}
+                    className="text-[10px] bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 rounded-lg font-bold cursor-pointer whitespace-nowrap"
+                  >
+                    {mostrarGaleriaCatalogo ? 'Cerrar galería' : '🖼️ Fotos de mi carta'}
+                  </button>
+                )}
+              </div>
             </div>
 
-            <input
-              type="text"
-              value={imagenUrl}
-              onChange={(e) => setImagenUrl(e.target.value)}
-              placeholder="URL de imagen o elige desde el catálogo / sube archivo..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={imagenUrl}
+                onChange={(e) => setImagenUrl(e.target.value)}
+                placeholder="Sin foto (se mostrará icono 🍲 elegante) o pega URL / sube archivo..."
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+              />
+              {imagenUrl.trim() !== '' && (
+                <button
+                  type="button"
+                  onClick={() => setImagenUrl('')}
+                  className="px-3 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 border border-rose-500/40 text-rose-300 text-xs font-black cursor-pointer"
+                  title="Borrar imagen"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
 
             <div className="flex items-center justify-between gap-2">
               <input
@@ -1052,19 +1092,23 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                 onChange={manejarSubidaImagenGuiso}
                 className="text-[10px] text-slate-400 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-slate-800 file:text-slate-200"
               />
-              {imagenUrl && (
+              {imagenUrl.trim() !== '' ? (
                 <img
                   src={imagenUrl}
                   alt="Preview"
                   className="h-10 w-14 rounded-lg object-cover border border-slate-700 shrink-0"
                 />
+              ) : (
+                <span className="text-[10px] text-slate-500 italic whitespace-nowrap">
+                  🍲 Sin imagen asignada
+                </span>
               )}
             </div>
 
-            {mostrarGaleriaCatalogo && (
+            {mostrarGaleriaCatalogo && fotosDisponiblesCatalogo.length > 0 && (
               <div className="bg-slate-950 border border-indigo-500/30 rounded-2xl p-3 space-y-2 max-h-56 overflow-y-auto">
                 <p className="text-[10px] font-bold text-indigo-300">
-                  Haz clic en cualquier plato de tus plantillas o catálogo para usar su foto (o cargar el plato):
+                  Fotos reales vinculadas en tu carta (`productos_carta` / `articulos_cafeteria`):
                 </p>
                 <div className="grid grid-cols-3 gap-2">
                   {fotosDisponiblesCatalogo.map((item, idx) => (
@@ -1073,12 +1117,9 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                       type="button"
                       onClick={() => {
                         setImagenUrl(item.url);
-                        if (!nombrePlato.trim()) {
-                          handleSeleccionarPlatoCatalogo(item.nombre);
-                        }
                         setMostrarGaleriaCatalogo(false);
                       }}
-                      className="group relative rounded-xl overflow-hidden border border-slate-800 hover:border-amber-400 text-left h-20 cursor-pointer"
+                      className="group relative rounded-xl overflow-hidden border border-slate-800 hover:border-amber-400 text-left h-16 cursor-pointer"
                     >
                       <img src={item.url} alt={item.nombre} className="w-full h-full object-cover" />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent p-1.5 flex items-end">
@@ -1096,7 +1137,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
           <button
             type="submit"
             disabled={guardandoGuiso}
-            className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:opacity-50 text-slate-950 font-black py-3.5 rounded-2xl shadow-lg text-xs uppercase tracking-wider transition-all cursor-pointer"
+            className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:opacity-50 text-slate-950 font-black py-3 rounded-2xl shadow-lg text-xs uppercase tracking-wider transition-all cursor-pointer"
           >
             {guardandoGuiso
               ? 'Guardando en Supabase...'
@@ -1109,26 +1150,47 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         {/* ================= COLUMNA DERECHA: LISTADO / CALENDARIO Y CONTROL DE RESERVAS ================= */}
         <div className="lg:col-span-7 space-y-4">
           {/* CONFIGURACIÓN RÁPIDA DE ENLACE DE PAGO WHATSAPP Y FILTROS */}
-          <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-5 space-y-3">
+          <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap gap-1.5">
                 {[
                   { id: 'TODOS', label: '📋 Todos' },
                   { id: 'buscando_minimo', label: '🟡 Buscando Mínimo' },
                   { id: 'confirmado', label: '🟢 Confirmados' },
-                  { id: 'cancelado', label: '🔴 Cancelados (Plan B)' }
+                  { id: 'cancelado', label: '🔴 Cancelados' }
                 ].map((f) => (
                   <button
                     key={f.id}
                     type="button"
                     onClick={() => setFiltroEstadoVista(f.id as any)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
                       filtroEstadoVista === f.id
                         ? 'bg-indigo-600 text-white shadow'
                         : 'bg-slate-900 text-slate-400 hover:text-white'
                     }`}
                   >
                     {f.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                {[
+                  { id: 'TODAS', label: 'Todas las fechas' },
+                  { id: 'ACTUAL', label: 'Esta semana' },
+                  { id: 'SIGUIENTE', label: 'Próxima semana' }
+                ].map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setFiltroSemanaListado(s.id as any)}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black whitespace-nowrap transition-all cursor-pointer ${
+                      filtroSemanaListado === s.id
+                        ? 'bg-amber-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {s.label}
                   </button>
                 ))}
               </div>
@@ -1151,20 +1213,20 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
             </div>
           </div>
 
-          {/* LISTA DE TARJETAS DE GUISOS PROGRAMADOS */}
+          {/* LISTA COMPACTA DE GUISOS PROGRAMADOS */}
           {cargando ? (
-            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-10 text-center text-xs text-slate-400">
+            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-8 text-center text-xs text-slate-400">
               Cargando programación de guisos y reservas en tiempo real...
             </div>
           ) : guisosFiltrados.length === 0 ? (
-            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-10 text-center space-y-2">
-              <p className="text-base font-black text-white">No hay guisos en este filtro</p>
+            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-8 text-center space-y-2">
+              <p className="text-sm font-black text-white">No hay guisos en este filtro</p>
               <p className="text-xs text-slate-400">
                 Utiliza el formulario de la izquierda para programar los guisos de la semana.
               </p>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {guisosFiltrados.map((guiso) => {
                 const listaReservasGuiso = reservasPorGuiso.get(guiso.id) || [];
                 const racionesApuntadas = listaReservasGuiso.reduce(
@@ -1180,66 +1242,65 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                 const minReq = Math.max(1, Number(guiso.min_raciones || 1));
                 const porcentaje = Math.min(100, Math.round((racionesApuntadas / minReq) * 100));
                 const desplegado = guisoDesplegadoId === guiso.id;
+                const fotoReal = limpiarUrlUnsplashFalsa(guiso.imagen_url);
 
                 return (
                   <div
                     key={guiso.id}
-                    className={`bg-[#0f172a] border rounded-3xl overflow-hidden transition-all ${
+                    className={`bg-[#0f172a] border rounded-2xl overflow-hidden transition-all ${
                       guiso.estado === 'confirmado'
-                        ? 'border-emerald-500/50 shadow-[0_0_25px_rgba(16,185,129,0.1)]'
+                        ? 'border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.08)]'
                         : guiso.estado === 'cancelado'
                         ? 'border-rose-500/40 opacity-85'
                         : 'border-slate-800'
                     }`}
                   >
-                    <div className="p-5 space-y-4">
+                    <div className="p-4 space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div className="flex items-start gap-3.5">
-                          <img
-                            src={
-                              guiso.imagen_url ||
-                              'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=400&q=80'
-                            }
-                            alt={guiso.nombre_plato}
-                            className="w-16 h-16 rounded-2xl object-cover border border-slate-700 shrink-0"
-                          />
+                        <div className="flex items-start gap-3">
+                          {fotoReal ? (
+                            <img
+                              src={fotoReal}
+                              alt={guiso.nombre_plato}
+                              className="w-12 h-12 rounded-xl object-cover border border-slate-700 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500/20 to-slate-900 border border-amber-500/30 flex items-center justify-center text-xl shrink-0">
+                              🍲
+                            </div>
+                          )}
                           <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-amber-300">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-amber-300">
                                 📅 {formatearFechaHumana(guiso.fecha)} · 🛑 Corte: {formatearFechaCorteHumana(guiso)}
                               </span>
                               {guiso.estado === 'confirmado' && (
-                                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300">
-                                  🟢 ¡Confirmado para cocinar!
+                                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300">
+                                  🟢 Confirmado
                                 </span>
                               )}
                               {guiso.estado === 'buscando_minimo' && (
-                                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300">
-                                  🟡 Buscando mínimo ({racionesApuntadas}/{minReq})
+                                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300">
+                                  🟡 Preventa ({racionesApuntadas}/{minReq})
                                 </span>
                               )}
                               {guiso.estado === 'cancelado' && (
-                                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300">
-                                  🔴 Cancelado (Plan B activo)
+                                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300">
+                                  🔴 Cancelado
                                 </span>
                               )}
                             </div>
 
-                            <h4 className="text-base font-black text-white mt-1">{guiso.nombre_plato}</h4>
-                            {guiso.descripcion && (
-                              <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">
-                                {guiso.descripcion}
-                              </p>
-                            )}
-                            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300 mt-1">
+                            <h4 className="text-sm font-black text-white mt-1">{guiso.nombre_plato}</h4>
+                            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-300 mt-0.5">
                               <span>
                                 🪑 Barra: <strong className="text-emerald-400">{Number(guiso.precio_barra).toFixed(2)}€</strong>
                               </span>
                               <span>
-                                🛍️ Takeaway: <strong className="text-cyan-300">{Number(guiso.precio_takeaway).toFixed(2)}€</strong>
+                                🛍️ Llevar: <strong className="text-cyan-300">{Number(guiso.precio_takeaway).toFixed(2)}€</strong>
                               </span>
                               <span className="text-slate-400">
-                                ({racionesBarra} en sala · {racionesTakeaway} para llevar)
+                                ({racionesBarra} barra · {racionesTakeaway} llevar)
                               </span>
                             </div>
                           </div>
@@ -1251,16 +1312,15 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                             <button
                               type="button"
                               onClick={() => forzarConfirmacionGuiso(guiso)}
-                              className="px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 font-black text-[11px] transition-all cursor-pointer"
-                              title="Activar el plato manualmente aunque no haya llegado al mínimo"
+                              className="px-2.5 py-1 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 font-black text-[10px] transition-all cursor-pointer"
                             >
-                              🟢 Forzar Confirmación
+                              🟢 Confirmar
                             </button>
                           )}
                           <button
                             type="button"
                             onClick={() => cargarParaEditar(guiso)}
-                            className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-bold text-[11px] transition-all cursor-pointer"
+                            className="px-2.5 py-1 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-bold text-[10px] transition-all cursor-pointer"
                           >
                             ✏️ Editar
                           </button>
@@ -1268,8 +1328,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                             <button
                               type="button"
                               onClick={() => cancelarGuisoPlanB(guiso)}
-                              className="px-3 py-1.5 rounded-xl bg-amber-600/20 hover:bg-amber-600/40 text-amber-300 border border-amber-500/30 font-bold text-[11px] transition-all cursor-pointer"
-                              title="Marcar como cancelado y activar Plan B en la web"
+                              className="px-2.5 py-1 rounded-xl bg-amber-600/20 hover:bg-amber-600/40 text-amber-300 border border-amber-500/30 font-bold text-[10px] transition-all cursor-pointer"
                             >
                               🚫 Cancelar
                             </button>
@@ -1277,27 +1336,26 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                           <button
                             type="button"
                             onClick={() => eliminarGuisoDefinitivamente(guiso)}
-                            className="px-3 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-[11px] transition-all cursor-pointer"
-                            title="Eliminar guiso de la base de datos"
+                            className="px-2.5 py-1 rounded-xl bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-[10px] transition-all cursor-pointer"
                           >
                             🗑️ Eliminar
                           </button>
                         </div>
                       </div>
 
-                      {/* BARRA DE PROGRESO EN TIEMPO REAL */}
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between items-center text-xs">
+                      {/* BARRA DE PROGRESO COMPACTA */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between items-center text-[11px]">
                           <span className="font-black text-white">
                             🔥 {racionesApuntadas} / {minReq} raciones reservadas
                           </span>
                           <span className="font-bold text-slate-400">
                             {racionesApuntadas >= minReq
-                              ? '¡Objetivo mínimo superado!'
-                              : `Faltan ${minReq - racionesApuntadas} raciones para el mínimo`}
+                              ? '¡Objetivo alcanzado!'
+                              : `Faltan ${minReq - racionesApuntadas} raciones`}
                           </span>
                         </div>
-                        <div className="w-full h-3 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                        <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
                           <div
                             className={`h-full transition-all duration-500 rounded-full ${
                               guiso.estado === 'confirmado' || racionesApuntadas >= minReq
@@ -1312,30 +1370,24 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                       </div>
 
                       {/* BOTÓN PARA DESPLEGAR CLIENTES APUNTADOS */}
-                      <div className="flex items-center justify-between pt-1">
+                      <div className="flex items-center justify-between">
                         <button
                           type="button"
                           onClick={() => setGuisoDesplegadoId(desplegado ? null : guiso.id)}
-                          className="text-xs font-black text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 cursor-pointer"
+                          className="text-[11px] font-black text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 cursor-pointer"
                         >
                           <span>
-                            {desplegado ? '▼ Ocultar' : '▶ Ver'} desglose de clientes apuntados ({listaReservasGuiso.length})
+                            {desplegado ? '▼ Ocultar' : '▶ Ver'} clientes apuntados ({listaReservasGuiso.length})
                           </span>
                         </button>
-
-                        {guiso.estado === 'confirmado' && listaReservasGuiso.length > 0 && (
-                          <span className="text-[11px] text-emerald-400 font-bold">
-                            📲 Pulsa el botón de WhatsApp de cada cliente para enviarle el enlace de pago
-                          </span>
-                        )}
                       </div>
                     </div>
 
                     {/* DESGLOSE DESPLEGABLE DE CLIENTES APUNTADOS */}
                     {desplegado && (
-                      <div className="border-t border-slate-800 bg-slate-950/80 p-4 space-y-3">
+                      <div className="border-t border-slate-800 bg-slate-950/80 p-3.5 space-y-2">
                         {listaReservasGuiso.length === 0 ? (
-                          <p className="text-xs text-slate-400 text-center py-3">
+                          <p className="text-xs text-slate-400 text-center py-2">
                             Aún no hay clientes apuntados a este guiso.
                           </p>
                         ) : (
@@ -1343,12 +1395,12 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                             <table className="w-full text-left border-collapse text-xs">
                               <thead>
                                 <tr className="text-[10px] uppercase text-slate-400 border-b border-slate-800">
-                                  <th className="p-2.5">Cliente</th>
-                                  <th className="p-2.5">Contacto (Tel / Email)</th>
-                                  <th className="p-2.5 text-center">Raciones / Modalidad</th>
-                                  <th className="p-2.5 text-right">Total</th>
-                                  <th className="p-2.5 text-center">Estado Pago</th>
-                                  <th className="p-2.5 text-right">Acciones Rápidas</th>
+                                  <th className="p-2">Cliente</th>
+                                  <th className="p-2">Contacto</th>
+                                  <th className="p-2 text-center">Raciones</th>
+                                  <th className="p-2 text-right">Total</th>
+                                  <th className="p-2 text-center">Pago</th>
+                                  <th className="p-2 text-right">Acciones</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800/60">
@@ -1366,70 +1418,49 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
 
                                   return (
                                     <tr key={res.id} className="hover:bg-slate-900/50">
-                                      <td className="p-2.5 font-black text-white">
-                                        {res.nombre_cliente}
-                                        {res.created_at && (
-                                          <span className="block text-[10px] font-normal text-slate-500">
-                                            {new Date(res.created_at).toLocaleString('es-ES', {
-                                              day: '2-digit',
-                                              month: '2-digit',
-                                              hour: '2-digit',
-                                              minute: '2-digit'
-                                            })}
-                                          </span>
-                                        )}
-                                      </td>
-                                      <td className="p-2.5">
+                                      <td className="p-2 font-black text-white">{res.nombre_cliente}</td>
+                                      <td className="p-2">
                                         <span className="font-bold text-slate-200 block">{res.telefono}</span>
-                                        {res.email ? (
+                                        {res.email && (
                                           <span className="text-[10px] text-cyan-400 block">{res.email}</span>
-                                        ) : (
-                                          <span className="text-[10px] text-slate-500">Sin email</span>
                                         )}
                                       </td>
-                                      <td className="p-2.5 text-center">
-                                        <span className="font-black text-white">{res.raciones} rac.</span>
-                                        <span
-                                          className={`block text-[10px] font-bold ${
-                                            res.modalidad === 'takeaway' ? 'text-cyan-300' : 'text-amber-300'
-                                          }`}
-                                        >
-                                          {res.modalidad === 'takeaway' ? '🛍️ Takeaway' : '🪑 En Barra/Sala'}
+                                      <td className="p-2 text-center">
+                                        <span className="font-black text-white">{res.raciones}</span> ·{' '}
+                                        <span className="text-[10px] text-amber-300">
+                                          {res.modalidad === 'takeaway' ? '🛍️ Llevar' : '🪑 Barra'}
                                         </span>
                                       </td>
-                                      <td className="p-2.5 text-right font-black text-emerald-400">
+                                      <td className="p-2 text-right font-black text-emerald-400">
                                         {importeCliente.toFixed(2)}€
                                       </td>
-                                      <td className="p-2.5 text-center">
+                                      <td className="p-2 text-center">
                                         <button
                                           type="button"
                                           onClick={() => alternarEstadoPagoReserva(res)}
-                                          className={`px-2.5 py-1 rounded-lg font-black text-[10px] uppercase cursor-pointer transition-all ${
+                                          className={`px-2 py-0.5 rounded-lg font-black text-[10px] uppercase cursor-pointer ${
                                             res.estado_pago === 'pagado'
                                               ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-emerald-500/20 hover:text-emerald-300'
+                                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                                           }`}
-                                          title="Haz clic para cambiar entre Pendiente y Pagado"
                                         >
-                                          {res.estado_pago === 'pagado' ? '✅ Pagado' : '⏳ Marcar Pagado'}
+                                          {res.estado_pago === 'pagado' ? '✅ Pagado' : '⏳ Pendiente'}
                                         </button>
                                       </td>
-                                      <td className="p-2.5 text-right">
-                                        <div className="flex items-center justify-end gap-1.5">
+                                      <td className="p-2 text-right">
+                                        <div className="flex items-center justify-end gap-1">
                                           <a
                                             href={waUrl}
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] inline-flex items-center gap-1 shadow transition-all"
-                                            title="Enviar aviso de confirmación y enlace de pago por WhatsApp"
+                                            className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px]"
                                           >
-                                            <span>📲 WhatsApp Pago</span>
+                                            📲 WhatsApp
                                           </a>
                                           <button
                                             type="button"
                                             onClick={() => eliminarReservaCliente(res)}
-                                            className="px-2 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 text-[10px] font-bold cursor-pointer"
-                                            title="Eliminar reserva"
+                                            className="px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 text-[10px] font-bold cursor-pointer"
                                           >
                                             ✕
                                           </button>
