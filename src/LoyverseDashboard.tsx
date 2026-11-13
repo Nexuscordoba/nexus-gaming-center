@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from './supabase';
 import HistorialCajas from './HistorialCajas';
+import GuisosAdminPanel from './GuisosAdminPanel';
 import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
@@ -19,6 +20,7 @@ import {
 
 interface BackofficeProps {
   onBack?: () => void;
+  initialTab?: 'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'empleados' | 'configuracion';
 }
 
 interface IngredienteEscandalloUI {
@@ -64,14 +66,18 @@ const factorConversionUnidades = (unidadUso: UnidadMedida, unidadBase: UnidadMed
   return obtenerFactorConversion(unidadBase, unidadUso);
 };
 
-export default function LoyverseDashboard({ onBack }: BackofficeProps) {
+export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: BackofficeProps) {
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
   const [pinAcceso, setPinAcceso] = useState('');
   const [errorPin, setErrorPin] = useState('');
 
   const [tabActiva, setTabActiva] = useState<
-    'resumen' | 'tickets' | 'articulos' | 'inventario' | 'empleados' | 'configuracion'
-  >('resumen');
+    'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'empleados' | 'configuracion'
+  >(initialTab);
+
+  useEffect(() => {
+    setTabActiva(initialTab);
+  }, [initialTab]);
 
   const [configFiscal, setConfigFiscal] = useState<ConfiguracionFiscal>({
     razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
@@ -1934,6 +1940,7 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               { id: 'tickets', label: '🧾 Facturas y Tickets' },
               { id: 'articulos', label: '🍔 Artículos y Escandallos' },
               { id: 'inventario', label: '📦 Stock, Compras y Lotes' },
+              { id: 'guisos', label: '🍲 Guisos / Preventa' },
               { id: 'empleados', label: '👥 Empleados y Turnos' },
               { id: 'configuracion', label: '⚙️ Datos Fiscales y Mesas' }
             ].map((item) => (
@@ -3154,6 +3161,11 @@ export default function LoyverseDashboard({ onBack }: BackofficeProps) {
               {guardandoConfigFiscal ? 'Guardando...' : '💾 Guardar Configuración Fiscal'}
             </button>
           </form>
+        )}
+
+        {/* ================= PESTAÑA 7: GUISOS BAJO DEMANDA / PREVENTA ================= */}
+        {tabActiva === 'guisos' && (
+          <GuisosAdminPanel articulosCatalogo={articulosMaestro} notificar={notificar} />
         )}
       </main>
 

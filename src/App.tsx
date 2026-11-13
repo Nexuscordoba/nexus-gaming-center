@@ -32,10 +32,12 @@ import BarDisplay from './BarDisplay';
 import TableQrGenerator from './TableQrGenerator';
 import TableOrder from './TableOrder';
 import TableWaiter from './TableWaiter';
+import GuisosPublicView from './GuisosPublicView';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'home' | 'bar'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'bar' | 'guisos'>('home');
   const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa' | 'waiter'>('main');
+  const [backofficeTab, setBackofficeTab] = useState<'resumen' | 'guisos'>('resumen');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
   const [adminDesbloqueado, setAdminDesbloqueado] = useState(false);
@@ -500,8 +502,6 @@ export default function App() {
     };
   }, []);
 
-  
-
   useEffect(() => {
     const handleRouting = () => {
       const hostname = window.location.hostname.toLowerCase();
@@ -532,11 +532,20 @@ export default function App() {
       if (hash === '#bar' || hash === '#/bar') {
         setCurrentView('bar');
         window.scrollTo(0, 0);
+      } else if (hash === '#guisos' || hash === '#/guisos') {
+        setCurrentView('guisos');
+        window.scrollTo(0, 0);
       } else if (hash === '#staff' || hash === '#equipo') {
         setSubdomainRoute('staff');
       } else if (hash === '#escape' || hash === '#escaperooms') {
         setSubdomainRoute('escape');
+      } else if (hash === '#backoffice-guisos' || hash === '#/backoffice-guisos') {
+        setBackofficeTab('guisos');
+        setSubdomainRoute('ventas');
+        setAdminDesbloqueado(true);
+        setShowCafeteriaMenu(true);
       } else if (hash === '#backoffice' || hash === '#/backoffice' || hash === '#ventas' || hash === '#tpv') {
+        setBackofficeTab('resumen');
         setSubdomainRoute('ventas');
         setAdminDesbloqueado(true);
         setShowCafeteriaMenu(true);
@@ -559,8 +568,8 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleRouting);
   }, []);
 
-  const navigateTo = (view: 'home' | 'bar') => {
-    window.location.hash = view === 'bar' ? 'bar' : '';
+  const navigateTo = (view: 'home' | 'bar' | 'guisos') => {
+    window.location.hash = view === 'bar' ? 'bar' : view === 'guisos' ? 'guisos' : '';
     setCurrentView(view);
     window.scrollTo(0, 0);
   };
@@ -618,6 +627,7 @@ export default function App() {
   if (subdomainRoute === 'ventas') {
     return (
       <LoyverseDashboard
+        initialTab={backofficeTab}
         onBack={() => {
           window.location.hash = '';
           setSubdomainRoute('main');
@@ -692,7 +702,7 @@ export default function App() {
         <div className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-max max-w-[95%] bg-gradient-to-r from-[#0c0d14]/95 to-[#131722]/95 backdrop-blur-xl border border-cyan-500/50 p-3 sm:p-4 rounded-2xl shadow-[0_0_40px_rgba(0,242,254,0.3)] flex flex-wrap justify-center items-center gap-2 sm:gap-4 animate-slide-up">
           
           {showCafeteriaMenu ? (
-            /* SUBMENÚ DE CAFETERÍA (INCLUYE BACKOFFICE SOLO PARA ADMINISTRADORES) */
+            /* SUBMENÚ DE CAFETERÍA (INCLUYE BACKOFFICE Y GUISOS SOLO PARA ADMINISTRADORES) */
             <>
               <button 
                 onClick={() => setShowCafeteriaMenu(false)}
@@ -742,12 +752,26 @@ export default function App() {
                 href="#backoffice" 
                 onClick={(e) => {
                   e.preventDefault();
+                  setBackofficeTab('resumen');
                   window.location.hash = '#backoffice';
                   setSubdomainRoute('ventas');
                 }}
                 className="flex items-center gap-1.5 hover:text-sky-400 transition-colors cursor-pointer text-sky-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-sky-500/10"
               >
                 <TrendingUp className="h-4 w-4" /> Backoffice
+              </a>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="#backoffice-guisos" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  setBackofficeTab('guisos');
+                  window.location.hash = '#backoffice-guisos';
+                  setSubdomainRoute('ventas');
+                }}
+                className="flex items-center gap-1.5 hover:text-orange-400 transition-colors cursor-pointer text-orange-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-orange-500/10"
+              >
+                <span>🍲 Guisos / Preventa</span>
               </a>
             </>
           ) : (
@@ -809,16 +833,39 @@ export default function App() {
             </span>
           </div>
 
-          <nav className="flex items-center gap-4 sm:gap-6 text-sm">
-            {currentView === 'bar' ? (
-              <button
-                onClick={() => navigateTo('home')}
-                className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                <span className="hidden sm:inline">Volver a la web principal</span>
-                <span className="sm:hidden">Volver</span>
-              </button>
+          <nav className="flex items-center gap-3 sm:gap-5 text-sm">
+            {currentView !== 'home' ? (
+              <>
+                <button
+                  onClick={() => navigateTo('bar')}
+                  className={`font-semibold transition-colors flex items-center gap-1.5 cursor-pointer text-xs sm:text-sm ${
+                    currentView === 'bar'
+                      ? 'text-amber-400 underline underline-offset-4'
+                      : 'text-slate-300 hover:text-amber-300'
+                  }`}
+                >
+                  <Coffee className="h-4 w-4" />
+                  <span>Cafetería & Menú</span>
+                </button>
+                <button
+                  onClick={() => navigateTo('guisos')}
+                  className={`font-bold transition-colors flex items-center gap-1.5 cursor-pointer text-xs sm:text-sm px-3 py-1.5 rounded-xl border ${
+                    currentView === 'guisos'
+                      ? 'border-amber-400/60 bg-amber-500/20 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
+                      : 'border-amber-500/30 bg-amber-950/30 text-amber-300 hover:bg-amber-900/40'
+                  }`}
+                >
+                  <span>🍲 Guisos de la Casa</span>
+                </button>
+                <button
+                  onClick={() => navigateTo('home')}
+                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  <span className="hidden sm:inline">Volver a la web principal</span>
+                  <span className="sm:hidden">Volver</span>
+                </button>
+              </>
             ) : (
               <>
                 <button 
@@ -827,16 +874,22 @@ export default function App() {
                 >
                   <Coffee className="h-4 w-4" /> Cafetería & Menú
                 </button>
+                <button 
+                  onClick={() => navigateTo('guisos')} 
+                  className="text-orange-400 font-bold hover:text-orange-300 transition-colors flex items-center gap-1.5 cursor-pointer px-3 py-1.5 rounded-xl border border-orange-500/30 bg-orange-950/30 hover:bg-orange-900/40"
+                >
+                  <span>🍲 Guisos de la Casa</span>
+                </button>
                 <a 
                   href="https://escape.nexusgamingcenter.es" 
                   className="text-cyan-400 font-semibold hover:text-cyan-300 transition-colors flex items-center gap-1.5"
                 >
                   <KeyRound className="h-4 w-4" /> Escape Rooms
                 </a>
-                <a href="#eventos-tarde" className="hidden sm:inline hover:text-cyan-400 transition-colors">
+                <a href="#eventos-tarde" className="hidden md:inline hover:text-cyan-400 transition-colors">
                   Eventos
                 </a>
-                <a href="#ubicacion" className="hidden sm:inline hover:text-cyan-400 transition-colors">
+                <a href="#ubicacion" className="hidden md:inline hover:text-cyan-400 transition-colors">
                   Contacto
                 </a>
               </>
@@ -845,7 +898,9 @@ export default function App() {
         </div>
       </header>
 
-      {currentView === 'bar' ? (
+      {currentView === 'guisos' ? (
+        <GuisosPublicView onIrACartaBar={() => navigateTo('bar')} />
+      ) : currentView === 'bar' ? (
         <main className="flex-grow">
           <section className="relative overflow-hidden py-16 sm:py-24 border-b border-white/[0.06]">
             <div className="absolute inset-0 z-0">
@@ -870,7 +925,7 @@ export default function App() {
                 Desayunos completos y menú del día casero disponibles a diario en Chinales 45.
               </p>
 
-              <div className="mt-8 flex justify-center">
+              <div className="mt-8 flex flex-wrap justify-center gap-4">
                 <a
                   href="#"
                   onClick={(e) => {
@@ -882,6 +937,12 @@ export default function App() {
                   <FileText className="h-4 w-4" />
                   Ver carta y avisos
                 </a>
+                <button
+                  onClick={() => navigateTo('guisos')}
+                  className="rounded-xl bg-amber-950/80 border border-amber-500/40 text-amber-300 px-8 py-3.5 text-sm font-bold uppercase tracking-wider hover:bg-amber-900/60 transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <span>🍲 Ver Guisos de la Casa (#guisos)</span>
+                </button>
               </div>
             </div>
           </section>
@@ -909,12 +970,18 @@ export default function App() {
                 </h3>
                 
                 <p className="text-slate-400 text-base sm:text-lg max-w-2xl mx-auto leading-relaxed">
-                  Muy pronto desvelaremos nuestra nueva carta. Mantente atento a nuestras redes sociales y a esta sección para descubrir todas las novedades que estamos cocinando para ti.
+                  Muy pronto desvelaremos nuestra nueva carta. Mientras tanto, ya puedes apuntarte a nuestros Guisos de la Casa bajo demanda cada semana.
                 </p>
                 
-                <div className="pt-6">
+                <div className="pt-6 flex flex-wrap justify-center gap-3">
+                  <button
+                    onClick={() => navigateTo('guisos')}
+                    className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 text-xs text-slate-950 font-black uppercase tracking-widest cursor-pointer shadow-lg"
+                  >
+                    <span>🍲 Ir a Guisos Bajo Demanda</span>
+                  </button>
                   <span className="inline-block px-4 py-2 rounded-full border border-white/10 bg-white/5 text-xs text-slate-300 font-semibold uppercase tracking-widest">
-                    Próximamente
+                    Carta General Próximamente
                   </span>
                 </div>
               </div>
@@ -956,6 +1023,12 @@ export default function App() {
                   <Coffee className="h-4 w-4" />
                   Ir a Cafetería & Menús
                 </button>
+                <button
+                  onClick={() => navigateTo('guisos')}
+                  className="rounded-xl bg-amber-950/80 border border-amber-500/40 text-amber-300 px-6 py-3 font-bold hover:bg-amber-900/60 transition-all flex items-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(245,158,11,0.2)]"
+                >
+                  <span>🍲 Guisos de la Casa</span>
+                </button>
                 <a
                   href="https://escape.nexusgamingcenter.es"
                   className="rounded-xl bg-cyan-950/70 border border-cyan-500/40 text-cyan-300 px-6 py-3 font-bold hover:bg-cyan-900/60 transition-all flex items-center gap-2"
@@ -979,7 +1052,7 @@ export default function App() {
                   </div>
                   <h2 className="text-xl font-bold text-white mb-2">Café Bar Nexus</h2>
                   <p className="text-sm text-slate-400 leading-relaxed">
-                    Lunes a viernes de 7:00 a 17:00 h. Desayunos variados, menú casero del día y promociones semanales.
+                    Lunes a viernes de 7:00 a 17:00 h. Desayunos variados, menú casero del día y guisos bajo demanda.
                   </p>
                 </div>
                 <div className="mt-6 pt-4 border-t border-white/[0.06] flex items-center justify-between text-xs font-semibold text-amber-400">
