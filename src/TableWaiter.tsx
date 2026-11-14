@@ -1,5 +1,5 @@
 // src/TableWaiter.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
 import MesasReservasPanel from './MesasReservasPanel';
@@ -22,6 +22,7 @@ import {
   ArrowLeft,
   MapPin,
   CheckCircle2,
+  Check,
   DollarSign,
   CreditCard,
   Lock,
@@ -106,6 +107,7 @@ interface ItemPedido {
 interface PlatoCocinaActivo {
   comandaId: string;
   itemIdx: number;
+  producto_id?: number;
   ticket_number: string;
   mesa: string;
   nombre: string;
@@ -113,6 +115,7 @@ interface PlatoCocinaActivo {
   comentarios?: string;
   estado: 'pendiente' | 'en_preparacion' | 'listo' | 'servido';
   listo: boolean;
+  entregado?: boolean;
   created_at: string;
 }
 
@@ -142,6 +145,13 @@ interface TableWaiterProps {
   onBack: () => void;
 }
 
+interface BotonMesaConfig {
+  val: string;
+  nombreMesaDB: string;
+  etiquetaBoton: string;
+  zona: 'interior' | 'terraza' | 'barra';
+}
+
 interface AlertaPersonalizada {
   id: number;
   mensaje: string;
@@ -162,7 +172,35 @@ const agruparFacturas = (lista: any[]) => {
   return raices;
 };
 
-const getNombreMesa = (val: string) => val === 'BARRA' ? 'BARRA' : `MESA ${val}`;
+const getNombreMesa = (val: string): string => {
+  if (!val || val === 'BARRA') return 'BARRA';
+  const v = String(val).trim();
+  const vUpper = v.toUpperCase();
+  if (vUpper === 'BARRA') return 'BARRA';
+  if (vUpper.startsWith('TERRAZA')) {
+    const num = vUpper.replace('TERRAZA', '').trim();
+    return `TERRAZA ${num}`;
+  }
+  if (vUpper.startsWith('T') && /^\d+$/.test(vUpper.slice(1).trim())) {
+    return `TERRAZA ${vUpper.slice(1).trim()}`;
+  }
+  if (vUpper.startsWith('MESA')) {
+    const num = vUpper.replace('MESA', '').trim();
+    return `MESA ${num}`;
+  }
+  if (vUpper.startsWith('M') && /^\d+$/.test(vUpper.slice(1).trim())) {
+    return `MESA ${vUpper.slice(1).trim()}`;
+  }
+  if (/^\d+$/.test(v)) {
+    return `MESA ${v}`;
+  }
+  return vUpper;
+};
+
+const mesaCoincide = (a?: string, b?: string): boolean => {
+  if (!a || !b) return false;
+  return getNombreMesa(a) === getNombreMesa(b);
+};
 
 export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [camareroActivo, setCamareroActivo] = useState<{ id: string; nombre: string; rol: string } | null>(null);
@@ -185,6 +223,92 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [cuentaMesaActual, setCuentaMesaActual] = useState<ItemPedido[]>([]);
   const [platosEnviadosCocina, setPlatosEnviadosCocina] = useState<PlatoCocinaActivo[]>([]);
   const [mesasCuentaSolicitada, setMesasCuentaSolicitada] = useState<string[]>([]);
+  const [mesasLocal, setMesasLocal] = useState<Array<{
+    id: string | number;
+    nombre: string;
+    zona: 'interior' | 'terraza';
+    activa: boolean;
+    capacidad?: number;
+  }>>([]);
+  const [filtroZonaMesas, setFiltroZonaMesas] = useState<'todas' | 'interior' | 'terraza'>('todas');
+  const [procesandoEntregado, setProcesandoEntregado] = useState<string | null>(null);
+  const [procesandoLimpiarEntregados, setProcesandoLimpiarEntregados] = useState<boolean>(false);
+
+  const cargarMesasLocal = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('mesas_local')
+        .select('*')
+        .order('id', { ascending: true });
+      if (!error && data && data.length > 0) {
+        setMesasLocal(data);
+      }
+    } catch (err) {
+      console.warn('Excepción al cargar mesas_local:', err);
+    }
+  };
+
+  const listaBotonesMesas = useMemo<BotonMesaConfig[]>(() => {
+    const barraBtn: BotonMesaConfig = {
+      val: 'BARRA',
+      nombreMesaDB: 'BARRA',
+      etiquetaBoton: 'BARRA',
+      zona: 'barra'
+    };
+
+    if (mesasLocal.length > 0) {
+      const activas = mesasLocal.filter((m) => m.activa !== false);
+      const mapeadas: BotonMesaConfig[] = activas.map((m) => {
+        const nom = (m.nombre || '').trim();
+        const zona = m.zona === 'terraza' ? 'terraza' : 'interior';
+        const numMatch = nom.match(/\d+/);
+        const num = numMatch ? numMatch[0] : String(m.id);
+        const etiqueta = zona === 'terraza' ? `T${num}` : `M${num}`;
+        const val = zona === 'terraza' ? `T${num}` : num;
+        const nombreMesaDB = zona === 'terraza' ? `TERRAZA ${num}` : `MESA ${num}`;
+        return {
+          val,
+          nombreMesaDB,
+          etiquetaBoton: etiqueta,
+          zona
+        };
+      });
+
+      return [barraBtn, ...mapeadas];
+    }
+
+    const interioresFallback: BotonMesaConfig[] = Array.from({ length: 10 }, (_, i) => {
+      const num = String(i + 1);
+      return {
+        val: num,
+        nombreMesaDB: `MESA ${num}`,
+        etiquetaBoton: `M${num}`,
+        zona: 'interior'
+      };
+    });
+
+    const terrazasFallback: BotonMesaConfig[] = Array.from({ length: 5 }, (_, i) => {
+      const num = String(i + 1);
+      return {
+        val: `T${num}`,
+        nombreMesaDB: `TERRAZA ${num}`,
+        etiquetaBoton: `T${num}`,
+        zona: 'terraza'
+      };
+    });
+
+    return [barraBtn, ...interioresFallback, ...terrazasFallback];
+  }, [mesasLocal]);
+
+  const botonesMesasFiltradas = useMemo<BotonMesaConfig[]>(() => {
+    if (filtroZonaMesas === 'interior') {
+      return listaBotonesMesas.filter((b: BotonMesaConfig) => b.zona === 'interior' || b.zona === 'barra');
+    }
+    if (filtroZonaMesas === 'terraza') {
+      return listaBotonesMesas.filter((b: BotonMesaConfig) => b.zona === 'terraza');
+    }
+    return listaBotonesMesas;
+  }, [listaBotonesMesas, filtroZonaMesas]);
 
   const [descuentosLineas, setDescuentosLineas] = useState<Record<string, number>>({});
   const [descuentoGeneralMesa, setDescuentoGeneralMesa] = useState<Record<string, number>>({});
@@ -327,6 +451,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     const initSesion = async () => {
       const cfg = await obtenerConfiguracionFiscal();
       setConfigFiscal(cfg);
+      await cargarMesasLocal();
 
       const sesionGuardada = sessionStorage.getItem('nexus_camarero_sesion');
       if (sesionGuardada) {
@@ -409,6 +534,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
         await Promise.all([
           cargarConfiguracion(),
+          cargarMesasLocal(),
           cargarProductosCarta(),
           cargarMesasAbiertas(),
           cargarCaja()
@@ -460,6 +586,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'configuracion_local' }, () => {
         cargarConfiguracion();
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mesas_local' }, () => {
+        cargarMesasLocal();
+      })
       .subscribe();
 
     return () => {
@@ -468,7 +597,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   }, [camareroActivo]);
 
   useEffect(() => {
-    const encontrada = mesasAbiertas.find((m) => m.mesa === getNombreMesa(mesaSeleccionada));
+    const encontrada = mesasAbiertas.find((m) => mesaCoincide(m.mesa, mesaSeleccionada));
     if (encontrada && encontrada.items) {
       setCuentaMesaActual(encontrada.items);
     } else {
@@ -478,7 +607,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   }, [mesaSeleccionada]);
 
   useEffect(() => {
-    const encontrada = mesasAbiertas.find((m) => m.mesa === getNombreMesa(mesaSeleccionada));
+    const encontrada = mesasAbiertas.find((m) => mesaCoincide(m.mesa, mesaSeleccionada));
     if (encontrada && encontrada.items) {
       setCuentaMesaActual(encontrada.items);
     } else {
@@ -695,7 +824,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           }
 
           if (row.items && Array.isArray(row.items)) {
-            row.items.forEach((it: any) => {
+            row.items.forEach((it: any, itemIndex: number) => {
               const nombreItem = String(it.nombre || '');
               if (nombreItem.startsWith('🍲 LISTO PARA RECOGER:')) {
                 return;
@@ -704,7 +833,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 it.entregado || it.estado_cocina === 'servido' || row.estado === 'servido'
               );
               const esPlatoListo = Boolean(
-                it.listo || it.estado_cocina === 'listo' || row.estado === 'listo' || esPlatoServido
+                it.listo || it.estado_cocina === 'listo' || row.estado === 'listo'
               );
               const estadoPlato: 'pendiente' | 'en_preparacion' | 'listo' | 'servido' =
                 esPlatoServido
@@ -716,18 +845,22 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   : 'pendiente';
 
               if (row.tipo_destino === 'cocina' && !nombreItem.includes('├─')) {
-                listaPlatosCocina.push({
-                  comandaId: String(row.id),
-                  itemIdx: Number(it.producto_id || 0),
-                  ticket_number: String(row.ticket_number || ''),
-                  mesa: mKey,
-                  nombre: nombreItem,
-                  cantidad: Number(it.cantidad || 1),
-                  comentarios: it.comentarios,
-                  estado: estadoPlato,
-                  listo: esPlatoListo,
-                  created_at: String(row.created_at || new Date().toISOString())
-                });
+                if (!esPlatoServido) {
+                  listaPlatosCocina.push({
+                    comandaId: String(row.id),
+                    itemIdx: itemIndex,
+                    producto_id: it.producto_id ? Number(it.producto_id) : undefined,
+                    ticket_number: String(row.ticket_number || ''),
+                    mesa: mKey,
+                    nombre: nombreItem,
+                    cantidad: Number(it.cantidad || 1),
+                    comentarios: it.comentarios,
+                    estado: estadoPlato,
+                    listo: esPlatoListo,
+                    entregado: it.entregado,
+                    created_at: String(row.created_at || new Date().toISOString())
+                  });
+                }
               }
 
               const existente = mapMesas[mKey].items.find((x) => x.nombre === it.nombre);
@@ -764,6 +897,160 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }
     } catch (err) {
       console.error('Excepción en cargarMesasAbiertas:', err);
+    }
+  };
+
+  const marcarPlatoEntregado = async (plato: PlatoCocinaActivo) => {
+    const claveBloqueo = `${plato.comandaId}_${plato.itemIdx}`;
+    if (procesandoEntregado === claveBloqueo) return;
+    setProcesandoEntregado(claveBloqueo);
+
+    try {
+      // 1. Optimista inmediato en interfaz local
+      setPlatosEnviadosCocina((prev) =>
+        prev.filter(
+          (p) =>
+            !(
+              p.comandaId === plato.comandaId &&
+              p.itemIdx === plato.itemIdx &&
+              p.nombre === plato.nombre
+            )
+        )
+      );
+
+      // 2. Persistir en Supabase comandas_cocina
+      const { data: comanda, error: errFetch } = await supabase
+        .from('comandas_cocina')
+        .select('*')
+        .eq('id', plato.comandaId)
+        .maybeSingle();
+
+      if (errFetch) throw errFetch;
+      if (comanda && Array.isArray(comanda.items)) {
+        let marcarHijos = false;
+        const nuevosItems = comanda.items.map((it: any, idx: number) => {
+          const esElPlato =
+            idx === plato.itemIdx ||
+            (it.nombre === plato.nombre && Number(it.producto_id || 0) === Number(plato.producto_id || 0));
+
+          if (esElPlato) {
+            marcarHijos = true;
+            return {
+              ...it,
+              listo: true,
+              entregado: true,
+              estado_cocina: 'servido'
+            };
+          }
+
+          if (marcarHijos) {
+            if (String(it.nombre || '').includes('├─')) {
+              return {
+                ...it,
+                listo: true,
+                entregado: true,
+                estado_cocina: 'servido'
+              };
+            } else {
+              marcarHijos = false;
+            }
+          }
+
+          return it;
+        });
+
+        const todosEntregados = nuevosItems.every(
+          (it: any) => Boolean(it.entregado || it.estado_cocina === 'servido')
+        );
+        const nuevoEstadoComanda = todosEntregados ? 'servido' : comanda.estado;
+
+        const { error: errUpdate } = await supabase
+          .from('comandas_cocina')
+          .update({
+            items: nuevosItems,
+            estado: nuevoEstadoComanda
+          })
+          .eq('id', plato.comandaId);
+
+        if (errUpdate) throw errUpdate;
+      }
+
+      mostrarAlerta(`✓ Entregado: ${plato.nombre}`, 'exito');
+      await cargarMesasAbiertas();
+    } catch (err: any) {
+      console.error('Error al marcar plato entregado:', err);
+      mostrarAlerta('Error al actualizar plato: ' + (err.message || 'desconocido'), 'error');
+      await cargarMesasAbiertas();
+    } finally {
+      setProcesandoEntregado(null);
+    }
+  };
+
+  const limpiarPlatosEntregadosMesaActual = async () => {
+    const platosMesa = platosEnviadosCocina.filter((p) => mesaCoincide(p.mesa, mesaSeleccionada));
+    const targetPlatos = platosMesa.filter((p) => p.listo || p.estado === 'listo' || p.estado === 'servido');
+    const platosAFinalizar = targetPlatos.length > 0 ? targetPlatos : platosMesa;
+    if (platosAFinalizar.length === 0) return;
+
+    setProcesandoLimpiarEntregados(true);
+    try {
+      // 1. Optimista inmediato
+      setPlatosEnviadosCocina((prev) =>
+        prev.filter((p) => !platosAFinalizar.some((af) => af.comandaId === p.comandaId && af.nombre === p.nombre))
+      );
+
+      // 2. Persistir en Supabase
+      const comandaIds = Array.from(new Set(platosAFinalizar.map((p) => p.comandaId)));
+      for (const cId of comandaIds) {
+        const { data: comanda } = await supabase
+          .from('comandas_cocina')
+          .select('*')
+          .eq('id', cId)
+          .maybeSingle();
+
+        if (comanda && Array.isArray(comanda.items)) {
+          const nuevosItems = comanda.items.map((it: any) => {
+            const debeEntregar =
+              platosAFinalizar.some((af) => af.comandaId === cId && af.nombre === it.nombre) ||
+              it.listo ||
+              it.estado_cocina === 'listo' ||
+              it.estado_cocina === 'servido' ||
+              String(it.nombre || '').includes('├─');
+
+            if (debeEntregar) {
+              return {
+                ...it,
+                listo: true,
+                entregado: true,
+                estado_cocina: 'servido'
+              };
+            }
+            return it;
+          });
+
+          const todosEntregados = nuevosItems.every(
+            (it: any) => Boolean(it.entregado || it.estado_cocina === 'servido')
+          );
+          const nuevoEstadoComanda = todosEntregados ? 'servido' : comanda.estado;
+
+          await supabase
+            .from('comandas_cocina')
+            .update({
+              items: nuevosItems,
+              estado: nuevoEstadoComanda
+            })
+            .eq('id', cId);
+        }
+      }
+
+      mostrarAlerta(`Platos entregados retirados para ${getNombreMesa(mesaSeleccionada)}`, 'exito');
+      await cargarMesasAbiertas();
+    } catch (err: any) {
+      console.error('Error al limpiar platos entregados:', err);
+      mostrarAlerta('Error al limpiar platos: ' + (err.message || 'desconocido'), 'error');
+      await cargarMesasAbiertas();
+    } finally {
+      setProcesandoLimpiarEntregados(false);
     }
   };
 
@@ -3635,10 +3922,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     onChange={(e) => setMesaSeleccionada(e.target.value)}
                     className="bg-black/80 border border-amber-500/50 rounded-xl px-3 py-2 text-sm font-black text-amber-400 outline-none cursor-pointer"
                   >
-                    <option value="BARRA">Servicio en Barra</option>
-                    {Array.from({ length: 20 }, (_, i) => String(i + 1)).map((m) => (
-                      <option key={m} value={m}>
-                        Mesa {m}
+                    {listaBotonesMesas.map((m: BotonMesaConfig) => (
+                      <option key={m.val} value={m.val}>
+                        {m.nombreMesaDB}
                       </option>
                     ))}
                   </select>
@@ -3678,10 +3964,49 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </div>
               </div>
 
-              {/* BARRA HORIZONTAL DE PÍLDORAS SEMAFÓRICAS DE MESAS */}
+              {/* MAPA RÁPIDO DE MESAS (DISTRIBUCIÓN EN 2 FILAS SIN SCROLL HORIZONTAL) */}
               <div className="pt-2 border-t border-white/5 space-y-2">
                 <div className="flex items-center justify-between gap-2 flex-wrap text-[10px] font-bold text-slate-400">
-                  <span className="uppercase tracking-wider">Mapa Rápido de Mesas:</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="uppercase tracking-wider">Mapa Rápido de Mesas:</span>
+                    {/* Píldoras de filtro rápido sincronizadas con mesas_local */}
+                    <div className="inline-flex items-center bg-black/40 p-0.5 rounded-lg border border-white/10 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setFiltroZonaMesas('todas')}
+                        className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          filtroZonaMesas === 'todas'
+                            ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                            : 'text-slate-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        Todas
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFiltroZonaMesas('interior')}
+                        className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          filtroZonaMesas === 'interior'
+                            ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                            : 'text-slate-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        🏠 Interior
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFiltroZonaMesas('terraza')}
+                        className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          filtroZonaMesas === 'terraza'
+                            ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                            : 'text-slate-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        ☀️ Terraza
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="flex items-center gap-2.5 flex-wrap">
                     <span className="flex items-center gap-1">
                       <span className="h-2 w-2 rounded-full bg-slate-500 inline-block" /> Libre
@@ -3698,19 +4023,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 overflow-x-auto pb-1.5 pt-1 scrollbar-none">
-                  {['BARRA', ...Array.from({ length: 20 }, (_, i) => String(i + 1))].map((val) => {
-                    const nombreMesa = getNombreMesa(val);
-                    const activa = mesaSeleccionada === val;
-                    const mesaAbiertaObj = mesasAbiertas.find((m) => m.mesa === nombreMesa);
+                <div className="flex flex-wrap gap-2 pt-1 pb-1">
+                  {botonesMesasFiltradas.map((btn: BotonMesaConfig) => {
+                    const nombreMesa = btn.nombreMesaDB;
+                    const activa = mesaCoincide(mesaSeleccionada, btn.val);
+                    const mesaAbiertaObj = mesasAbiertas.find((m) => mesaCoincide(m.mesa, btn.val));
                     const importeMesa = mesaAbiertaObj
                       ? calcularDesgloseMesa(nombreMesa, mesaAbiertaObj.items).totalFinal
                       : 0;
                     const estaOcupada = Boolean(mesaAbiertaObj && importeMesa > 0);
-                    const tienePlatoListo = platosEnviadosCocina.some(
-                      (p) => p.mesa === nombreMesa && p.estado === 'listo'
-                    );
-                    const pideCuentaQR = mesasCuentaSolicitada.includes(nombreMesa);
+                    const platosListosCount = platosEnviadosCocina.filter(
+                      (p) =>
+                        mesaCoincide(p.mesa, btn.val) &&
+                        (p.listo || p.estado === 'listo') &&
+                        p.estado !== 'servido'
+                    ).reduce((acc, p) => acc + (p.cantidad || 1), 0);
+                    const tienePlatoListo = platosListosCount > 0;
+                    const pideCuentaQR = mesasCuentaSolicitada.some((m) => mesaCoincide(m, btn.val));
 
                     let colorClasses =
                       'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:bg-white/10';
@@ -3719,7 +4048,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                         'bg-rose-600/30 border-rose-500 text-rose-200 shadow-[0_0_12px_rgba(244,63,94,0.35)]';
                     } else if (tienePlatoListo) {
                       colorClasses =
-                        'bg-emerald-500/25 border-emerald-400 text-emerald-200 animate-bounce shadow-[0_0_12px_rgba(16,185,129,0.35)]';
+                        'bg-emerald-500/25 border-emerald-400 text-emerald-200 shadow-[0_0_12px_rgba(16,185,129,0.35)] animate-pulse';
                     } else if (estaOcupada) {
                       colorClasses =
                         'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.15)]';
@@ -3727,18 +4056,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
                     return (
                       <button
-                        key={val}
+                        key={btn.val}
                         type="button"
-                        onClick={() => setMesaSeleccionada(val)}
+                        onClick={() => setMesaSeleccionada(btn.val)}
                         className={`px-3 py-1.5 rounded-xl border text-xs font-black shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${colorClasses} ${
                           activa ? 'ring-2 ring-cyan-400 scale-[1.03]' : ''
                         }`}
                       >
-                        <span>{val === 'BARRA' ? 'BARRA' : `M${val}`}</span>
-                        {pideCuentaQR && <span title="¡Cuenta solicitada desde el QR!">🔔 Cuenta</span>}
-                        {!pideCuentaQR && tienePlatoListo && (
-                          <span title="¡Plato listo en cocina para llevar a mesa!">🍲 Listo</span>
+                        <span>{btn.etiquetaBoton}</span>
+                        {tienePlatoListo && (
+                          <span
+                            className="px-1.5 py-0.5 rounded-full bg-emerald-500/30 text-emerald-300 border border-emerald-400/50 text-[10px] font-black"
+                            title="¡Plato listo en cocina para llevar a mesa!"
+                          >
+                            🟢{platosListosCount}
+                          </span>
                         )}
+                        {pideCuentaQR && <span title="¡Cuenta solicitada desde el QR!">🔔 Cuenta</span>}
                         {estaOcupada && (
                           <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-white">
                             {importeMesa.toFixed(2)}€
@@ -3952,98 +4286,100 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 )}
               </div>
 
-              {/* BLOQUE DIVIDIDO: ENVIADO A COCINA (ESTADO EN TIEMPO REAL) */}
+              {/* BLOQUE DIVIDIDO: ENVIADO A COCINA (ESTADO EN TIEMPO REAL - EXCLUSIVO MESA SELECCIONADA) */}
               <div className="pt-4 mt-4 border-t border-white/10 space-y-2.5">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-xs font-black uppercase tracking-wider text-orange-400 flex items-center gap-1.5">
                     <ChefHat className="h-4 w-4" /> Enviado a Cocina ({getNombreMesa(mesaSeleccionada)})
                   </span>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/30">
-                    {platosEnviadosCocina.filter((p) => p.mesa === getNombreMesa(mesaSeleccionada)).length} plato(s)
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {platosEnviadosCocina.some((p) => mesaCoincide(p.mesa, mesaSeleccionada) && (p.listo || p.estado === 'listo' || p.estado === 'servido')) && (
+                      <button
+                        type="button"
+                        onClick={limpiarPlatosEntregadosMesaActual}
+                        disabled={procesandoLimpiarEntregados}
+                        className="px-2 py-0.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-slate-950 border border-emerald-500/40 text-[10px] font-bold transition-all cursor-pointer shadow-sm flex items-center gap-1 disabled:opacity-50"
+                        title="Limpiar platos entregados / listos de esta mesa"
+                      >
+                        <Check className="h-3 w-3" />
+                        <span>{procesandoLimpiarEntregados ? 'Limpiando...' : 'Limpiar entregados'}</span>
+                      </button>
+                    )}
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/30">
+                      {platosEnviadosCocina.filter((p) => mesaCoincide(p.mesa, mesaSeleccionada)).length} plato(s)
+                    </span>
+                  </div>
                 </div>
 
-                {platosEnviadosCocina.filter((p) => p.mesa === getNombreMesa(mesaSeleccionada)).length === 0 ? (
+                {platosEnviadosCocina.filter((p) => mesaCoincide(p.mesa, mesaSeleccionada)).length === 0 ? (
                   <p className="text-[11px] text-slate-500 italic bg-black/30 px-3 py-2 rounded-xl border border-white/5">
                     No hay platos enviados a cocina en esta mesa.
                   </p>
                 ) : (
-                  <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                     {platosEnviadosCocina
-                      .filter((p) => p.mesa === getNombreMesa(mesaSeleccionada))
+                      .filter((p) => mesaCoincide(p.mesa, mesaSeleccionada))
                       .map((plato, pIdx) => {
-                        const estaListo = plato.listo || plato.estado === 'listo' || plato.estado === 'servido';
+                        const estaListo = plato.listo || plato.estado === 'listo';
+                        const estaServido = plato.estado === 'servido';
+                        const claveBloqueo = `${plato.comandaId}_${plato.itemIdx}`;
+                        const estaProcesando = procesandoEntregado === claveBloqueo;
+
                         return (
                           <div
                             key={`${plato.comandaId}_${pIdx}`}
-                            className={`flex items-center justify-between text-xs px-3 py-2 rounded-xl border transition-colors ${
+                            className={`flex items-center justify-between text-xs px-3 py-2 rounded-xl border transition-colors gap-2 ${
                               estaListo
                                 ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
+                                : estaServido
+                                ? 'bg-emerald-950/20 border-emerald-500/20 text-emerald-300/80'
                                 : 'bg-amber-950/20 border-amber-500/30 text-slate-200'
                             }`}
                           >
-                            <div className="flex items-center gap-1.5 min-w-0">
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
                               <span className="font-mono font-black text-amber-400">{plato.cantidad}x</span>
                               <span className="font-semibold truncate">{plato.nombre}</span>
                             </div>
-                            <span
-                              className={`shrink-0 ml-2 px-2 py-0.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1 border ${
-                                estaListo
-                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                              }`}
-                            >
-                              {estaListo ? (
-                                <>
-                                  <CheckCircle2 className="h-3 w-3" /> {plato.estado === 'servido' ? 'Servido' : '¡Listo!'}
-                                </>
-                              ) : (
-                                <>
-                                  <Clock className="h-3 w-3 animate-pulse" /> En Cocina
-                                </>
-                              )}
-                            </span>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span
+                                className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1 border ${
+                                  estaListo
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                    : estaServido
+                                    ? 'bg-emerald-500/10 text-emerald-300/70 border-emerald-500/20'
+                                    : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                }`}
+                              >
+                                {estaListo ? (
+                                  <>
+                                    <CheckCircle2 className="h-3 w-3" /> ¡Listo!
+                                  </>
+                                ) : estaServido ? (
+                                  <>
+                                    <CheckCircle2 className="h-3 w-3" /> Servido
+                                  </>
+                                ) : (
+                                  <>
+                                    <Clock className="h-3 w-3 animate-pulse" /> En Cocina
+                                  </>
+                                )}
+                              </span>
+
+                              <button
+                                type="button"
+                                disabled={estaProcesando}
+                                onClick={() => marcarPlatoEntregado(plato)}
+                                className="px-2 py-0.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-slate-950 border border-emerald-500/40 text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 shadow-sm disabled:opacity-50"
+                                title="Marcar plato como entregado al cliente (retirar de cocina)"
+                              >
+                                <Check className="h-3 w-3" />
+                                <span>{estaProcesando ? '...' : '✓ Entregado / Quitar'}</span>
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
-                  </div>
-                )}
-
-                {platosEnviadosCocina.filter((p) => p.mesa !== getNombreMesa(mesaSeleccionada)).length > 0 && (
-                  <div className="pt-2 border-t border-white/5 space-y-1.5">
-                    <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                      Otras mesas en cocina ({platosEnviadosCocina.filter((p) => p.mesa !== getNombreMesa(mesaSeleccionada)).length}):
-                    </span>
-                    <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-                      {platosEnviadosCocina
-                        .filter((p) => p.mesa !== getNombreMesa(mesaSeleccionada))
-                        .map((plato, oIdx) => {
-                          const estaListo = plato.listo || plato.estado === 'listo' || plato.estado === 'servido';
-                          return (
-                            <div
-                              key={`otras_${plato.comandaId}_${oIdx}`}
-                              className={`flex items-center justify-between text-[11px] px-2.5 py-1.5 rounded-lg border ${
-                                estaListo
-                                  ? 'bg-emerald-950/25 border-emerald-500/30 text-emerald-200'
-                                  : 'bg-black/40 border-white/5 text-slate-300'
-                              }`}
-                            >
-                              <div className="truncate">
-                                <span className="font-black text-amber-400 mr-1.5">[{plato.mesa}]</span>
-                                <span className="font-mono font-bold mr-1">{plato.cantidad}x</span>
-                                <span>{plato.nombre}</span>
-                              </div>
-                              <span
-                                className={`shrink-0 ml-2 px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
-                                  estaListo ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
-                                }`}
-                              >
-                                {estaListo ? '¡Listo!' : 'Preparando'}
-                              </span>
-                            </div>
-                          );
-                        })}
-                    </div>
                   </div>
                 )}
               </div>
