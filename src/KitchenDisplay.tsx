@@ -10,8 +10,15 @@ import {
   CheckSquare,
   Square,
   RotateCcw,
-  Layers
+  Layers,
+  X
 } from 'lucide-react';
+import {
+  type GuisoProgramado,
+  type ReservaGuiso,
+  type MesaLocal,
+  formatearFechaHumana
+} from './notificacionesGuisos';
 
 interface ItemComanda {
   id?: string | number;
@@ -61,6 +68,12 @@ export default function KitchenDisplay() {
   const [loading, setLoading] = useState(true);
   const [procesandoKey, setProcesandoKey] = useState<string | null>(null);
   const [ahoraMs, setAhoraMs] = useState<number>(() => Date.now());
+
+  // Estado para la Previsión de Cocina (Cocinera)
+  const [mostrarPrevisionGuisos, setMostrarPrevisionGuisos] = useState<boolean>(false);
+  const [guisosProgramados, setGuisosProgramados] = useState<GuisoProgramado[]>([]);
+  const [reservasGuisos, setReservasGuisos] = useState<ReservaGuiso[]>([]);
+  const [, setMesasLocal] = useState<MesaLocal[]>([]);
 
   const comandasPreviasIdsRef = useRef<Set<string>>(new Set());
   const audioInicializadoRef = useRef<boolean>(false);
@@ -119,48 +132,132 @@ export default function KitchenDisplay() {
 
   const cargarComandas = useCallback(async () => {
     try {
-      const { data, error } = await supabase
-        .from('comandas_cocina')
-        .select('*')
-        .neq('tipo_destino', 'cuenta')
-        .in('estado', ['pendiente', 'listo'])
-        .order('created_at', { ascending: true });
+      const hoyISO = new Date().toISOString().split('T')[0];
 
-      if (!error && data) {
-        const filtradasCocina = (data as Comanda[]).filter((c) => {
-          const tieneItemsCocina =
-            String(c.tipo_destino || '').trim().toLowerCase() === 'cocina' ||
-            (Array.isArray(c.items) && c.items.some((it) => esItemCocina(it, c.tipo_destino)));
+      const [resComandas, resGuisos, resReservas, resMesas] = await Promise.all([
+        supabase
+          .from('comandas_cocina')
+          .select('*')
+          .neq('tipo_destino', 'cuenta')
+          .in('estado', ['pendiente', 'listo'])
+          .order('created_at', { ascending: true }),
+        supabase.from('guisos_programados').select('*').order('fecha', { ascending: true }),
+        supabase.from('reservas_guisos').select('*'),
+        supabase.from('mesas_local').select('*')
+      ]);
 
-          if (!tieneItemsCocina) return false;
-
-          // Mantener visible mientras exista al menos un plato de cocina que no haya sido entregado por el camarero
-          const itemsReales = Array.isArray(c.items) ? c.items : [];
-          const todosEntregados =
-            itemsReales.length > 0 &&
-            itemsReales.every((it) => Boolean(it.entregado) || it.estado_cocina === 'servido');
-
-          return !todosEntregados;
-        });
-
-        const idsActuales = new Set<string>(filtradasCocina.map((c) => String(c.id)));
-        let hayNuevaComanda = false;
-        if (audioInicializadoRef.current) {
-          idsActuales.forEach((id) => {
-            if (!comandasPreviasIdsRef.current.has(id)) {
-              hayNuevaComanda = true;
-            }
-          });
-        }
-        comandasPreviasIdsRef.current = idsActuales;
-        if (!audioInicializadoRef.current) {
-          audioInicializadoRef.current = true;
-        } else if (hayNuevaComanda) {
-          reproducirCampanaCocina();
-        }
-
-        setComandas(filtradasCocina);
+      if (!resGuisos.error && resGuisos.data) {
+        setGuisosProgramados(resGuisos.data as GuisoProgramado[]);
       }
+      if (!resReservas.error && resReservas.data) {
+        setReservasGuisos(resReservas.data as ReservaGuiso[]);
+      }
+      if (!resMesas.error && resMesas.data) {
+        setMesasLocal(resMesas.data as MesaLocal[]);
+      }
+
+      const comandasDB = (!resComandas.error && resComandas.data ? resComandas.data : []) as Comanda[];
+
+      // Construir tarjetas virtuales para las reservas de guisos confirmados de HOY
+      const guisosHoy = (resGuisos.data as GuisoProgramado[] || []).filter(
+        (g) => g.fecha === hoyISO && g.estado === 'confirmado'
+      );
+      const reservasHoy = (resReservas.data as ReservaGuiso[] || []).filter((r) =>
+        guisosHoy.some((g) => g.id === r.guiso_id)
+      );
+
+      const comandasGuisosHoy: Comanda[] = [];
+      const mapaMesas = new Map<string, MesaLocal>();
+      (resMesas.data as MesaLocal[] || []).forEach((m) => mapaMesas.set(m.id, m));
+
+      reservasHoy.forEach((res) => {
+        // Si ya existe una comanda en comandas_cocina vinculada, evitar duplicar
+        const yaExisteEnDB = comandasDB.some(
+          (c) =>
+            (c as any).reserva_guiso_id === res.id ||
+            c.items.some((it) => it.comentarios?.includes(`Reserva Guiso #${res.id.slice(0, 6)}`))
+        );
+        if (yaExisteEnDB) return;
+
+        const platoGuiso = guisosHoy.find((g) => g.id === res.guiso_id);
+        if (!platoGuiso) return;
+
+        let etiquetaDestino = '🛍️ RECOGER';
+        if (res.modalidad === 'barra') {
+          if (res.mesa_id && mapaMesas.has(res.mesa_id)) {
+            const mObj = mapaMesas.get(res.mesa_id)!;
+            etiquetaDestino =
+              mObj.zona === 'interior'
+                ? `🏠 MESA ${mObj.numero} (Interior)`
+                : `☀️ TERRAZA ${mObj.numero}`;
+          } else {
+            etiquetaDestino =
+              res.zona_preferida === 'terraza' ? '☀️ TERRAZA (Guiso)' : '🏠 SALÓN (Guiso)';
+          }
+        } else {
+          etiquetaDestino = `🛍️ RECOGER ${res.hora_servicio || '14:00'}`;
+        }
+
+        const idVirtual = `guiso_res_${res.id}`;
+        comandasGuisosHoy.push({
+          id: idVirtual,
+          ticket_number: `GUISO-${res.id.slice(0, 4).toUpperCase()}`,
+          mesa: etiquetaDestino,
+          created_at: new Date().toISOString(),
+          tipo_destino: 'cocina',
+          estado: 'pendiente',
+          items: [
+            {
+              id: idVirtual + '_item',
+              nombre: `🍲 ${platoGuiso.nombre_plato}`,
+              cantidad: res.raciones,
+              destino: 'cocina',
+              categoria: 'Guisos',
+              estado_cocina: 'pendiente',
+              listo: false,
+              entregado: false,
+              comentarios: `Cliente: ${res.nombre_cliente} · Tel: ${res.telefono} · Hora: ${
+                res.hora_servicio || '14:00'
+              }`
+            }
+          ]
+        });
+      });
+
+      const todasComandas = [...comandasDB, ...comandasGuisosHoy];
+
+      const filtradasCocina = todasComandas.filter((c) => {
+        const tieneItemsCocina =
+          String(c.tipo_destino || '').trim().toLowerCase() === 'cocina' ||
+          (Array.isArray(c.items) && c.items.some((it) => esItemCocina(it, c.tipo_destino)));
+
+        if (!tieneItemsCocina) return false;
+
+        const itemsReales = Array.isArray(c.items) ? c.items : [];
+        const todosEntregados =
+          itemsReales.length > 0 &&
+          itemsReales.every((it) => Boolean(it.entregado) || it.estado_cocina === 'servido');
+
+        return !todosEntregados;
+      });
+
+      const idsActuales = new Set<string>(filtradasCocina.map((c) => String(c.id)));
+      let hayNuevaComanda = false;
+      if (audioInicializadoRef.current) {
+        idsActuales.forEach((id) => {
+          if (!comandasPreviasIdsRef.current.has(id)) {
+            hayNuevaComanda = true;
+          }
+        });
+      }
+      comandasPreviasIdsRef.current = idsActuales;
+      if (!audioInicializadoRef.current) {
+        audioInicializadoRef.current = true;
+      } else if (hayNuevaComanda) {
+        reproducirCampanaCocina();
+      }
+
+      setComandas(filtradasCocina);
     } catch (err) {
       console.error('Error al cargar comandas en Cocina:', err);
     } finally {
@@ -176,6 +273,20 @@ export default function KitchenDisplay() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'comandas_cocina' },
+        () => {
+          cargarComandas();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reservas_guisos' },
+        () => {
+          cargarComandas();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'guisos_programados' },
         () => {
           cargarComandas();
         }
@@ -241,16 +352,18 @@ export default function KitchenDisplay() {
         )
       );
 
-      const { error } = await supabase
-        .from('comandas_cocina')
-        .update({
-          items: nuevosItems,
-          estado: nuevoEstadoComanda
-        })
-        .eq('id', comandaId);
+      if (!String(comandaId).startsWith('guiso_res_')) {
+        const { error } = await supabase
+          .from('comandas_cocina')
+          .update({
+            items: nuevosItems,
+            estado: nuevoEstadoComanda
+          })
+          .eq('id', comandaId);
 
-      if (error) {
-        console.error('Error al actualizar estado del plato en cocina:', error);
+        if (error) {
+          console.error('Error al actualizar estado del plato en cocina:', error);
+        }
       }
 
       await cargarComandas();
@@ -292,16 +405,18 @@ export default function KitchenDisplay() {
         )
       );
 
-      const { error } = await supabase
-        .from('comandas_cocina')
-        .update({
-          items: nuevosItems,
-          estado: nuevoEstadoComanda
-        })
-        .eq('id', comandaId);
+      if (!String(comandaId).startsWith('guiso_res_')) {
+        const { error } = await supabase
+          .from('comandas_cocina')
+          .update({
+            items: nuevosItems,
+            estado: nuevoEstadoComanda
+          })
+          .eq('id', comandaId);
 
-      if (error) {
-        console.error('Error al actualizar comanda completa en cocina:', error);
+        if (error) {
+          console.error('Error al actualizar comanda completa en cocina:', error);
+        }
       }
 
       await cargarComandas();
@@ -391,7 +506,16 @@ export default function KitchenDisplay() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setMostrarPrevisionGuisos(true)}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 font-bold text-xs shadow-md transition-all cursor-pointer"
+          >
+            <Flame className="h-4 w-4 text-amber-400" />
+            <span>🍲 Platos Confirmados (Previsión Cocina)</span>
+          </button>
+
           <span className="text-xs font-mono text-amber-400 bg-amber-950/40 px-3.5 py-1.5 rounded-xl border border-amber-500/20 hidden sm:inline">
             {comandas.filter((c) => c.estado === 'pendiente').length} Comanda(s) en fuego
           </span>
@@ -643,6 +767,180 @@ export default function KitchenDisplay() {
       <footer className="mt-8 border-t border-white/5 pt-4 text-center text-xs text-slate-500">
         NEXUS KDS · Módulo de Cocina sincronizado en tiempo real con Barra
       </footer>
+
+      {/* ================= MODAL DE PREVISIÓN PARA LA COCINERA ================= */}
+      {mostrarPrevisionGuisos && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto">
+          <div className="w-full max-w-4xl bg-[#0c0d14] border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-5 my-8 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center font-black">
+                  🍲
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-white">
+                    Previsión de Cocina · Guisos Confirmados y Preventa
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Calendario de raciones a preparar desglosadas por Local / Llevar y tramos horarios.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setMostrarPrevisionGuisos(false)}
+                className="text-slate-400 hover:text-white p-2 rounded-xl bg-white/5 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              {guisosProgramados.length === 0 ? (
+                <p className="text-xs text-slate-500 py-12 text-center">
+                  No hay guisos programados en el calendario actualmente.
+                </p>
+              ) : (
+                guisosProgramados.map((guiso) => {
+                  const reservasDeEsteGuiso = reservasGuisos.filter((r) => r.guiso_id === guiso.id);
+                  const totalRaciones = reservasDeEsteGuiso.reduce((acc, r) => acc + Number(r.raciones || 0), 0);
+                  const racionesLocal = reservasDeEsteGuiso
+                    .filter((r) => r.modalidad === 'barra')
+                    .reduce((acc, r) => acc + Number(r.raciones || 0), 0);
+                  const racionesLlevar = reservasDeEsteGuiso
+                    .filter((r) => r.modalidad === 'takeaway')
+                    .reduce((acc, r) => acc + Number(r.raciones || 0), 0);
+
+                  // Agrupar reservas por tramo horario
+                  const tramosMapa = new Map<string, { local: number; llevar: number; clientes: string[] }>();
+                  reservasDeEsteGuiso.forEach((r) => {
+                    const h = r.hora_servicio || '14:00';
+                    const prev = tramosMapa.get(h) || { local: 0, llevar: 0, clientes: [] };
+                    if (r.modalidad === 'barra') {
+                      prev.local += Number(r.raciones || 0);
+                    } else {
+                      prev.llevar += Number(r.raciones || 0);
+                    }
+                    prev.clientes.push(`${r.nombre_cliente} (${r.raciones}r)`);
+                    tramosMapa.set(h, prev);
+                  });
+
+                  const tramosOrdenados = Array.from(tramosMapa.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+                  return (
+                    <div
+                      key={guiso.id}
+                      className={`p-4 rounded-2xl border ${
+                        guiso.estado === 'confirmado'
+                          ? 'bg-[#10141f] border-emerald-500/40 shadow-md'
+                          : guiso.estado === 'cancelado'
+                          ? 'bg-black/30 border-rose-500/30 opacity-70'
+                          : 'bg-[#131622] border-amber-500/30'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 pb-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black uppercase px-2.5 py-0.5 rounded-full bg-slate-900 border border-white/10 text-amber-300">
+                              📅 {formatearFechaHumana(guiso.fecha)}
+                            </span>
+                            <span
+                              className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full ${
+                                guiso.estado === 'confirmado'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                              }`}
+                            >
+                              {guiso.estado === 'confirmado'
+                                ? '🟢 ¡Confirmado para cocinar!'
+                                : `🟡 Preventa (${totalRaciones}/${guiso.min_raciones})`}
+                            </span>
+                          </div>
+                          <h4 className="text-base font-black text-white mt-1">
+                            {guiso.nombre_plato}
+                          </h4>
+                        </div>
+
+                        {/* TOTALIZADOR DE RACIONES */}
+                        <div className="flex items-center gap-2">
+                          <div className="px-3 py-1.5 rounded-xl bg-black/60 border border-white/10 text-center">
+                            <span className="text-[9px] uppercase font-bold text-slate-400 block">
+                              Total Olla
+                            </span>
+                            <span className="text-lg font-black text-white font-mono">
+                              {totalRaciones} rac.
+                            </span>
+                          </div>
+                          <div className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-center">
+                            <span className="text-[9px] uppercase font-bold text-amber-300 block">
+                              🪑 Local
+                            </span>
+                            <span className="text-lg font-black text-amber-200 font-mono">
+                              {racionesLocal}
+                            </span>
+                          </div>
+                          <div className="px-3 py-1.5 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-center">
+                            <span className="text-[9px] uppercase font-bold text-cyan-300 block">
+                              🛍️ Llevar
+                            </span>
+                            <span className="text-lg font-black text-cyan-200 font-mono">
+                              {racionesLlevar}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* DESGLOSE POR TRAMOS HORARIOS */}
+                      <div className="mt-3 pt-1">
+                        <span className="text-[10px] font-black uppercase text-slate-400 block mb-2">
+                          ⏰ Distribución por Horas de Servicio:
+                        </span>
+                        {tramosOrdenados.length === 0 ? (
+                          <p className="text-xs text-slate-500 italic">
+                            Sin reservas horarias anotadas todavía.
+                          </p>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                            {tramosOrdenados.map(([hora, datos]) => (
+                              <div
+                                key={hora}
+                                className="bg-black/40 border border-white/5 rounded-xl p-2.5 space-y-1"
+                              >
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="font-mono font-black text-amber-400">
+                                    {hora} h
+                                  </span>
+                                  <span className="text-[11px] font-bold text-slate-300">
+                                    🪑 {datos.local} · 🛍️ {datos.llevar}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 truncate">
+                                  {datos.clientes.join(', ')}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="pt-2 border-t border-white/10 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setMostrarPrevisionGuisos(false)}
+                className="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs cursor-pointer"
+              >
+                Cerrar Previsión
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

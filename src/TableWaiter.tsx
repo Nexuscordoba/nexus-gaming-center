@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
+import MesasReservasPanel from './MesasReservasPanel';
 import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
@@ -270,7 +271,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [procesandoDescuento, setProcesandoDescuento] = useState(false);
   const [procesandoLogin, setProcesandoLogin] = useState(false);
   const [procesandoCocina, setProcesandoCocina] = useState(false);
-  const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'caja'>('tomar_nota');
+  const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'reservas' | 'caja'>('tomar_nota');
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
@@ -3594,6 +3595,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               📋 Mesas ({mesasAbiertas.length})
             </button>
             <button
+              onClick={() => setVistaSeccion('reservas')}
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                vistaSeccion === 'reservas' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              🪑 Reservas
+            </button>
+            <button
               onClick={() => setVistaSeccion('caja')}
               className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 vistaSeccion === 'caja' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white hover:bg-white/5'
@@ -4561,6 +4570,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               )}
             </div>
           ) : null}
+        </main>
+      )}
+
+      {vistaSeccion === 'reservas' && (
+        <main className="flex-1 max-w-5xl w-full mx-auto pb-24">
+          <MesasReservasPanel notificar={(txt, tipo) => mostrarAlerta(txt, tipo === 'ok' ? 'exito' : tipo === 'error' ? 'error' : 'aviso')} />
         </main>
       )}
     </div>

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from './supabase';
 import HistorialCajas from './HistorialCajas';
 import GuisosAdminPanel from './GuisosAdminPanel';
+import MesasReservasPanel from './MesasReservasPanel';
 import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
@@ -20,7 +21,7 @@ import {
 
 interface BackofficeProps {
   onBack?: () => void;
-  initialTab?: 'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'empleados' | 'configuracion';
+  initialTab?: 'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion';
 }
 
 interface IngredienteEscandalloUI {
@@ -72,7 +73,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const [errorPin, setErrorPin] = useState('');
 
   const [tabActiva, setTabActiva] = useState<
-    'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'empleados' | 'configuracion'
+    'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion'
   >(initialTab);
 
   useEffect(() => {
@@ -1941,8 +1942,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               { id: 'articulos', label: '🍔 Artículos y Escandallos' },
               { id: 'inventario', label: '📦 Stock, Compras y Lotes' },
               { id: 'guisos', label: '🍲 Guisos / Preventa' },
+              { id: 'mesas', label: '🪑 Mesas y Reservas' },
               { id: 'empleados', label: '👥 Empleados y Turnos' },
-              { id: 'configuracion', label: '⚙️ Datos Fiscales y Mesas' }
+              { id: 'configuracion', label: '⚙️ Datos Fiscales' }
             ].map((item) => (
               <button
                 key={item.id}
@@ -3166,6 +3168,11 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         {/* ================= PESTAÑA 7: GUISOS BAJO DEMANDA / PREVENTA ================= */}
         {tabActiva === 'guisos' && (
           <GuisosAdminPanel articulosCatalogo={articulosMaestro} notificar={notificar} />
+        )}
+
+        {/* ================= PESTAÑA 8: MESAS Y RESERVAS ================= */}
+        {tabActiva === 'mesas' && (
+          <MesasReservasPanel notificar={notificar} />
         )}
       </main>
 

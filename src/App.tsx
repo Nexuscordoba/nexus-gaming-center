@@ -37,7 +37,7 @@ import GuisosPublicView from './GuisosPublicView';
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar' | 'guisos'>('home');
   const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa' | 'waiter'>('main');
-  const [backofficeTab, setBackofficeTab] = useState<'resumen' | 'guisos'>('resumen');
+  const [backofficeTab, setBackofficeTab] = useState<'resumen' | 'guisos' | 'mesas'>('resumen');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
   const [adminDesbloqueado, setAdminDesbloqueado] = useState(false);
@@ -544,6 +544,11 @@ export default function App() {
         setSubdomainRoute('ventas');
         setAdminDesbloqueado(true);
         setShowCafeteriaMenu(true);
+      } else if (hash === '#mesas' || hash === '#/mesas' || hash === '#reservas' || hash === '#backoffice-mesas') {
+        setBackofficeTab('mesas');
+        setSubdomainRoute('ventas');
+        setAdminDesbloqueado(true);
+        setShowCafeteriaMenu(true);
       } else if (hash === '#backoffice' || hash === '#/backoffice' || hash === '#ventas' || hash === '#tpv') {
         setBackofficeTab('resumen');
         setSubdomainRoute('ventas');
@@ -759,6 +764,19 @@ export default function App() {
                 className="flex items-center gap-1.5 hover:text-sky-400 transition-colors cursor-pointer text-sky-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-sky-500/10"
               >
                 <TrendingUp className="h-4 w-4" /> Backoffice
+              </a>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <a 
+                href="#mesas" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  setBackofficeTab('mesas');
+                  window.location.hash = '#mesas';
+                  setSubdomainRoute('ventas');
+                }}
+                className="flex items-center gap-1.5 hover:text-emerald-400 transition-colors cursor-pointer text-emerald-400 font-black text-xs sm:text-sm px-3 py-1.5 rounded-lg hover:bg-emerald-500/10"
+              >
+                <span>🪑 Mesas / Reservas</span>
               </a>
               <span className="text-slate-600 hidden sm:inline">|</span>
               <a 

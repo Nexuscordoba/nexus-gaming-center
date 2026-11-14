@@ -29,6 +29,35 @@ export interface ReservaGuiso {
   raciones: number;
   modalidad: ModalidadReservaGuiso;
   estado_pago: EstadoPagoReservaGuiso;
+  hora_servicio?: string;
+  zona_preferida?: 'interior' | 'terraza';
+  comensales?: number;
+  mesa_id?: string | null;
+  created_at?: string;
+}
+
+export interface MesaLocal {
+  id: string;
+  numero: number;
+  zona: 'interior' | 'terraza';
+  capacidad: number;
+  activa: boolean;
+  orden?: number;
+  created_at?: string;
+}
+
+export interface ReservaMesa {
+  id: string;
+  mesa_id?: string | null;
+  reserva_guiso_id?: string | null;
+  fecha: string;
+  hora_servicio: string;
+  zona_preferida: 'interior' | 'terraza';
+  comensales: number;
+  nombre_cliente: string;
+  telefono: string;
+  estado: 'confirmada' | 'cancelada' | 'finalizada';
+  observaciones?: string;
   created_at?: string;
 }
 

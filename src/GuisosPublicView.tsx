@@ -32,7 +32,9 @@ import {
   enviarEmailConfirmacionReservaGuiso,
   type GuisoProgramado,
   type ReservaGuiso,
-  type ModalidadReservaGuiso
+  type ModalidadReservaGuiso,
+  type MesaLocal,
+  type ReservaMesa
 } from './notificacionesGuisos';
 
 interface GuisosPublicViewProps {
@@ -100,6 +102,8 @@ const construirDiasSemana = (
 export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProps) {
   const [guisos, setGuisos] = useState<GuisoProgramado[]>([]);
   const [reservas, setReservas] = useState<ReservaGuiso[]>([]);
+  const [mesasLocal, setMesasLocal] = useState<MesaLocal[]>([]);
+  const [reservasMesas, setReservasMesas] = useState<ReservaMesa[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
   // Navegación estricta del Calendario Semanal (0 = Esta semana, 1 = Próxima semana)
@@ -113,6 +117,9 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   const [emailCliente, setEmailCliente] = useState<string>('');
   const [racionesReserva, setRacionesReserva] = useState<number>(2);
   const [modalidadReserva, setModalidadReserva] = useState<ModalidadReservaGuiso>('barra');
+  const [horaServicio, setHoraServicio] = useState<string>('14:00');
+  const [zonaPreferida, setZonaPreferida] = useState<'interior' | 'terraza'>('interior');
+  const [comensalesMesa, setComensalesMesa] = useState<number>(2);
   const [enviandoReserva, setEnviandoReserva] = useState<boolean>(false);
   const [errorReserva, setErrorReserva] = useState<string | null>(null);
 
@@ -132,9 +139,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
   const cargarDatos = async () => {
     try {
-      const [resGuisos, resReservas] = await Promise.all([
+      const [resGuisos, resReservas, resMesas, resReservasMesas] = await Promise.all([
         supabase.from('guisos_programados').select('*').order('fecha', { ascending: true }),
-        supabase.from('reservas_guisos').select('*')
+        supabase.from('reservas_guisos').select('*'),
+        supabase.from('mesas_local').select('*'),
+        supabase.from('reservas_mesas').select('*')
       ]);
 
       if (!resGuisos.error && resGuisos.data) {
@@ -143,8 +152,14 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       if (!resReservas.error && resReservas.data) {
         setReservas(resReservas.data as ReservaGuiso[]);
       }
+      if (!resMesas.error && resMesas.data) {
+        setMesasLocal(resMesas.data as MesaLocal[]);
+      }
+      if (!resReservasMesas.error && resReservasMesas.data) {
+        setReservasMesas(resReservasMesas.data as ReservaMesa[]);
+      }
     } catch (err) {
-      console.error('Error cargando guisos públicos:', err);
+      console.error('Error cargando guisos y mesas:', err);
     } finally {
       setLoading(false);
     }
@@ -159,6 +174,12 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         cargarDatos();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'reservas_guisos' }, () => {
+        cargarDatos();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mesas_local' }, () => {
+        cargarDatos();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reservas_mesas' }, () => {
         cargarDatos();
       })
       .subscribe();
@@ -205,6 +226,46 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     return `${diasSemana[0].diaMes} — ${diasSemana[6].diaMes}`;
   }, [diasSemana]);
 
+  // Disponibilidad de mesas activas en tiempo real por franja horaria para el modal de reserva
+  const disponibilidadMesasModal = useMemo(() => {
+    if (!guisoActivoModal) {
+      return {
+        interiorLibres: 0,
+        interiorTotal: 0,
+        terrazaLibres: 0,
+        terrazaTotal: 0,
+        hayMesasEnZonaElegida: false,
+        hayAlgunaMesaEnLocal: false
+      };
+    }
+
+    const fechaPlato = guisoActivoModal.fecha;
+    // Reservas confirmadas de mesa en esa misma fecha y hora
+    const reservasEnTurno = reservasMesas.filter(
+      (r) => r.fecha === fechaPlato && r.hora_servicio === horaServicio && r.estado === 'confirmada'
+    );
+    const mesasOcupadasIds = new Set(reservasEnTurno.map((r) => r.mesa_id).filter(Boolean));
+
+    const activasInterior = mesasLocal.filter((m) => m.zona === 'interior' && m.activa);
+    const activasTerraza = mesasLocal.filter((m) => m.zona === 'terraza' && m.activa);
+
+    const interiorLibres = activasInterior.filter((m) => !mesasOcupadasIds.has(m.id)).length;
+    const terrazaLibres = activasTerraza.filter((m) => !mesasOcupadasIds.has(m.id)).length;
+
+    const hayAlgunaMesaEnLocal = interiorLibres > 0 || terrazaLibres > 0;
+    const hayMesasEnZonaElegida =
+      zonaPreferida === 'interior' ? interiorLibres > 0 : terrazaLibres > 0;
+
+    return {
+      interiorLibres,
+      interiorTotal: activasInterior.length,
+      terrazaLibres,
+      terrazaTotal: activasTerraza.length,
+      hayMesasEnZonaElegida,
+      hayAlgunaMesaEnLocal
+    };
+  }, [guisoActivoModal, horaServicio, zonaPreferida, mesasLocal, reservasMesas]);
+
   const abrirModalReserva = (guiso: GuisoProgramado) => {
     if (haSuperadoFechaHoraCorte(guiso)) {
       return;
@@ -213,6 +274,9 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     setReservaCompletada(null);
     setErrorReserva(null);
     setRacionesReserva(2);
+    setComensalesMesa(2);
+    setHoraServicio('14:00');
+    setZonaPreferida('interior');
     setModalidadReserva('barra');
   };
 
@@ -254,6 +318,33 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         guisoActivoModal.estado === 'buscando_minimo' &&
         nuevoTotalRaciones >= Number(guisoActivoModal.min_raciones || 1);
 
+      // Si es comer en el local, buscar y asignar mesa libre en la zona elegida
+      let mesaAsignadaId: string | null = null;
+      if (modalidadReserva === 'barra') {
+        const reservasEnTurno = reservasMesas.filter(
+          (r) =>
+            r.fecha === guisoActivoModal.fecha &&
+            r.hora_servicio === horaServicio &&
+            r.estado === 'confirmada'
+        );
+        const ocupadasIds = new Set(reservasEnTurno.map((r) => r.mesa_id).filter(Boolean));
+        const mesasLibresEnZona = mesasLocal.filter(
+          (m) => m.activa && m.zona === zonaPreferida && !ocupadasIds.has(m.id)
+        );
+
+        if (mesasLibresEnZona.length > 0) {
+          mesaAsignadaId = mesasLibresEnZona[0].id;
+        } else {
+          // Si en esa zona no hay pero en la otra sí, usar la otra zona
+          const mesasLibresOtra = mesasLocal.filter(
+            (m) => m.activa && !ocupadasIds.has(m.id)
+          );
+          if (mesasLibresOtra.length > 0) {
+            mesaAsignadaId = mesasLibresOtra[0].id;
+          }
+        }
+      }
+
       const nuevaReservaPayload = {
         guiso_id: guisoActivoModal.id,
         nombre_cliente: nombreCliente.trim(),
@@ -261,7 +352,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         email: emailCliente.trim() ? emailCliente.trim() : null,
         raciones: racionesNuevas,
         modalidad: modalidadReserva,
-        estado_pago: 'pendiente' as const
+        estado_pago: 'pendiente' as const,
+        hora_servicio: horaServicio,
+        zona_preferida: modalidadReserva === 'barra' ? zonaPreferida : 'interior',
+        comensales: modalidadReserva === 'barra' ? comensalesMesa : racionesNuevas,
+        mesa_id: mesaAsignadaId
       };
 
       const { data: reservaInsertada, error: insertError } = await supabase
@@ -270,7 +365,49 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         .select()
         .single();
 
-      if (insertError) throw insertError;
+      if (insertError) {
+        // Fallback si la tabla no tuviera las nuevas columnas aún
+        const payloadMinimo = {
+          guiso_id: guisoActivoModal.id,
+          nombre_cliente: nombreCliente.trim(),
+          telefono: telefonoCliente.trim(),
+          email: emailCliente.trim() ? emailCliente.trim() : null,
+          raciones: racionesNuevas,
+          modalidad: modalidadReserva,
+          estado_pago: 'pendiente' as const
+        };
+        const { error: errFallback } = await supabase
+          .from('reservas_guisos')
+          .insert([payloadMinimo])
+          .select()
+          .single();
+        if (errFallback) throw errFallback;
+      }
+
+      const idReservaGuisoFinal =
+        (reservaInsertada as any)?.id || crypto.randomUUID();
+
+      // Si es comer en el local, registrar también en reservas_mesas
+      if (modalidadReserva === 'barra') {
+        try {
+          await supabase.from('reservas_mesas').insert([
+            {
+              mesa_id: mesaAsignadaId,
+              reserva_guiso_id: idReservaGuisoFinal,
+              fecha: guisoActivoModal.fecha,
+              hora_servicio: horaServicio,
+              zona_preferida: zonaPreferida,
+              comensales: comensalesMesa,
+              nombre_cliente: nombreCliente.trim(),
+              telefono: telefonoCliente.trim(),
+              estado: 'confirmada',
+              observaciones: `Reserva con ${racionesNuevas} raciones de "${guisoActivoModal.nombre_plato}"`
+            }
+          ]);
+        } catch (errMesa) {
+          console.warn('Aviso guardando en reservas_mesas:', errMesa);
+        }
+      }
 
       let guisoActualizado: GuisoProgramado = { ...guisoActivoModal };
 
@@ -959,7 +1096,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   </div>
                 )}
 
-                {/* 1. MODALIDAD: BARRA vs TAKEAWAY */}
+                {/* 1. MODALIDAD: BARRA vs TAKEAWAY Y CONTROL DE AFORO */}
                 <div>
                   <label className="text-xs font-black uppercase text-slate-300 block mb-2">
                     1. ¿Cómo prefieres disfrutarlo?
@@ -967,17 +1104,25 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
+                      disabled={!disponibilidadMesasModal.hayAlgunaMesaEnLocal}
                       onClick={() => setModalidadReserva('barra')}
-                      className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                      className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer relative ${
                         modalidadReserva === 'barra'
                           ? 'bg-amber-500/20 border-amber-400 text-white shadow-[0_0_15px_rgba(245,158,11,0.2)]'
+                          : !disponibilidadMesasModal.hayAlgunaMesaEnLocal
+                          ? 'bg-white/[0.02] border-white/5 text-slate-500 opacity-60 cursor-not-allowed'
                           : 'bg-white/[0.03] border-white/10 text-slate-400 hover:text-white'
                       }`}
                     >
-                      <span className="text-sm font-black block">🪑 Para tomar en el bar</span>
+                      <span className="text-sm font-black block">🪑 Comer en el local</span>
                       <span className="text-xs text-amber-400 font-bold mt-1 block">
                         {Number(guisoActivoModal.precio_barra).toFixed(2)} € / ración
                       </span>
+                      {!disponibilidadMesasModal.hayAlgunaMesaEnLocal && (
+                        <span className="text-[10px] text-rose-400 font-black block mt-1">
+                          ⚠️ Aforo completo a las {horaServicio}
+                        </span>
+                      )}
                     </button>
 
                     <button
@@ -991,13 +1136,149 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                     >
                       <div className="flex items-center gap-1">
                         <ShoppingBag className="h-3.5 w-3.5 text-cyan-400" />
-                        <span className="text-sm font-black">🛍️ Para llevar / Delivery</span>
+                        <span className="text-sm font-black">🛍️ Pasar a recoger</span>
                       </div>
                       <span className="text-xs text-cyan-400 font-bold mt-1 block">
                         {Number(guisoActivoModal.precio_takeaway).toFixed(2)} € / ración
                       </span>
+                      <span className="text-[10px] text-slate-400 block mt-1">
+                        Listo a la hora indicada
+                      </span>
                     </button>
                   </div>
+                </div>
+
+                {/* AVISO AUTOMÁTICO SI TODAS LAS MESAS ESTÁN COMPLETAS */}
+                {!disponibilidadMesasModal.hayAlgunaMesaEnLocal && modalidadReserva === 'takeaway' && (
+                  <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-3.5 text-xs text-amber-200">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                      <span>
+                        Todas nuestras mesas están reservadas para esa franja horaria. Solo está disponible la opción de <strong>Pasar a recoger (Takeaway)</strong> (o elige otra hora con mesas libres).
+                      </span>
+                    </p>
+                  </div>
+                )}
+
+                {/* 2. SELECCIÓN DE HORA Y CONFIGURACIÓN DE MESA/ZONA */}
+                <div className="bg-[#131722] border border-white/10 rounded-2xl p-3.5 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-black uppercase text-amber-400 block">
+                      {modalidadReserva === 'barra' ? '2. Turno y Zona en el Local' : '2. Hora de Recogida'}
+                    </label>
+                  </div>
+
+                  {/* SELECTOR DE HORA (Tramos de 13:00 a 16:00 o cena) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block mb-1">
+                        ⏰ {modalidadReserva === 'barra' ? 'Hora deseada de comida:' : 'Hora para pasar a recoger:'}
+                      </span>
+                      <select
+                        value={horaServicio}
+                        onChange={(e) => {
+                          const nuevaHora = e.target.value;
+                          setHoraServicio(nuevaHora);
+                        }}
+                        className="w-full bg-slate-950 border border-slate-700 focus:border-amber-400 rounded-xl px-3 py-2 text-xs font-bold text-amber-300 outline-none"
+                      >
+                        {['13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00'].map((h) => (
+                          <option key={h} value={h}>
+                            {h} h
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {modalidadReserva === 'barra' && (
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 block mb-1">
+                          👥 Comensales en mesa:
+                        </span>
+                        <div className="flex items-center bg-slate-950 border border-slate-700 rounded-xl p-1 justify-between">
+                          <button
+                            type="button"
+                            onClick={() => setComensalesMesa((p) => Math.max(1, p - 1))}
+                            className="h-7 w-7 rounded-lg bg-white/5 text-white flex items-center justify-center font-bold"
+                          >
+                            <Minus className="h-3 w-3" />
+                          </button>
+                          <span className="text-xs font-black text-white">{comensalesMesa} pers.</span>
+                          <button
+                            type="button"
+                            onClick={() => setComensalesMesa((p) => Math.min(25, p + 1))}
+                            className="h-7 w-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center font-bold"
+                          >
+                            <Plus className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* SI ELIGE COMER EN EL LOCAL: ELECCIÓN DE ZONA Y MESAS LIBRES EN TIEMPO REAL */}
+                  {modalidadReserva === 'barra' && (
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block mb-1.5">
+                        📍 Elige Zona Preferida (Disponibilidad en vivo a las {horaServicio}):
+                      </span>
+                      <div className="grid grid-cols-2 gap-2">
+                        {/* BOTÓN INTERIOR */}
+                        <button
+                          type="button"
+                          disabled={disponibilidadMesasModal.interiorLibres === 0}
+                          onClick={() => setZonaPreferida('interior')}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                            zonaPreferida === 'interior'
+                              ? 'bg-indigo-600/30 border-indigo-400 text-white font-black shadow-md'
+                              : disponibilidadMesasModal.interiorLibres === 0
+                              ? 'bg-slate-950/40 border-slate-800 text-slate-600 opacity-60 cursor-not-allowed'
+                              : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                          }`}
+                        >
+                          <span className="text-xs font-bold block">🏠 Salón Interior</span>
+                          <span
+                            className={`text-[10px] block mt-0.5 ${
+                              disponibilidadMesasModal.interiorLibres > 0
+                                ? 'text-emerald-400'
+                                : 'text-rose-400'
+                            }`}
+                          >
+                            {disponibilidadMesasModal.interiorLibres > 0
+                              ? `🟢 ${disponibilidadMesasModal.interiorLibres} mesas libres`
+                              : '🔴 Zona llena / cerrada'}
+                          </span>
+                        </button>
+
+                        {/* BOTÓN TERRAZA */}
+                        <button
+                          type="button"
+                          disabled={disponibilidadMesasModal.terrazaLibres === 0}
+                          onClick={() => setZonaPreferida('terraza')}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                            zonaPreferida === 'terraza'
+                              ? 'bg-amber-500/30 border-amber-400 text-white font-black shadow-md'
+                              : disponibilidadMesasModal.terrazaLibres === 0
+                              ? 'bg-slate-950/40 border-slate-800 text-slate-600 opacity-60 cursor-not-allowed'
+                              : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                          }`}
+                        >
+                          <span className="text-xs font-bold block">☀️ Terraza</span>
+                          <span
+                            className={`text-[10px] block mt-0.5 ${
+                              disponibilidadMesasModal.terrazaLibres > 0
+                                ? 'text-amber-400'
+                                : 'text-rose-400'
+                            }`}
+                          >
+                            {disponibilidadMesasModal.terrazaLibres > 0
+                              ? `🟢 ${disponibilidadMesasModal.terrazaLibres} mesas libres`
+                              : '🔴 Zona llena / cerrada'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* 2. SELECTOR NUMÉRICO DE RACIONES */}

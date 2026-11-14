@@ -11,6 +11,11 @@ import {
   Layers,
   Lock
 } from 'lucide-react';
+import {
+  type GuisoProgramado,
+  type ReservaGuiso,
+  type MesaLocal
+} from './notificacionesGuisos';
 
 interface ItemComanda {
   id?: string | number;
@@ -133,16 +138,89 @@ export default function BarDisplay() {
 
   const cargarComandas = useCallback(async () => {
     try {
-      const { data, error } = await supabase
-        .from('comandas_cocina')
-        .select('*')
-        .neq('tipo_destino', 'cuenta')
-        .in('estado', ['pendiente', 'listo'])
-        .order('created_at', { ascending: true });
+      const hoyISO = new Date().toISOString().split('T')[0];
 
-      if (!error && data) {
-        setComandasOriginales(data as Comanda[]);
+      const [resComandas, resGuisos, resReservas, resMesas] = await Promise.all([
+        supabase
+          .from('comandas_cocina')
+          .select('*')
+          .neq('tipo_destino', 'cuenta')
+          .in('estado', ['pendiente', 'listo'])
+          .order('created_at', { ascending: true }),
+        supabase.from('guisos_programados').select('*').order('fecha', { ascending: true }),
+        supabase.from('reservas_guisos').select('*'),
+        supabase.from('mesas_local').select('*')
+      ]);
+
+      const comandasDB: Comanda[] = (!resComandas.error && resComandas.data ? resComandas.data : []) as Comanda[];
+
+      // Construir / sincronizar comandas para reservas de guisos confirmados de hoy
+      const guisosHoy = (resGuisos.data as GuisoProgramado[] || []).filter(
+        (g) => g.fecha === hoyISO && g.estado === 'confirmado'
+      );
+      const reservasHoy = (resReservas.data as ReservaGuiso[] || []).filter((r) =>
+        guisosHoy.some((g) => g.id === r.guiso_id)
+      );
+
+      const mapaMesas = new Map<string, MesaLocal>();
+      (resMesas.data as MesaLocal[] || []).forEach((m) => mapaMesas.set(m.id, m));
+
+      const comandasGuisosHoy: Comanda[] = [];
+
+      for (const res of reservasHoy) {
+        const yaExisteEnDB = comandasDB.some(
+          (c) =>
+            (c as any).reserva_guiso_id === res.id ||
+            c.items?.some((it) => it.comentarios?.includes(`Reserva Guiso #${res.id.slice(0, 6)}`))
+        );
+        if (yaExisteEnDB) continue;
+
+        const platoGuiso = guisosHoy.find((g) => g.id === res.guiso_id);
+        if (!platoGuiso) continue;
+
+        let etiquetaDestino = '🛍️ RECOGER';
+        if (res.modalidad === 'barra') {
+          if (res.mesa_id && mapaMesas.has(res.mesa_id)) {
+            const mObj = mapaMesas.get(res.mesa_id)!;
+            etiquetaDestino =
+              mObj.zona === 'interior'
+                ? `🏠 MESA ${mObj.numero} (Interior)`
+                : `☀️ TERRAZA ${mObj.numero}`;
+          } else {
+            etiquetaDestino =
+              res.zona_preferida === 'terraza' ? '☀️ TERRAZA (Guiso)' : '🏠 SALÓN (Guiso)';
+          }
+        } else {
+          etiquetaDestino = `🛍️ RECOGER ${res.hora_servicio || '14:00'}`;
+        }
+
+        const idVirtual = `guiso_res_${res.id}`;
+        comandasGuisosHoy.push({
+          id: idVirtual,
+          ticket_number: `GUISO-${res.id.slice(0, 4).toUpperCase()}`,
+          mesa: etiquetaDestino,
+          created_at: new Date().toISOString(),
+          tipo_destino: 'cocina',
+          estado: 'pendiente',
+          items: [
+            {
+              id: idVirtual + '_item',
+              nombre: `🍲 ${platoGuiso.nombre_plato}`,
+              cantidad: res.raciones,
+              destino: 'cocina',
+              categoria: 'Guisos',
+              estado_cocina: 'pendiente',
+              listo: false,
+              entregado: false,
+              comentarios: `Cliente: ${res.nombre_cliente} · Tel: ${res.telefono} · Hora: ${
+                res.hora_servicio || '14:00'
+              }`
+            }
+          ]
+        });
       }
+
+      setComandasOriginales([...comandasDB, ...comandasGuisosHoy]);
     } catch (err) {
       console.error('Error al cargar comandas en Barra:', err);
     } finally {
@@ -300,6 +378,20 @@ export default function BarDisplay() {
           cargarComandas();
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reservas_guisos' },
+        () => {
+          cargarComandas();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'guisos_programados' },
+        () => {
+          cargarComandas();
+        }
+      )
       .subscribe();
 
     const interval = setInterval(() => {
@@ -373,10 +465,12 @@ export default function BarDisplay() {
           .filter((c) => c.estado !== 'servido')
       );
 
-      await supabase
-        .from('comandas_cocina')
-        .update({ items: nuevosItems, estado: nuevoEstado })
-        .eq('id', item.comandaId);
+      if (!String(item.comandaId).startsWith('guiso_res_')) {
+        await supabase
+          .from('comandas_cocina')
+          .update({ items: nuevosItems, estado: nuevoEstado })
+          .eq('id', item.comandaId);
+      }
 
       await cargarComandas();
     } finally {
@@ -390,7 +484,9 @@ export default function BarDisplay() {
     setProcesandoKey(lockId);
 
     try {
-      const comandasDeMesa = comandasOriginales.filter((c) => c.mesa === mesaGrupo.mesa);
+      const comandasDeMesa = comandasOriginales.filter(
+        (c) => c.mesa === mesaGrupo.mesa && !String(c.id).startsWith('guiso_res_')
+      );
 
       const promesas = comandasDeMesa.map((c) => {
         const nuevosItems: ItemComanda[] = (c.items || []).map((it) => {
