@@ -63,7 +63,7 @@ AS $$
 DECLARE
   v_modificadas integer := 0;
 BEGIN
-  -- Actualizar reservas_guisos vencidas a 'expirado'
+  -- 1. Actualizar reservas_guisos vencidas a 'expirado'
   WITH expiradas AS (
     UPDATE public.reservas_guisos
     SET estado_pago = 'expirado'
@@ -74,7 +74,7 @@ BEGIN
   )
   SELECT count(*) INTO v_modificadas FROM expiradas;
 
-  -- Cancelar reservas de mesa asociadas a reservas expiradas o canceladas
+  -- 2. Liberar mesa asociada en reservas_mesas poniéndola en estado 'cancelada'
   UPDATE public.reservas_mesas
   SET estado = 'cancelada'
   WHERE estado = 'confirmada'
@@ -83,6 +83,64 @@ BEGIN
       WHERE estado_pago IN ('expirado', 'cancelado')
     );
 
+  -- 3. REGLA DE PERMANENCIA: Los guisos que hayan alcanzado 'confirmado' NUNCA
+  -- retroceden a 'buscando_minimo' por expiración de reservas. El guiso se queda confirmado.
+
   RETURN v_modificadas;
+END;
+$$;
+
+-- 4. REGLA DE INTEGRIDAD: Un guiso 'confirmado' NUNCA puede retroceder a 'buscando_minimo'
+CREATE OR REPLACE FUNCTION public.fn_proteger_guiso_confirmado()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- Si el guiso ya estaba en 'confirmado' y se intenta cambiar a 'buscando_minimo',
+  -- se preserva obligatoriamente en 'confirmado'
+  IF OLD.estado = 'confirmado' AND NEW.estado = 'buscando_minimo' THEN
+    NEW.estado := 'confirmado';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_proteger_guiso_confirmado ON public.guisos_programados;
+CREATE TRIGGER trg_proteger_guiso_confirmado
+  BEFORE UPDATE ON public.guisos_programados
+  FOR EACH ROW
+  EXECUTE FUNCTION public.fn_proteger_guiso_confirmado();
+
+-- 5. Actualizar fn_verificar_minimo_guiso para excluir raciones expiradas o canceladas
+CREATE OR REPLACE FUNCTION public.fn_verificar_minimo_guiso()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_total_raciones integer;
+  v_min_raciones integer;
+  v_estado_actual text;
+BEGIN
+  -- Sumar únicamente raciones válidas y activas
+  SELECT COALESCE(SUM(raciones), 0)
+    INTO v_total_raciones
+    FROM public.reservas_guisos
+   WHERE guiso_id = NEW.guiso_id
+     AND estado_pago NOT IN ('expirado', 'cancelado');
+
+  SELECT min_raciones, estado
+    INTO v_min_raciones, v_estado_actual
+    FROM public.guisos_programados
+   WHERE id = NEW.guiso_id;
+
+  -- Solo pasa a confirmado si estaba buscando mínimo y alcanza el objetivo
+  IF v_estado_actual = 'buscando_minimo' AND v_total_raciones >= v_min_raciones THEN
+    UPDATE public.guisos_programados
+       SET estado = 'confirmado'
+     WHERE id = NEW.guiso_id;
+  END IF;
+
+  RETURN NEW;
 END;
 $$;

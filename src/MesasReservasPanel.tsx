@@ -13,7 +13,8 @@ import {
 } from 'lucide-react';
 import {
   type MesaLocal,
-  type ReservaMesa
+  type ReservaMesa,
+  limpiarReservasExpiradasEnDB
 } from './notificacionesGuisos';
 
 interface MesasReservasPanelProps {
@@ -66,6 +67,7 @@ export default function MesasReservasPanel({ notificar, onVolver }: MesasReserva
   const cargarDatos = async () => {
     try {
       setLoading(true);
+      await limpiarReservasExpiradasEnDB().catch(() => {});
       const [resMesas, resReservas] = await Promise.all([
         supabase.from('mesas_local').select('*').order('numero', { ascending: true }),
         supabase.from('reservas_mesas').select('*').order('hora_servicio', { ascending: true })

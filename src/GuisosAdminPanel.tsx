@@ -637,6 +637,13 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     try {
       if (editandoGuisoId) {
         const fechaCorteFinal = fechaCorte || calcularFechaCorteMenosDias(fechaPlato, 1);
+        const guisoPrevio = guisos.find((g) => g.id === editandoGuisoId);
+        // Regla de permanencia: un plato confirmado NUNCA vuelve a 'buscando_minimo'
+        const estadoFinal =
+          guisoPrevio?.estado === 'confirmado' && estadoPlato === 'buscando_minimo'
+            ? 'confirmado'
+            : estadoPlato;
+
         const payloadBase = {
           fecha: fechaPlato,
           hora_corte: (horaCorte || '21:00').trim(),
@@ -646,7 +653,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
           precio_barra: Number(pBarra.toFixed(2)),
           precio_takeaway: Number(pTakeaway.toFixed(2)),
           imagen_url: limpiarUrlUnsplashFalsa(imagenUrl),
-          estado: estadoPlato
+          estado: estadoFinal
         };
 
         const { error } = await supabase
@@ -998,11 +1005,34 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     setEjecutandoLote(true);
     try {
       if (Object.keys(camposActualizar).length > 0) {
-        const { error } = await supabase
-          .from('guisos_programados')
-          .update(camposActualizar)
-          .in('id', idsSeleccionados);
-        if (error) throw error;
+        if (camposActualizar.estado === 'buscando_minimo') {
+          // Regla de permanencia: un plato confirmado NUNCA vuelve a 'buscando_minimo'
+          const idsNoConfirmados = idsSeleccionados.filter((id) => {
+            const g = guisos.find((item) => item.id === id);
+            return g?.estado !== 'confirmado';
+          });
+          if (idsNoConfirmados.length > 0) {
+            await supabase
+              .from('guisos_programados')
+              .update({ estado: 'buscando_minimo' })
+              .in('id', idsNoConfirmados);
+          }
+          const otrosCampos = { ...camposActualizar };
+          delete otrosCampos.estado;
+          if (Object.keys(otrosCampos).length > 0) {
+            const { error } = await supabase
+              .from('guisos_programados')
+              .update(otrosCampos)
+              .in('id', idsSeleccionados);
+            if (error) throw error;
+          }
+        } else {
+          const { error } = await supabase
+            .from('guisos_programados')
+            .update(camposActualizar)
+            .in('id', idsSeleccionados);
+          if (error) throw error;
+        }
       }
 
       if (tieneMargenCorte) {
