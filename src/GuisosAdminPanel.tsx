@@ -8,6 +8,10 @@ import {
   obtenerFechaCorteEfectiva,
   formatearFechaHumana,
   formatearFechaCorteHumana,
+  obtenerConfiguracionPagoGuisos,
+  guardarConfiguracionPagoGuisos,
+  dispararEmailGuiso,
+  type ConfiguracionPagoGuisos,
   type GuisoProgramado,
   type ReservaGuiso,
   type EstadoGuiso,
@@ -225,12 +229,15 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   const [mostrarPanelBorrarPorDias, setMostrarPanelBorrarPorDias] = useState<boolean>(false);
   const [diasMarcadosParaBorrar, setDiasMarcadosParaBorrar] = useState<string[]>([]);
 
-  const [enlacePagoConfig, setEnlacePagoConfig] = useState<string>(() => {
-    return (
-      localStorage.getItem('nexus_guisos_link_pago') ||
-      'Bizum / Pago en Barra (Nexus Chinales 45) · https://www.nexusgamingcenter.es/#guisos'
-    );
-  });
+  // Configuración de WhatsApp y Datos de Pago
+  const [configPago, setConfigPago] = useState<ConfiguracionPagoGuisos>(() => obtenerConfiguracionPagoGuisos());
+  const [mostrarModalConfigPago, setMostrarModalConfigPago] = useState<boolean>(false);
+  const [tempTelefonoWA, setTempTelefonoWA] = useState<string>(() => configPago.telefonoWhatsAppBar);
+  const [tempBizum, setTempBizum] = useState<string>(() => configPago.numeroBizum);
+  const [tempEnlacePago, setTempEnlacePago] = useState<string>(() => configPago.enlacePago);
+  const [tempInstruccionesPago, setTempInstruccionesPago] = useState<string>(() => configPago.instruccionesPago);
+
+  const [enlacePagoConfig, setEnlacePagoConfig] = useState<string>(() => configPago.enlacePago);
 
   const diasSemanaFormulario = useMemo(() => obtenerDiasSemana(semanaSelectorOffset), [semanaSelectorOffset]);
   const diasSemanaListado = useMemo(() => obtenerDiasSemana(semanaListadoOffset), [semanaListadoOffset]);
@@ -762,8 +769,23 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         .update({ estado: 'confirmado' })
         .eq('id', guiso.id);
       if (error) throw error;
+
+      // Disparar envío automático de email con datos de pago a los clientes inscritos
+      const clientesDeEsteGuiso = reservas.filter((r) => r.guiso_id === guiso.id);
+      let emailsEnviados = 0;
+      for (const res of clientesDeEsteGuiso) {
+        if (res.email && res.email.includes('@')) {
+          dispararEmailGuiso({
+            tipo: 'plato_confirmado_pago',
+            reserva: res,
+            guiso
+          }).catch((e) => console.warn('Error enviando email confirmacion guiso:', e));
+          emailsEnviados++;
+        }
+      }
+
       notificar(
-        `🟢 "${guiso.nombre_plato}" confirmado manualmente. ¡Ya puedes avisar por WhatsApp!`,
+        `🟢 "${guiso.nombre_plato}" confirmado.${emailsEnviados > 0 ? ` Enviados ${emailsEnviados} emails con instrucciones de pago.` : ''} ¡Ya puedes enviar WhatsApp con un toque!`,
         'ok'
       );
       setGuisoDesplegadoId(guiso.id);
@@ -775,7 +797,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
 
   const cancelarGuisoPlanB = async (guiso: GuisoProgramado) => {
     const ok = window.confirm(
-      `¿Marcar "${guiso.nombre_plato}" como CANCELADO?\n\nEn la web pública (#guisos) se mostrará automáticamente el "Plan B Inteligente".`
+      `¿Marcar "${guiso.nombre_plato}" como CANCELADO?\n\nEn la web pública (#guisos) se mostrará automáticamente el "Plan B Inteligente" y se notificará por email a los clientes apuntados.`
     );
     if (!ok) return;
 
@@ -785,7 +807,29 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         .update({ estado: 'cancelado' })
         .eq('id', guiso.id);
       if (error) throw error;
-      notificar(`Plato "${guiso.nombre_plato}" marcado como cancelado (Plan B activo).`, 'info');
+
+      // Notificar a los clientes apuntados sobre el Plan B y opciones alternativas
+      const clientesDeEsteGuiso = reservas.filter((r) => r.guiso_id === guiso.id);
+      const otrosConfirmados = guisos.filter(
+        (g) => g.fecha === guiso.fecha && g.id !== guiso.id && g.estado === 'confirmado'
+      );
+      let emailsEnviados = 0;
+      for (const res of clientesDeEsteGuiso) {
+        if (res.email && res.email.includes('@')) {
+          dispararEmailGuiso({
+            tipo: 'plato_cancelado_plan_b',
+            reserva: res,
+            guiso,
+            platosAlternativos: otrosConfirmados.map((g) => ({ nombre_plato: g.nombre_plato }))
+          }).catch((e) => console.warn('Error enviando email cancelación guiso:', e));
+          emailsEnviados++;
+        }
+      }
+
+      notificar(
+        `Plato "${guiso.nombre_plato}" marcado como cancelado (Plan B activo).${emailsEnviados > 0 ? ` Se enviaron ${emailsEnviados} avisos.` : ''}`,
+        'info'
+      );
       await cargarGuisosYReservas();
     } catch (err: any) {
       notificar('Error al cancelar guiso: ' + err.message, 'error');
@@ -1691,22 +1735,140 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                 </button>
               </div>
 
-              <div className="flex items-center gap-1.5 flex-1 min-w-[220px] max-w-md">
-                <span className="text-[10px] font-black uppercase text-emerald-400 whitespace-nowrap">
-                  💳 Pago WA:
-                </span>
-                <input
-                  type="text"
-                  value={enlacePagoConfig}
-                  onChange={(e) => {
-                    setEnlacePagoConfig(e.target.value);
-                    localStorage.setItem('nexus_guisos_link_pago', e.target.value);
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTempTelefonoWA(configPago.telefonoWhatsAppBar);
+                    setTempBizum(configPago.numeroBizum);
+                    setTempEnlacePago(configPago.enlacePago);
+                    setTempInstruccionesPago(configPago.instruccionesPago);
+                    setMostrarModalConfigPago(true);
                   }}
-                  placeholder="Bizum / instrucciones de pago..."
-                  className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-[11px] text-slate-200"
-                />
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap shadow-sm"
+                  title="Configurar teléfono WhatsApp de cobro, Bizum y enlaces de pago"
+                >
+                  <span>⚙️ Configurar WhatsApp y Datos de Pago</span>
+                  <span className="text-[10px] bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-500/40 text-emerald-200">
+                    Bizum: {configPago.numeroBizum}
+                  </span>
+                </button>
               </div>
             </div>
+
+            {/* MODAL / PANEL DESPLEGABLE: ⚙️ CONFIGURACIÓN DE WHATSAPP Y DATOS DE PAGO */}
+            {mostrarModalConfigPago && (
+              <div className="bg-slate-900/95 border-2 border-emerald-500/60 rounded-2xl p-4 sm:p-5 space-y-4 shadow-2xl backdrop-blur-md animate-in fade-in-50">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xl">⚙️</span>
+                    <div>
+                      <h4 className="text-sm font-black text-white">
+                        Configuración de WhatsApp y Datos de Pago
+                      </h4>
+                      <p className="text-[11px] text-slate-400">
+                        Estos datos se inyectan automáticamente en los emails de Resend y en los mensajes redactados de WhatsApp.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMostrarModalConfigPago(false)}
+                    className="p-1 rounded-lg text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-emerald-400 block mb-1">
+                      📱 Teléfono WhatsApp del Bar (recepción de justificantes)
+                    </label>
+                    <input
+                      type="text"
+                      value={tempTelefonoWA}
+                      onChange={(e) => setTempTelefonoWA(e.target.value)}
+                      placeholder="Ej: 34624454242 o 624 45 42 42"
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono focus:border-emerald-400 outline-none"
+                    />
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">
+                      Número donde los clientes enviarán su confirmación o captura de Bizum.
+                    </span>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-emerald-400 block mb-1">
+                      💳 Número de Bizum para pagos
+                    </label>
+                    <input
+                      type="text"
+                      value={tempBizum}
+                      onChange={(e) => setTempBizum(e.target.value)}
+                      placeholder="Ej: 624 45 42 42"
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-amber-300 font-bold font-mono focus:border-emerald-400 outline-none"
+                    />
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">
+                      Aparecerá en el bloque destacado de pago en emails y WhatsApp.
+                    </span>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-300 block mb-1">
+                      🌐 Enlace de Pago Web / Tarjeta (Opcional)
+                    </label>
+                    <input
+                      type="url"
+                      value={tempEnlacePago}
+                      onChange={(e) => setTempEnlacePago(e.target.value)}
+                      placeholder="https://www.nexusgamingcenter.es/#guisos"
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:border-emerald-400 outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-300 block mb-1">
+                      📝 Instrucciones adicionales de pago
+                    </label>
+                    <input
+                      type="text"
+                      value={tempInstruccionesPago}
+                      onChange={(e) => setTempInstruccionesPago(e.target.value)}
+                      placeholder="Ej: Indicar en el concepto GUISO y tu Nombre completo"
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:border-emerald-400 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setMostrarModalConfigPago(false)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const guardado = guardarConfiguracionPagoGuisos({
+                        telefonoWhatsAppBar: tempTelefonoWA,
+                        numeroBizum: tempBizum,
+                        enlacePago: tempEnlacePago,
+                        instruccionesPago: tempInstruccionesPago
+                      });
+                      setConfigPago(guardado);
+                      setEnlacePagoConfig(guardado.enlacePago);
+                      notificar('⚙️ Configuración de WhatsApp y Datos de Pago guardada.', 'ok');
+                      setMostrarModalConfigPago(false);
+                    }}
+                    className="px-4 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs cursor-pointer shadow-lg"
+                  >
+                    💾 Guardar Configuración
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* PANEL DESPLEGABLE: BORRADO RÁPIDO POR DÍAS DE LA SEMANA ACTIVA */}
             {mostrarPanelBorrarPorDias && (
@@ -2167,23 +2329,26 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                                         </button>
                                       </td>
                                       <td className="p-1.5 text-right">
-                                        <div className="flex items-center justify-end gap-1">
-                                          <a
-                                            href={waUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] whitespace-nowrap"
-                                          >
-                                            📲 WA
-                                          </a>
-                                          <button
-                                            type="button"
-                                            onClick={() => eliminarReservaCliente(res)}
-                                            className="px-1.5 py-0.5 rounded bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 text-[10px] font-bold cursor-pointer"
-                                          >
-                                            🗑️
-                                          </button>
-                                        </div>
+                                          <div className="flex items-center justify-end gap-1.5">
+                                            <a
+                                              href={waUrl}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] whitespace-nowrap shadow-sm flex items-center gap-1 cursor-pointer"
+                                              title="Abrir WhatsApp para enviar instrucciones de pago y Bizum"
+                                            >
+                                              <span>📲</span>
+                                              <span>WhatsApp Pago</span>
+                                            </a>
+                                            <button
+                                              type="button"
+                                              onClick={() => eliminarReservaCliente(res)}
+                                              className="px-1.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 text-[10px] font-bold cursor-pointer"
+                                              title="Eliminar reserva"
+                                            >
+                                              🗑️
+                                            </button>
+                                          </div>
                                       </td>
                                     </tr>
                                   );

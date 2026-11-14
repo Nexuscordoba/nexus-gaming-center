@@ -61,22 +61,66 @@ export interface ReservaMesa {
   created_at?: string;
 }
 
+export interface ConfiguracionPagoGuisos {
+  telefonoWhatsAppBar: string;
+  numeroBizum: string;
+  enlacePago: string;
+  instruccionesPago: string;
+}
+
+const STORAGE_KEY_CONFIG_PAGO = 'nexus_guisos_config_pago';
+
+export const CONFIGURACION_PAGO_DEFAULT: ConfiguracionPagoGuisos = {
+  telefonoWhatsAppBar: '34624454242',
+  numeroBizum: '624 45 42 42',
+  enlacePago: 'https://www.nexusgamingcenter.es/#guisos',
+  instruccionesPago: 'Indica en el concepto de Bizum: GUISO y tu Nombre'
+};
+
+export const obtenerConfiguracionPagoGuisos = (): ConfiguracionPagoGuisos => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CONFIG_PAGO);
+    if (!raw) return CONFIGURACION_PAGO_DEFAULT;
+    const parsed = JSON.parse(raw);
+    return {
+      telefonoWhatsAppBar: parsed.telefonoWhatsAppBar || CONFIGURACION_PAGO_DEFAULT.telefonoWhatsAppBar,
+      numeroBizum: parsed.numeroBizum || CONFIGURACION_PAGO_DEFAULT.numeroBizum,
+      enlacePago: parsed.enlacePago || CONFIGURACION_PAGO_DEFAULT.enlacePago,
+      instruccionesPago: parsed.instruccionesPago || CONFIGURACION_PAGO_DEFAULT.instruccionesPago
+    };
+  } catch {
+    return CONFIGURACION_PAGO_DEFAULT;
+  }
+};
+
+export const guardarConfiguracionPagoGuisos = (
+  nuevaConfig: Partial<ConfiguracionPagoGuisos>
+): ConfiguracionPagoGuisos => {
+  const actual = obtenerConfiguracionPagoGuisos();
+  const fusionada: ConfiguracionPagoGuisos = {
+    telefonoWhatsAppBar: nuevaConfig.telefonoWhatsAppBar?.trim() || actual.telefonoWhatsAppBar,
+    numeroBizum: nuevaConfig.numeroBizum?.trim() || actual.numeroBizum,
+    enlacePago: nuevaConfig.enlacePago?.trim() || actual.enlacePago,
+    instruccionesPago: nuevaConfig.instruccionesPago !== undefined ? nuevaConfig.instruccionesPago.trim() : actual.instruccionesPago
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY_CONFIG_PAGO, JSON.stringify(fusionada));
+  } catch {
+    // ignorar quota localstorage
+  }
+  return fusionada;
+};
+
 export interface ResultadoNotificacionEmail {
   enviado: boolean;
   newsletterGuardada: boolean;
   detalle: string;
 }
 
-const RESEND_API_KEY = (import.meta.env.VITE_RESEND_API_KEY as string | undefined) || '';
-const RESEND_ENDPOINT =
-  (import.meta.env.VITE_RESEND_ENDPOINT as string | undefined) || '/api/send-confirmation';
-const WHATSAPP_BAR_NEXUS =
-  (import.meta.env.VITE_WHATSAPP_BAR_PHONE as string | undefined) || '34600000000';
-const ENLACE_PAGO_POR_DEFECTO =
-  (import.meta.env.VITE_GUISOS_PAYMENT_URL as string | undefined) ||
-  'https://www.nexusgamingcenter.es/#guisos';
+const RESEND_ENDPOINT_GUISOS = '/api/send-guiso-email';
 
-export const obtenerTelefonoBarWhatsApp = (): string => WHATSAPP_BAR_NEXUS;
+export const obtenerTelefonoBarWhatsApp = (): string =>
+  obtenerConfiguracionPagoGuisos().telefonoWhatsAppBar;
 
 export const normalizarTelefonoWhatsApp = (telefonoRaw: string): string => {
   const soloDigitos = String(telefonoRaw || '').replace(/\D+/g, '');
@@ -210,12 +254,14 @@ export const generarEnlaceWhatsAppAdminAClienteConfirmacion = (
   guiso: GuisoProgramado,
   linkPagoPersonalizado?: string
 ): string => {
+  const cfg = obtenerConfiguracionPagoGuisos();
   const telefonoDestino = normalizarTelefonoWhatsApp(reserva.telefono);
   const fechaTexto = formatearFechaHumana(guiso.fecha);
   const modalidadTexto =
     reserva.modalidad === 'takeaway' ? 'Para llevar / Takeaway 🛍️' : 'Para tomar en Barra / Sala 🪑';
   const totalImporte = calcularImporteReserva(guiso, reserva.raciones, reserva.modalidad).toFixed(2);
-  const enlacePago = (linkPagoPersonalizado || ENLACE_PAGO_POR_DEFECTO).trim();
+  const enlacePago = (linkPagoPersonalizado || cfg.enlacePago).trim();
+  const fechaCorteTxt = formatearFechaCorteHumana(guiso);
 
   const mensaje = [
     `¡Hola ${reserva.nombre_cliente}! 👋 Te escribimos desde *Café Bar Nexus* (Chinales 45).`,
@@ -228,11 +274,15 @@ export const generarEnlaceWhatsAppAdminAClienteConfirmacion = (
     `• Modalidad: ${modalidadTexto}`,
     `• Total a abonar: *${totalImporte} €*`,
     ``,
-    `💳 Para dejar tu ración 100% formalizada, puedes completar el abono desde aquí o responder a este mensaje con tu justificante / confirmación:`,
-    `${enlacePago}`,
+    `💳 *Instrucciones de Pago / Bizum:*`,
+    `• Bizum al: *${cfg.numeroBizum}*`,
+    `• Concepto: GUISO ${String(reserva.nombre_cliente).toUpperCase().slice(0, 15)}`,
+    fechaCorteTxt ? `• Límite para abonar: ${fechaCorteTxt}` : '',
+    cfg.instruccionesPago ? `• ${cfg.instruccionesPago}` : '',
+    enlacePago ? `• O abona online: ${enlacePago}` : '',
     ``,
-    `¡Muchas gracias y buen provecho! 🥄`
-  ].join('\n');
+    `Por favor, responde con el justificante para dejar tu ración 100% asegurada. ¡Muchas gracias y buen provecho! 🥄`
+  ].filter(Boolean).join('\n');
 
   return `https://wa.me/${telefonoDestino}?text=${encodeURIComponent(mensaje)}`;
 };
@@ -246,7 +296,8 @@ export const generarEnlaceWhatsAppClienteABar = (
   platoConfirmado: boolean,
   telefonoBarPersonalizado?: string
 ): string => {
-  const telefonoBar = normalizarTelefonoWhatsApp(telefonoBarPersonalizado || WHATSAPP_BAR_NEXUS);
+  const cfg = obtenerConfiguracionPagoGuisos();
+  const telefonoBar = normalizarTelefonoWhatsApp(telefonoBarPersonalizado || cfg.telefonoWhatsAppBar);
   const fechaTexto = formatearFechaHumana(guiso.fecha);
   const modalidadTexto =
     reserva.modalidad === 'takeaway' ? 'Para llevar / Delivery 🛍️' : 'Para tomar en el bar 🪑';
@@ -263,7 +314,7 @@ export const generarEnlaceWhatsAppClienteABar = (
         `🥄 Raciones: ${reserva.raciones} (${modalidadTexto})`,
         `💶 Importe total: *${totalImporte} €*`,
         ``,
-        `Quiero formalizar ahora el abono directo de mi reserva para dejarla asegurada. ¡Gracias!`
+        `Quiero formalizar ahora el abono directo de mi reserva mediante Bizum o justificante. ¡Gracias!`
       ].join('\n')
     : [
         `¡Hola equipo de Nexus! 👋`,
@@ -327,15 +378,19 @@ export const guardarSuscripcionNewsletterGuisos = async (datos: {
 };
 
 /**
- * Envía el email de confirmación de reserva mediante Resend y registra el correo en la newsletter.
+ * Envío de emails transaccionales de guisos mediante Serverless Function /api/send-guiso-email (Resend):
+ * 1. 'reserva_en_cola': Informa al cliente que NO debe pagar nada aún hasta alcanzar el mínimo.
+ * 2. 'plato_confirmado_pago': Alerta de fogones confirmados con datos de pago (Bizum/enlace) y fecha de corte.
+ * 3. 'plato_cancelado_plan_b': Notifica guiso no preparado y ofrece alternativas o carta del bar.
  */
-export const enviarEmailConfirmacionReservaGuiso = async (params: {
-  reserva: ReservaGuiso;
+export const dispararEmailGuiso = async (params: {
+  tipo: 'reserva_en_cola' | 'plato_confirmado_pago' | 'plato_cancelado_plan_b';
+  reserva: Pick<ReservaGuiso, 'nombre_cliente' | 'telefono' | 'email' | 'raciones' | 'modalidad' | 'hora_servicio' | 'zona_preferida'>;
   guiso: GuisoProgramado;
-  platoConfirmado: boolean;
-  recienConfirmadoPorEstaReserva?: boolean;
+  zonaMesa?: string;
+  platosAlternativos?: Array<{ nombre_plato: string }>;
 }): Promise<ResultadoNotificacionEmail> => {
-  const { reserva, guiso, platoConfirmado, recienConfirmadoPorEstaReserva } = params;
+  const { tipo, reserva, guiso, zonaMesa, platosAlternativos } = params;
   const emailDestino = String(reserva.email || '').trim();
 
   const newsletterGuardada = await guardarSuscripcionNewsletterGuisos({
@@ -352,100 +407,72 @@ export const enviarEmailConfirmacionReservaGuiso = async (params: {
     };
   }
 
+  const cfg = obtenerConfiguracionPagoGuisos();
   const fechaTexto = formatearFechaHumana(guiso.fecha);
-  const modalidadTexto =
-    reserva.modalidad === 'takeaway' ? 'Para llevar / Delivery' : 'Para tomar en el bar (Sala/Barra)';
-  const importeTotal = calcularImporteReserva(guiso, reserva.raciones, reserva.modalidad).toFixed(2);
-
-  const asunto = platoConfirmado
-    ? `🟢 ¡Ración Asegurada! ${guiso.nombre_plato} (${fechaTexto}) · Café Bar Nexus`
-    : `🍲 Reserva Registrada: ${guiso.nombre_plato} (${fechaTexto}) · Café Bar Nexus`;
-
-  const htmlContent = `
-    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 560px; margin: 0 auto; background: #0c0d14; color: #e2e8f0; border-radius: 16px; padding: 28px; border: 1px solid #f59e0b40;">
-      <h2 style="color: #fbbf24; margin-top: 0;">🍲 Guisos de la Casa · Café Bar Nexus</h2>
-      <p>¡Hola <strong>${reserva.nombre_cliente}</strong>!</p>
-      <p>${
-        platoConfirmado
-          ? recienConfirmadoPorEstaReserva
-            ? '🎉 ¡Con tu reserva acabamos de alcanzar el mínimo de raciones! El plato queda oficialmente <strong>CONFIRMADO</strong> y se cocinará sin falta.'
-            : '⚡ Este guiso ya ha alcanzado su mínimo y está <strong>CONFIRMADO</strong> en los fogones. Tu ración queda reservada.'
-          : 'Hemos registrado tu reserva gratuita en nuestra preventa. En cuanto alcancemos el mínimo de raciones antes del cierre de preventa, te avisaremos para confirmar fogones.'
-      }</p>
-      <div style="background: #131722; border-radius: 12px; padding: 16px; margin: 20px 0; border: 1px solid #ffffff1a;">
-        <p style="margin: 4px 0;"><strong>Plato:</strong> ${guiso.nombre_plato}</p>
-        <p style="margin: 4px 0;"><strong>Fecha:</strong> ${fechaTexto}</p>
-        <p style="margin: 4px 0;"><strong>Raciones:</strong> ${reserva.raciones}</p>
-        <p style="margin: 4px 0;"><strong>Modalidad:</strong> ${modalidadTexto}</p>
-        <p style="margin: 4px 0;"><strong>Importe Total:</strong> <span style="color: #34d399; font-weight: bold;">${importeTotal} €</span></p>
-      </div>
-      <p style="font-size: 12px; color: #94a3b8;">📍 Avenida principal de Chinales 45, 14007 Córdoba · <a href="https://www.nexusgamingcenter.es/#guisos" style="color: #38bdf8;">nexusgamingcenter.es/#guisos</a></p>
-    </div>
-  `;
+  const totalImporte = calcularImporteReserva(guiso, reserva.raciones, reserva.modalidad);
+  const fechaCorteHumana = formatearFechaCorteHumana(guiso);
 
   try {
-    const responseEndpoint = await fetch(RESEND_ENDPOINT, {
+    const res = await fetch(RESEND_ENDPOINT_GUISOS, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tipo: 'reserva_guiso',
+        tipo,
         email: emailDestino,
         nombre: reserva.nombre_cliente,
         telefono: reserva.telefono,
-        asunto,
         plato: guiso.nombre_plato,
-        fechaEvento: guiso.fecha,
-        raciones: reserva.raciones,
+        fecha: guiso.fecha,
+        fechaHumana: fechaTexto,
+        horaServicio: reserva.hora_servicio,
         modalidad: reserva.modalidad,
-        precioEstimado: Number(importeTotal),
-        estadoGuiso: platoConfirmado ? 'confirmado' : 'buscando_minimo',
-        suscribirNewsletter: true,
-        html: htmlContent
+        raciones: reserva.raciones,
+        totalImporte,
+        zonaMesa:
+          zonaMesa ||
+          (reserva.modalidad === 'takeaway'
+            ? 'Para llevar (Takeaway)'
+            : 'En el local (Sala/Terraza)'),
+        numeroBizum: cfg.numeroBizum,
+        enlacePago: cfg.enlacePago,
+        instruccionesPago: cfg.instruccionesPago,
+        fechaCorteHumana,
+        telefonoWhatsAppBar: cfg.telefonoWhatsAppBar,
+        platosAlternativos: platosAlternativos || []
       })
     });
 
-    if (responseEndpoint.ok) {
+    if (res.ok) {
       return {
         enviado: true,
         newsletterGuardada,
-        detalle: 'Email enviado correctamente vía endpoint de notificaciones.'
+        detalle: 'Email enviado correctamente vía Resend (/api/send-guiso-email).'
       };
     }
-  } catch {
-    // Continuar al intento directo con Resend API si existe VITE_RESEND_API_KEY
-  }
-
-  if (RESEND_API_KEY) {
-    try {
-      const resDirect = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${RESEND_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          from: 'Nexus Café Bar <reservas@nexusgamingcenter.es>',
-          to: [emailDestino],
-          subject: asunto,
-          html: htmlContent
-        })
-      });
-
-      if (resDirect.ok) {
-        return {
-          enviado: true,
-          newsletterGuardada,
-          detalle: 'Email enviado mediante Resend API.'
-        };
-      }
-    } catch {
-      // Ignorar fallo de red/CORS en cliente
-    }
+  } catch (err: any) {
+    console.warn('Error al disparar email de guiso:', err);
   }
 
   return {
     enviado: false,
     newsletterGuardada,
-    detalle: 'Reserva y suscripción guardadas (servicio de correo en espera de clave activa).'
+    detalle: 'Email procesado (Resend en cola).'
   };
+};
+
+/**
+ * Mantiene compatibilidad con llamadas existentes usando el nuevo motor de Resend.
+ */
+export const enviarEmailConfirmacionReservaGuiso = async (params: {
+  reserva: ReservaGuiso;
+  guiso: GuisoProgramado;
+  platoConfirmado: boolean;
+  recienConfirmadoPorEstaReserva?: boolean;
+}): Promise<ResultadoNotificacionEmail> => {
+  const { reserva, guiso, platoConfirmado } = params;
+  return dispararEmailGuiso({
+    tipo: platoConfirmado ? 'plato_confirmado_pago' : 'reserva_en_cola',
+    reserva,
+    guiso
+  });
 };

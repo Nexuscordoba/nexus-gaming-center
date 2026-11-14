@@ -29,7 +29,7 @@ import {
   formatearFechaHumana,
   formatearFechaCorteHumana,
   generarEnlaceWhatsAppClienteABar,
-  enviarEmailConfirmacionReservaGuiso,
+  dispararEmailGuiso,
   type GuisoProgramado,
   type ReservaGuiso,
   type ModalidadReservaGuiso,
@@ -412,7 +412,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       let guisoActualizado: GuisoProgramado = { ...guisoActivoModal };
 
       // LÓGICA HÍBRIDA: Si estaba en 'buscando_minimo' y al sumar las raciones alcanza o supera min_raciones,
-      // cambia automáticamente su estado a 'confirmado' en Supabase.
+      // cambia automáticamente su estado a 'confirmado' en Supabase y avisa a los clientes anteriores.
       if (alcanzaMinimoAhora) {
         const { error: updateErr } = await supabase
           .from('guisos_programados')
@@ -421,6 +421,18 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
         if (!updateErr) {
           guisoActualizado = { ...guisoActivoModal, estado: 'confirmado' };
+
+          // Disparar aviso 'plato_confirmado_pago' a todos los clientes que ya estaban en lista de espera
+          const inscritosPrevios = reservas.filter(
+            (r) => r.guiso_id === guisoActivoModal.id && r.email && r.email.includes('@')
+          );
+          for (const prevRes of inscritosPrevios) {
+            dispararEmailGuiso({
+              tipo: 'plato_confirmado_pago',
+              reserva: prevRes,
+              guiso: guisoActualizado
+            }).catch((e) => console.warn('Error enviando email confirmacion guiso en cola:', e));
+          }
         }
       }
 
@@ -436,11 +448,15 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         platoConfirmadoFinal
       );
 
-      enviarEmailConfirmacionReservaGuiso({
+      // Enviar correo al nuevo cliente (reserva_en_cola o plato_confirmado_pago con datos de Bizum)
+      dispararEmailGuiso({
+        tipo: platoConfirmadoFinal ? 'plato_confirmado_pago' : 'reserva_en_cola',
         reserva: reservaFinalObj,
         guiso: guisoActualizado,
-        platoConfirmado: platoConfirmadoFinal,
-        recienConfirmadoPorEstaReserva: alcanzaMinimoAhora
+        zonaMesa:
+          modalidadReserva === 'barra'
+            ? `${zonaPreferida === 'terraza' ? '☀️ Terraza' : '🏠 Salón Interior'} (Mesa asignada)`
+            : `🛍️ Para llevar (Recogida ${horaServicio})`
       }).catch((err) => console.warn('Aviso notificación email:', err));
 
       await cargarDatos();
