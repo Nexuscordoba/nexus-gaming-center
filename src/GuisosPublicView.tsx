@@ -19,7 +19,8 @@ import {
   AlertTriangle,
   MessageCircle,
   CreditCard,
-  Lock
+  Lock,
+  RefreshCw
 } from 'lucide-react';
 import { supabase } from './supabase';
 import {
@@ -186,6 +187,14 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   const [comensalesMesa, setComensalesMesa] = useState<number>(1);
   const [enviandoReserva, setEnviandoReserva] = useState<boolean>(false);
   const [errorReserva, setErrorReserva] = useState<string | null>(null);
+
+  // Estado para aviso de reserva duplicada ("YA TIENES UNA RESERVA")
+  const [reservaDuplicadaAviso, setReservaDuplicadaAviso] = useState<{
+    reservaExistente: ReservaGuiso;
+    guiso: GuisoProgramado;
+    racionesNuevasAñadir: number;
+  } | null>(null);
+  const [actualizandoDuplicada, setActualizandoDuplicada] = useState<boolean>(false);
 
   // Paso de confirmación post-reserva dentro del modal
   const [reservaCompletada, setReservaCompletada] = useState<{
@@ -381,6 +390,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     setGuisoActivoModal(null);
     setReservaCompletada(null);
     setErrorReserva(null);
+    setReservaDuplicadaAviso(null);
   };
 
   const handleConfirmarReserva = async (e: React.FormEvent) => {
@@ -407,6 +417,32 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     setErrorReserva(null);
 
     try {
+      // 1. COMPROBACIÓN PREVIA DE DUPLICADOS POR TELÉFONO Y PLATO/DÍA:
+      const telNumeros = telefonoCliente.replace(/\D/g, '');
+      const ultimos9 = telNumeros.length >= 9 ? telNumeros.slice(-9) : telNumeros;
+
+      // Consultar en Supabase reservas activas ('pendiente' o 'pagado') para este guiso
+      const { data: reservasExistentes } = await supabase
+        .from('reservas_guisos')
+        .select('*')
+        .eq('guiso_id', guisoActivoModal.id)
+        .in('estado_pago', ['pendiente', 'pagado']);
+
+      const duplicada = (reservasExistentes || []).find((r) => {
+        const telR = (r.telefono || '').replace(/\D/g, '');
+        const r9 = telR.length >= 9 ? telR.slice(-9) : telR;
+        return r9 === ultimos9 || (telNumeros.length >= 7 && telR === telNumeros);
+      });
+
+      if (duplicada) {
+        setEnviandoReserva(false);
+        setReservaDuplicadaAviso({
+          reservaExistente: duplicada as ReservaGuiso,
+          guiso: guisoActivoModal,
+          racionesNuevasAñadir: Math.max(1, Number(racionesReserva || 1))
+        });
+        return;
+      }
       const cfg = configPago || (await cargarConfiguracionGuisosDB());
       const racionesPrevias = racionesPorGuiso.get(guisoActivoModal.id) || 0;
       const yaEstabaConfirmado = guisoActivoModal.estado === 'confirmado';
@@ -614,6 +650,147 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       );
     } finally {
       setEnviandoReserva(false);
+    }
+  };
+
+  // ACCIÓN RÁPIDA: Añadir ración/es extra a la reserva existente detectada por duplicidad
+  const handleSumarRacionesAReservaExistente = async () => {
+    if (!reservaDuplicadaAviso || actualizandoDuplicada) return;
+    setActualizandoDuplicada(true);
+
+    try {
+      const { reservaExistente, guiso, racionesNuevasAñadir } = reservaDuplicadaAviso;
+      const racionesTotales = (reservaExistente.raciones || 1) + racionesNuevasAñadir;
+      const comensalesNuevos =
+        reservaExistente.modalidad === 'barra'
+          ? (reservaExistente.comensales || reservaExistente.raciones || 1) + racionesNuevasAñadir
+          : racionesTotales;
+
+      // Actualizar raciones y comensales en reservas_guisos
+      const { error: updErr } = await supabase
+        .from('reservas_guisos')
+        .update({
+          raciones: racionesTotales,
+          comensales: comensalesNuevos
+        })
+        .eq('id', reservaExistente.id);
+
+      if (updErr) throw updErr;
+
+      // Si tiene mesa asignada en reservas_mesas, actualizar comensales y nota
+      try {
+        await supabase
+          .from('reservas_mesas')
+          .update({
+            comensales: comensalesNuevos,
+            observaciones: `Reserva con ${racionesTotales} raciones de "${guiso.nombre_plato}"`
+          })
+          .eq('reserva_guiso_id', reservaExistente.id);
+      } catch (errMesa) {
+        console.warn('Aviso actualizando comensales en mesa:', errMesa);
+      }
+
+      // Comprobar si con este incremento el guiso alcanza min_raciones
+      const racionesPrevias = racionesPorGuiso.get(guiso.id) || 0;
+      const nuevoTotalRaciones = racionesPrevias + racionesNuevasAñadir;
+      const yaEstabaConfirmado = guiso.estado === 'confirmado';
+      const alcanzaMinimoAhora =
+        guiso.estado === 'buscando_minimo' &&
+        nuevoTotalRaciones >= Number(guiso.min_raciones || 1);
+
+      let guisoActualizado = { ...guiso };
+      let expiraISO = reservaExistente.expira_pago_at;
+
+      if (alcanzaMinimoAhora) {
+        const cfg = configPago || (await cargarConfiguracionGuisosDB());
+        expiraISO = calcularExpiraPagoAt(guiso, cfg.horas_limite_preventa || 4, new Date());
+
+        const { error: errConf } = await supabase
+          .from('guisos_programados')
+          .update({ estado: 'confirmado' })
+          .eq('id', guiso.id);
+
+        if (!errConf) {
+          guisoActualizado = { ...guiso, estado: 'confirmado' };
+
+          if (expiraISO) {
+            await supabase
+              .from('reservas_guisos')
+              .update({ expira_pago_at: expiraISO })
+              .eq('guiso_id', guiso.id)
+              .eq('estado_pago', 'pendiente');
+          }
+
+          // Notificar por email a otros clientes en lista de espera
+          const inscritosPrevios = reservas.filter(
+            (r) =>
+              r.guiso_id === guiso.id &&
+              r.email &&
+              r.email.includes('@') &&
+              r.estado_pago !== 'cancelado' &&
+              r.estado_pago !== 'expirado' &&
+              r.id !== reservaExistente.id
+          );
+          for (const prevRes of inscritosPrevios) {
+            dispararEmailGuiso({
+              tipo: 'plato_confirmado_pago',
+              reserva: { ...prevRes, expira_pago_at: expiraISO },
+              guiso: guisoActualizado,
+              horaLimiteHumana: formatearHoraLimiteHumana(expiraISO),
+              enlaceGestion: generarEnlaceGestionCliente(prevRes.id)
+            }).catch(() => {});
+          }
+        }
+      }
+
+      const reservaActualizadaObj: ReservaGuiso = {
+        ...reservaExistente,
+        raciones: racionesTotales,
+        comensales: comensalesNuevos,
+        expira_pago_at: expiraISO
+      };
+
+      const platoConfirmadoFinal = yaEstabaConfirmado || alcanzaMinimoAhora;
+      const enlaceWA = generarEnlaceWhatsAppClienteABar(
+        reservaActualizadaObj,
+        guisoActualizado,
+        platoConfirmadoFinal
+      );
+      const horaHumana = formatearHoraLimiteHumana(expiraISO);
+      const enlaceGestionFinal = generarEnlaceGestionCliente(reservaExistente.id);
+
+      if (reservaExistente.email && reservaExistente.email.includes('@')) {
+        dispararEmailGuiso({
+          tipo: platoConfirmadoFinal ? 'plato_confirmado_pago' : 'reserva_en_cola',
+          reserva: reservaActualizadaObj,
+          guiso: guisoActualizado,
+          horaLimiteHumana: horaHumana,
+          enlaceGestion: enlaceGestionFinal,
+          zonaMesa:
+            reservaExistente.modalidad === 'barra'
+              ? `${reservaExistente.zona_preferida === 'terraza' ? '☀️ Terraza' : '🏠 Salón Interior'} (Reserva ampliada)`
+              : `🛍️ Para llevar (Recogida ${reservaExistente.hora_servicio || '14:00'})`
+        }).catch((err) => console.warn('Aviso email ampliación reserva:', err));
+      }
+
+      await cargarDatos();
+
+      setReservaDuplicadaAviso(null);
+      setReservaCompletada({
+        reserva: reservaActualizadaObj,
+        guiso: guisoActualizado,
+        yaEstabaConfirmado,
+        recienConfirmadoConEstaReserva: alcanzaMinimoAhora,
+        racionesTotalesAhora: nuevoTotalRaciones,
+        enlaceWhatsApp: enlaceWA,
+        horaLimiteHumana: horaHumana,
+        enlaceGestion: enlaceGestionFinal
+      });
+    } catch (err: any) {
+      console.error('Error ampliando reserva existente:', err);
+      alert('Error al ampliar la reserva existente: ' + (err?.message || 'Inténtalo de nuevo'));
+    } finally {
+      setActualizandoDuplicada(false);
     }
   };
 
@@ -1855,6 +2032,109 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL DE AVISO DE DUPLICIDAD ("YA TIENES UNA RESERVA") ================= */}
+      {reservaDuplicadaAviso && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in"
+          onClick={() => setReservaDuplicadaAviso(null)}
+        >
+          <div
+            className="w-full max-w-md bg-[#0c1017] border border-amber-500/40 rounded-3xl p-6 sm:p-7 shadow-[0_0_50px_rgba(245,158,11,0.2)] text-left space-y-5 animate-in zoom-in-95"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* CABECERA */}
+            <div className="flex items-start gap-3.5">
+              <div className="h-12 w-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center text-2xl shrink-0">
+                ⚠️
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base sm:text-lg font-black text-white leading-tight">
+                  Ya tienes una reserva para este plato hoy
+                </h3>
+                <p className="text-xs text-amber-300/90 font-medium">
+                  {reservaDuplicadaAviso.guiso.nombre_plato} ({formatearFechaHumana(reservaDuplicadaAviso.guiso.fecha)})
+                </p>
+              </div>
+            </div>
+
+            {/* DETALLES DE LA RESERVA EXISTENTE */}
+            <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2.5 text-xs text-slate-300">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <span className="text-slate-400">Raciones actuales:</span>
+                <span className="font-black text-amber-400 text-sm">
+                  {reservaDuplicadaAviso.reservaExistente.raciones} ración{reservaDuplicadaAviso.reservaExistente.raciones > 1 ? 'es' : ''}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Modalidad y Turno:</span>
+                <span className="font-bold text-white">
+                  {reservaDuplicadaAviso.reservaExistente.modalidad === 'barra'
+                    ? `🏠 En el local (${reservaDuplicadaAviso.reservaExistente.zona_preferida === 'terraza' ? 'Terraza' : 'Salón'})`
+                    : '🛍️ Para llevar'}{' '}
+                  · {reservaDuplicadaAviso.reservaExistente.hora_servicio || '14:00'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Estado de abono:</span>
+                <span className="font-bold text-emerald-400">
+                  {reservaDuplicadaAviso.reservaExistente.estado_pago === 'pagado'
+                    ? '🟢 Reserva abonada'
+                    : '⏳ Pendiente de pago / En cola'}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Detectamos que el teléfono <strong className="text-white">{reservaDuplicadaAviso.reservaExistente.telefono}</strong> ya figura con una reserva activa para este mismo plato. ¿Qué deseas hacer?
+            </p>
+
+            {/* BOTONES DE ACCIÓN RÁPIDA */}
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                disabled={actualizandoDuplicada}
+                onClick={handleSumarRacionesAReservaExistente}
+                className="w-full py-3.5 px-4 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-wide flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(245,158,11,0.3)] transition-all cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4 ${actualizandoDuplicada ? 'animate-spin' : ''}`} />
+                <span>
+                  {actualizandoDuplicada
+                    ? 'Actualizando reserva...'
+                    : `🔄 Añadir ${reservaDuplicadaAviso.racionesNuevasAñadir} ración${reservaDuplicadaAviso.racionesNuevasAñadir > 1 ? 'es' : ''} más a mi reserva`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={actualizandoDuplicada}
+                onClick={() => setReservaDuplicadaAviso(null)}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+              >
+                <span>❌ Fue un error / Cancelar</span>
+              </button>
+            </div>
+
+            {/* ENLACE AL PORTAL DE AUTOGESTIÓN */}
+            <div className="pt-2 border-t border-slate-800/80 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  const res = reservaDuplicadaAviso.reservaExistente;
+                  setReservaDuplicadaAviso(null);
+                  cerrarModalReserva();
+                  setTelBusqueda(res.telefono || '');
+                  setReservaSeleccionada(res);
+                  setMostrarModalGestion(true);
+                }}
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 underline font-semibold transition-colors cursor-pointer"
+              >
+                ¿Deseas cancelar o cambiar tu reserva existente? Gestionar mis reservas aquí
+              </button>
+            </div>
           </div>
         </div>
       )}
