@@ -34,6 +34,7 @@ export interface ReservaGuiso {
   zona_preferida?: 'interior' | 'terraza';
   comensales?: number;
   mesa_id?: string | null;
+  aviso_expiracion_enviado?: boolean;
   created_at?: string;
 }
 
@@ -249,10 +250,11 @@ export const formatearHoraLimiteHumana = (expiraISO?: string | null): string => 
  * Ejecuta la limpieza de reservas expiradas en Supabase llamando a la RPC o aplicando fallback
  */
 export const limpiarReservasExpiradasEnDB = async (): Promise<number> => {
+  let modificadas = 0;
   try {
     const { data, error } = await supabase.rpc('limpiar_reservas_guisos_expiradas');
     if (!error && typeof data === 'number') {
-      return data;
+      modificadas = data;
     }
   } catch {}
 
@@ -278,12 +280,20 @@ export const limpiarReservasExpiradasEnDB = async (): Promise<number> => {
         .update({ estado: 'cancelada' })
         .in('reserva_guiso_id', ids);
 
-      return ids.length;
+      modificadas = Math.max(modificadas, ids.length);
     }
   } catch (err) {
     console.warn('Aviso limpiando reservas expiradas:', err);
   }
-  return 0;
+
+  // Notificar por correo automático a las reservas que hayan expirado y no hayan recibido aviso
+  try {
+    await notificarReservasExpiradasPorEmail();
+  } catch (errNotif) {
+    console.warn('Aviso enviando emails de cancelación por falta de pago:', errNotif);
+  }
+
+  return modificadas;
 };
 
 export interface ResultadoNotificacionEmail {
@@ -569,7 +579,8 @@ export const dispararEmailGuiso = async (params: {
     | 'plato_confirmado_pago'
     | 'plato_cancelado_plan_b'
     | 'reserva_cancelada'
-    | 'plato_cambiado';
+    | 'plato_cambiado'
+    | 'reserva_expirada';
   reserva: Pick<
     ReservaGuiso,
     | 'nombre_cliente'
@@ -677,4 +688,84 @@ export const enviarEmailConfirmacionReservaGuiso = async (params: {
     reserva,
     guiso
   });
+};
+
+/**
+ * Envía la notificación por email de reserva cancelada por falta de pago a clientes cuyas
+ * reservas hayan pasado a 'expirado' y aún no hayan recibido el aviso (aviso_expiracion_enviado = false).
+ */
+export const notificarReservasExpiradasPorEmail = async (): Promise<number> => {
+  try {
+    let reservasAnotificar: any[] = [];
+    const { data, error } = await supabase
+      .from('reservas_guisos')
+      .select('*')
+      .eq('estado_pago', 'expirado')
+      .or('aviso_expiracion_enviado.is.null,aviso_expiracion_enviado.eq.false');
+
+    if (!error && data) {
+      reservasAnotificar = data;
+    } else {
+      const { data: dataFallback } = await supabase
+        .from('reservas_guisos')
+        .select('*')
+        .eq('estado_pago', 'expirado');
+      reservasAnotificar = (dataFallback || []).filter(
+        (r: any) => !r.aviso_expiracion_enviado
+      );
+    }
+
+    const conEmail = reservasAnotificar.filter(
+      (r) => r.email && typeof r.email === 'string' && r.email.includes('@')
+    );
+
+    if (conEmail.length === 0) return 0;
+
+    const guisoIds = Array.from(new Set(conEmail.map((r) => r.guiso_id).filter(Boolean)));
+    const { data: guisosData } = await supabase
+      .from('guisos_programados')
+      .select('*')
+      .in('id', guisoIds);
+
+    const guisosMap = new Map<string, GuisoProgramado>();
+    (guisosData || []).forEach((g: GuisoProgramado) => guisosMap.set(g.id, g));
+
+    let enviados = 0;
+    for (const res of conEmail) {
+      const guiso = guisosMap.get(res.guiso_id) || {
+        id: res.guiso_id,
+        fecha: new Date().toISOString().split('T')[0],
+        hora_corte: '21:00',
+        nombre_plato: 'Guiso Casero Nexus',
+        descripcion: '',
+        min_raciones: 8,
+        precio_barra: 9.5,
+        precio_takeaway: 8.5,
+        imagen_url: '',
+        estado: 'confirmado' as EstadoGuiso
+      };
+
+      try {
+        await dispararEmailGuiso({
+          tipo: 'reserva_expirada',
+          reserva: res,
+          guiso
+        });
+        enviados++;
+
+        // Marcar aviso_expiracion_enviado = true para evitar duplicados
+        await supabase
+          .from('reservas_guisos')
+          .update({ aviso_expiracion_enviado: true })
+          .eq('id', res.id);
+      } catch (errEmail) {
+        console.warn('Error enviando email de expiración a', res.email, errEmail);
+      }
+    }
+
+    return enviados;
+  } catch (err) {
+    console.warn('Excepción en notificarReservasExpiradasPorEmail:', err);
+    return 0;
+  }
 };

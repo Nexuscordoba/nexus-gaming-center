@@ -29,7 +29,7 @@ export default async function handler(req: any, res: any) {
   }
 
   const {
-    tipo = 'reserva_en_cola', // 'reserva_en_cola' | 'plato_confirmado_pago' | 'plato_cancelado_plan_b' | 'reserva_cancelada' | 'plato_cambiado'
+    tipo = 'reserva_en_cola', // 'reserva_en_cola' | 'plato_confirmado_pago' | 'plato_cancelado_plan_b' | 'reserva_cancelada' | 'plato_cambiado' | 'reserva_expirada'
     email,
     nombre,
     telefono,
@@ -470,6 +470,62 @@ export default async function handler(req: any, res: any) {
 
         <div style="border-top: 1px solid #1e293b; padding-top: 18px; text-align: center;">
           <p style="color: #64748b; font-size: 11px; margin: 0;">Café Bar Nexus · Chinales 45, Córdoba · <a href="https://www.nexusgamingcenter.es/#guisos" style="color: #38bdf8;">nexusgamingcenter.es/#guisos</a></p>
+        </div>
+      </div>
+    `;
+  }
+
+  // 6. RESERVA CANCELADA POR FALTA DE PAGO (EXPIRADA)
+  else if (tipo === 'reserva_expirada') {
+    asunto = `Reserva cancelada por falta de pago - Nexus Guisos`;
+
+    textContent = [
+      `Hola ${nombre},`,
+      ``,
+      `Te informamos de que tu reserva para el guiso "${plato}" (${fechaTexto}) de ${raciones} ${raciones === 1 ? 'ración' : 'raciones'} ha caducado al haber superado el tiempo límite de abono establecido tras la confirmación del plato.`,
+      ``,
+      `Por este motivo, tu ración y la mesa asignada han sido liberadas automáticamente para otros clientes.`,
+      ``,
+      `Si ha sido un error o deseas volver a realizar tu pedido, ponte en contacto con nosotros directamente por WhatsApp (${waNumeroLimpio}) o visita de nuevo nuestra web en https://www.nexusgamingcenter.es/#guisos`,
+      ``,
+      `Café Bar Nexus · Polígono Chinales 45, Córdoba`
+    ].filter(Boolean).join('\n');
+
+    htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #050609; color: #f1f5f9; padding: 32px 20px; max-width: 600px; margin: 0 auto; border-radius: 20px; border: 1px solid #e11d48;">
+        <div style="text-align: center; border-bottom: 1px solid #1e293b; padding-bottom: 20px;">
+          <h1 style="color: #fb7185; margin: 0; font-size: 20px; font-weight: 900;">CAFÉ BAR NEXUS</h1>
+          <p style="color: #64748b; font-size: 12px; margin: 4px 0 0 0;">Aviso de Caducidad de Reserva</p>
+        </div>
+
+        <div style="padding: 24px 0;">
+          <p style="font-size: 16px; margin: 0 0 12px 0;">Hola <strong>${nombre}</strong>,</p>
+          <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6; margin: 0 0 16px 0;">
+            Te informamos de que tu reserva para el plato <strong>${plato}</strong> (${fechaTexto}) de <strong>${raciones} ${raciones === 1 ? 'ración' : 'raciones'}</strong> ha caducado al haber superado el tiempo límite de abono establecido tras la confirmación del plato.
+          </p>
+
+          <div style="background-color: #1c0a10; border: 1px solid #881337; border-radius: 14px; padding: 18px; margin: 18px 0;">
+            <p style="font-size: 13px; color: #fca5a5; margin: 0; line-height: 1.6;">
+              ⚠️ <strong>Por este motivo, tu ración y la mesa asignada han sido liberadas automáticamente para otros clientes.</strong>
+            </p>
+          </div>
+
+          <p style="font-size: 13px; color: #94a3b8; line-height: 1.6; margin: 16px 0;">
+            Si ha sido un error o deseas volver a realizar tu pedido, ponte en contacto con nosotros directamente por WhatsApp (<a href="https://wa.me/${waNumeroLimpio}" style="color: #25d366; text-decoration: none; font-weight: bold;">624 45 42 42</a>) o visita de nuevo nuestra web:
+          </p>
+
+          <div style="text-align: center; margin: 24px 0;">
+            <a href="https://wa.me/${waNumeroLimpio}" style="display: inline-block; background-color: #25d366; color: #ffffff; font-weight: 900; font-size: 13px; padding: 12px 22px; border-radius: 12px; text-decoration: none; margin-right: 10px; margin-bottom: 8px;">
+              Contactar por WhatsApp (624 45 42 42)
+            </a>
+            <a href="https://www.nexusgamingcenter.es/#guisos" style="display: inline-block; background-color: #f59e0b; color: #020617; font-weight: 900; font-size: 13px; padding: 12px 22px; border-radius: 12px; text-decoration: none; margin-bottom: 8px;">
+              Volver a la Web de Guisos
+            </a>
+          </div>
+        </div>
+
+        <div style="border-top: 1px solid #1e293b; padding-top: 18px; text-align: center;">
+          <p style="color: #64748b; font-size: 11px; margin: 0;">Café Bar Nexus · Polígono Chinales 45, Córdoba · <a href="https://www.nexusgamingcenter.es/#guisos" style="color: #38bdf8;">nexusgamingcenter.es/#guisos</a></p>
         </div>
       </div>
     `;
