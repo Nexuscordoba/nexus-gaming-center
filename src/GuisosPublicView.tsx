@@ -30,6 +30,12 @@ import {
   formatearFechaCorteHumana,
   generarEnlaceWhatsAppClienteABar,
   dispararEmailGuiso,
+  cargarConfiguracionGuisosDB,
+  limpiarReservasExpiradasEnDB,
+  calcularExpiraPagoAt,
+  formatearHoraLimiteHumana,
+  generarEnlaceGestionCliente,
+  type ConfiguracionPagoGuisos,
   type GuisoProgramado,
   type ReservaGuiso,
   type ModalidadReservaGuiso,
@@ -99,12 +105,70 @@ const construirDiasSemana = (
   });
 };
 
+function RelojCuentaAtras({ expiraISO }: { expiraISO?: string | null }) {
+  const [segundosRestantes, setSegundosRestantes] = useState<number | null>(() => {
+    if (!expiraISO) return null;
+    const diff = new Date(expiraISO).getTime() - Date.now();
+    return Math.max(0, Math.floor(diff / 1000));
+  });
+
+  useEffect(() => {
+    if (!expiraISO) return;
+    const tick = () => {
+      const diff = new Date(expiraISO).getTime() - Date.now();
+      setSegundosRestantes(Math.max(0, Math.floor(diff / 1000)));
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [expiraISO]);
+
+  if (segundosRestantes === null) return null;
+
+  if (segundosRestantes <= 0) {
+    return (
+      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 font-mono text-xs font-black border border-rose-500/40">
+        <span>⌛</span>
+        <span>PLAZO DE PAGO EXPIRADO</span>
+      </div>
+    );
+  }
+
+  const horas = Math.floor(segundosRestantes / 3600);
+  const minutos = Math.floor((segundosRestantes % 3600) / 60);
+  const segundos = segundosRestantes % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+
+  return (
+    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 font-mono text-xs font-black shadow-inner">
+      <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" style={{ animationDuration: '4s' }} />
+      <span>
+        {horas > 0 ? `${horas}h ` : ''}
+        {pad(minutos)}m {pad(segundos)}s restantes para abonar
+      </span>
+    </div>
+  );
+}
+
 export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProps) {
   const [guisos, setGuisos] = useState<GuisoProgramado[]>([]);
   const [reservas, setReservas] = useState<ReservaGuiso[]>([]);
   const [mesasLocal, setMesasLocal] = useState<MesaLocal[]>([]);
   const [reservasMesas, setReservasMesas] = useState<ReservaMesa[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [configPago, setConfigPago] = useState<ConfiguracionPagoGuisos | null>(null);
+
+  // Portal / Modal de Autogestión de Reservas
+  const [mostrarModalGestion, setMostrarModalGestion] = useState<boolean>(false);
+  const [telBusqueda, setTelBusqueda] = useState<string>('');
+  const [busquedaRealizada, setBusquedaRealizada] = useState<boolean>(false);
+  const [idReservaEnURL, setIdReservaEnURL] = useState<string | null>(null);
+  const [reservaSeleccionada, setReservaSeleccionada] = useState<ReservaGuiso | null>(null);
+  const [modoCambiarGuiso, setModoCambiarGuiso] = useState<boolean>(false);
+  const [confirmandoCancelacion, setConfirmandoCancelacion] = useState<boolean>(false);
+  const [procesandoGestion, setProcesandoGestion] = useState<boolean>(false);
+  const [mensajeGestionOk, setMensajeGestionOk] = useState<string | null>(null);
+  const [mensajeGestionError, setMensajeGestionError] = useState<string | null>(null);
 
   // Navegación estricta del Calendario Semanal (0 = Esta semana, 1 = Próxima semana)
   const [semanaOffset, setSemanaOffset] = useState<number>(0);
@@ -131,6 +195,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     recienConfirmadoConEstaReserva: boolean;
     racionesTotalesAhora: number;
     enlaceWhatsApp: string;
+    horaLimiteHumana?: string;
+    enlaceGestion?: string;
   } | null>(null);
 
   const diasSemana = useMemo(() => construirDiasSemana(semanaOffset), [semanaOffset]);
@@ -166,6 +232,26 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   };
 
   useEffect(() => {
+    // Detectar enlace de autogestión de reserva directa desde URL (?reserva=UUID#guisos)
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const paramReserva = urlParams.get('reserva');
+      if (paramReserva && paramReserva.trim()) {
+        setIdReservaEnURL(paramReserva.trim());
+        setMostrarModalGestion(true);
+      }
+    } catch {}
+
+    // Cargar configuración de plazos y pagos
+    cargarConfiguracionGuisosDB()
+      .then(setConfigPago)
+      .catch((e) => console.warn('Aviso cargando config_guisos:', e));
+
+    // Limpieza de reservas con plazo de pago expirado
+    limpiarReservasExpiradasEnDB().catch((e) =>
+      console.warn('Aviso limpiando reservas expiradas:', e)
+    );
+
     cargarDatos();
 
     const channel = supabase
@@ -189,10 +275,21 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     };
   }, []);
 
-  // Mapa de raciones reservadas en vivo por cada guiso_id
+  // Autoseleccionar la reserva si el cliente entró con ?reserva=UUID
+  useEffect(() => {
+    if (idReservaEnURL && reservas.length > 0) {
+      const encontrada = reservas.find((r) => r.id === idReservaEnURL);
+      if (encontrada) {
+        setReservaSeleccionada(encontrada);
+      }
+    }
+  }, [idReservaEnURL, reservas]);
+
+  // Mapa de raciones reservadas en vivo por cada guiso_id (ignora expiradas y canceladas)
   const racionesPorGuiso = useMemo(() => {
     const mapa = new Map<string, number>();
     for (const r of reservas) {
+      if (r.estado_pago === 'expirado' || r.estado_pago === 'cancelado') continue;
       const prev = mapa.get(r.guiso_id) || 0;
       mapa.set(r.guiso_id, prev + Number(r.raciones || 0));
     }
@@ -310,6 +407,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     setErrorReserva(null);
 
     try {
+      const cfg = configPago || (await cargarConfiguracionGuisosDB());
       const racionesPrevias = racionesPorGuiso.get(guisoActivoModal.id) || 0;
       const yaEstabaConfirmado = guisoActivoModal.estado === 'confirmado';
       const racionesNuevas = Math.max(1, Number(racionesReserva || 1));
@@ -317,6 +415,22 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       const alcanzaMinimoAhora =
         guisoActivoModal.estado === 'buscando_minimo' &&
         nuevoTotalRaciones >= Number(guisoActivoModal.min_raciones || 1);
+
+      // Calcular fecha/hora exacta en la que expira el pago si el plato está o pasa a confirmado
+      let expiraISO: string | null = null;
+      if (yaEstabaConfirmado) {
+        expiraISO = calcularExpiraPagoAt(
+          guisoActivoModal,
+          cfg.horas_limite_directo || 1,
+          new Date()
+        );
+      } else if (alcanzaMinimoAhora) {
+        expiraISO = calcularExpiraPagoAt(
+          guisoActivoModal,
+          cfg.horas_limite_preventa || 4,
+          new Date()
+        );
+      }
 
       // Si es comer en el local, buscar y asignar mesa libre en la zona elegida
       let mesaAsignadaId: string | null = null;
@@ -353,6 +467,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         raciones: racionesNuevas,
         modalidad: modalidadReserva,
         estado_pago: 'pendiente' as const,
+        expira_pago_at: expiraISO,
         hora_servicio: horaServicio,
         zona_preferida: modalidadReserva === 'barra' ? zonaPreferida : 'interior',
         comensales: modalidadReserva === 'barra' ? comensalesMesa : racionesNuevas,
@@ -374,7 +489,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
           email: emailCliente.trim() ? emailCliente.trim() : null,
           raciones: racionesNuevas,
           modalidad: modalidadReserva,
-          estado_pago: 'pendiente' as const
+          estado_pago: 'pendiente' as const,
+          expira_pago_at: expiraISO
         };
         const { error: errFallback } = await supabase
           .from('reservas_guisos')
@@ -412,7 +528,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       let guisoActualizado: GuisoProgramado = { ...guisoActivoModal };
 
       // LÓGICA HÍBRIDA: Si estaba en 'buscando_minimo' y al sumar las raciones alcanza o supera min_raciones,
-      // cambia automáticamente su estado a 'confirmado' en Supabase y avisa a los clientes anteriores.
+      // cambia automáticamente su estado a 'confirmado' en Supabase y asigna plazo de pago a los clientes anteriores.
       if (alcanzaMinimoAhora) {
         const { error: updateErr } = await supabase
           .from('guisos_programados')
@@ -422,22 +538,38 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         if (!updateErr) {
           guisoActualizado = { ...guisoActivoModal, estado: 'confirmado' };
 
+          // Actualizar expira_pago_at a las reservas que ya estaban inscritas
+          if (expiraISO) {
+            await supabase
+              .from('reservas_guisos')
+              .update({ expira_pago_at: expiraISO })
+              .eq('guiso_id', guisoActivoModal.id)
+              .eq('estado_pago', 'pendiente');
+          }
+
           // Disparar aviso 'plato_confirmado_pago' a todos los clientes que ya estaban en lista de espera
           const inscritosPrevios = reservas.filter(
-            (r) => r.guiso_id === guisoActivoModal.id && r.email && r.email.includes('@')
+            (r) =>
+              r.guiso_id === guisoActivoModal.id &&
+              r.email &&
+              r.email.includes('@') &&
+              r.estado_pago !== 'cancelado' &&
+              r.estado_pago !== 'expirado'
           );
           for (const prevRes of inscritosPrevios) {
             dispararEmailGuiso({
               tipo: 'plato_confirmado_pago',
-              reserva: prevRes,
-              guiso: guisoActualizado
+              reserva: { ...prevRes, expira_pago_at: expiraISO },
+              guiso: guisoActualizado,
+              horaLimiteHumana: formatearHoraLimiteHumana(expiraISO),
+              enlaceGestion: generarEnlaceGestionCliente(prevRes.id)
             }).catch((e) => console.warn('Error enviando email confirmacion guiso en cola:', e));
           }
         }
       }
 
       const reservaFinalObj: ReservaGuiso = (reservaInsertada as ReservaGuiso) || {
-        id: crypto.randomUUID(),
+        id: idReservaGuisoFinal,
         ...nuevaReservaPayload
       };
 
@@ -448,11 +580,16 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         platoConfirmadoFinal
       );
 
+      const horaHumana = formatearHoraLimiteHumana(expiraISO);
+      const enlaceGestionFinal = generarEnlaceGestionCliente(idReservaGuisoFinal);
+
       // Enviar correo al nuevo cliente (reserva_en_cola o plato_confirmado_pago con datos de Bizum)
       dispararEmailGuiso({
         tipo: platoConfirmadoFinal ? 'plato_confirmado_pago' : 'reserva_en_cola',
         reserva: reservaFinalObj,
         guiso: guisoActualizado,
+        horaLimiteHumana: horaHumana,
+        enlaceGestion: enlaceGestionFinal,
         zonaMesa:
           modalidadReserva === 'barra'
             ? `${zonaPreferida === 'terraza' ? '☀️ Terraza' : '🏠 Salón Interior'} (Mesa asignada)`
@@ -467,7 +604,9 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
         yaEstabaConfirmado,
         recienConfirmadoConEstaReserva: alcanzaMinimoAhora,
         racionesTotalesAhora: nuevoTotalRaciones,
-        enlaceWhatsApp: enlaceWA
+        enlaceWhatsApp: enlaceWA,
+        horaLimiteHumana: horaHumana,
+        enlaceGestion: enlaceGestionFinal
       });
     } catch (err: any) {
       setErrorReserva(
@@ -475,6 +614,182 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       );
     } finally {
       setEnviandoReserva(false);
+    }
+  };
+
+  // MÉTODOS DE AUTOGESTIÓN DE RESERVAS PARA EL CLIENTE
+  const handleBuscarReservasPorTelefono = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setBusquedaRealizada(true);
+    setMensajeGestionError(null);
+    setMensajeGestionOk(null);
+
+    const limpio = telBusqueda.replace(/\D/g, '');
+    if (limpio.length < 6 && telBusqueda.trim().length < 8) {
+      setMensajeGestionError('Por favor, introduce al menos 6 dígitos de tu número de teléfono.');
+      return;
+    }
+
+    const encontradas = reservas.filter((r) => {
+      const tel = (r.telefono || '').replace(/\D/g, '');
+      return tel.endsWith(limpio) || tel === limpio || r.id === telBusqueda.trim();
+    });
+
+    if (encontradas.length === 1) {
+      setReservaSeleccionada(encontradas[0]);
+    } else if (encontradas.length === 0) {
+      setReservaSeleccionada(null);
+    }
+  };
+
+  const reservasEncontradasPorTelefono = useMemo(() => {
+    if (!busquedaRealizada) return [];
+    const limpio = telBusqueda.replace(/\D/g, '');
+    if (!limpio && !telBusqueda.trim()) return [];
+    return reservas.filter((r) => {
+      const tel = (r.telefono || '').replace(/\D/g, '');
+      return tel.endsWith(limpio) || tel === limpio || r.id === telBusqueda.trim();
+    });
+  }, [busquedaRealizada, telBusqueda, reservas]);
+
+  const handleCambiarGuiso = async (nuevoGuiso: GuisoProgramado) => {
+    if (!reservaSeleccionada || procesandoGestion) return;
+    if (haSuperadoFechaHoraCorte(nuevoGuiso)) {
+      setMensajeGestionError(`El plazo para apuntarse a "${nuevoGuiso.nombre_plato}" ha finalizado.`);
+      return;
+    }
+
+    setProcesandoGestion(true);
+    setMensajeGestionError(null);
+    setMensajeGestionOk(null);
+
+    try {
+      const cfg = configPago || (await cargarConfiguracionGuisosDB());
+      const nuevoPlatoConfirmado = nuevoGuiso.estado === 'confirmado';
+      let nuevoExpiraISO: string | null = null;
+
+      if (nuevoPlatoConfirmado) {
+        nuevoExpiraISO = calcularExpiraPagoAt(
+          nuevoGuiso,
+          cfg.horas_limite_directo || 1,
+          new Date()
+        );
+      }
+
+      // 1. Actualizar reserva_guiso
+      const { error: errUpdateRes } = await supabase
+        .from('reservas_guisos')
+        .update({
+          guiso_id: nuevoGuiso.id,
+          expira_pago_at: nuevoExpiraISO,
+          estado_pago: 'pendiente'
+        })
+        .eq('id', reservaSeleccionada.id);
+
+      if (errUpdateRes) throw errUpdateRes;
+
+      // 2. Si tenía mesa asignada en local, actualizar fecha y observaciones en reservas_mesas
+      try {
+        await supabase
+          .from('reservas_mesas')
+          .update({
+            fecha: nuevoGuiso.fecha,
+            observaciones: `Reserva cambiada al plato: ${nuevoGuiso.nombre_plato}`
+          })
+          .eq('reserva_guiso_id', reservaSeleccionada.id);
+      } catch {}
+
+      // 3. Comprobar si el nuevo guiso alcanza el mínimo ahora
+      const racionesPreviasNuevo = racionesPorGuiso.get(nuevoGuiso.id) || 0;
+      const totalNuevo = racionesPreviasNuevo + Number(reservaSeleccionada.raciones || 1);
+      if (
+        nuevoGuiso.estado === 'buscando_minimo' &&
+        totalNuevo >= Number(nuevoGuiso.min_raciones || 1)
+      ) {
+        await supabase
+          .from('guisos_programados')
+          .update({ estado: 'confirmado' })
+          .eq('id', nuevoGuiso.id);
+      }
+
+      // 4. Enviar email de plato_cambiado
+      const reservaActualizada: ReservaGuiso = {
+        ...reservaSeleccionada,
+        guiso_id: nuevoGuiso.id,
+        expira_pago_at: nuevoExpiraISO,
+        estado_pago: 'pendiente'
+      };
+
+      if (reservaActualizada.email && reservaActualizada.email.includes('@')) {
+        dispararEmailGuiso({
+          tipo: 'plato_cambiado',
+          reserva: reservaActualizada,
+          guiso: nuevoGuiso,
+          horaLimiteHumana: formatearHoraLimiteHumana(nuevoExpiraISO),
+          enlaceGestion: generarEnlaceGestionCliente(reservaActualizada.id)
+        }).catch((e) => console.warn('Error enviando email plato cambiado:', e));
+      }
+
+      setReservaSeleccionada(reservaActualizada);
+      setModoCambiarGuiso(false);
+      setMensajeGestionOk(
+        `✅ Has cambiado tu reserva con éxito al plato "${nuevoGuiso.nombre_plato}" (${formatearFechaHumana(nuevoGuiso.fecha)}).`
+      );
+      await cargarDatos();
+    } catch (err: any) {
+      setMensajeGestionError('Error al cambiar de guiso: ' + (err.message || String(err)));
+    } finally {
+      setProcesandoGestion(false);
+    }
+  };
+
+  const handleCancelarReserva = async () => {
+    if (!reservaSeleccionada || procesandoGestion) return;
+
+    setProcesandoGestion(true);
+    setMensajeGestionError(null);
+    setMensajeGestionOk(null);
+
+    try {
+      // 1. Marcar reserva como cancelada
+      const { error: errRes } = await supabase
+        .from('reservas_guisos')
+        .update({ estado_pago: 'cancelado' })
+        .eq('id', reservaSeleccionada.id);
+
+      if (errRes) throw errRes;
+
+      // 2. Liberar mesa en reservas_mesas
+      try {
+        await supabase
+          .from('reservas_mesas')
+          .update({ estado: 'cancelada' })
+          .eq('reserva_guiso_id', reservaSeleccionada.id);
+      } catch {}
+
+      // 3. Enviar email de cancelación si tenía correo
+      const guisoActual = guisos.find((g) => g.id === reservaSeleccionada.guiso_id);
+      if (guisoActual && reservaSeleccionada.email && reservaSeleccionada.email.includes('@')) {
+        dispararEmailGuiso({
+          tipo: 'reserva_cancelada',
+          reserva: reservaSeleccionada,
+          guiso: guisoActual
+        }).catch((e) => console.warn('Error enviando email cancelacion:', e));
+      }
+
+      setReservaSeleccionada({
+        ...reservaSeleccionada,
+        estado_pago: 'cancelado'
+      });
+      setConfirmandoCancelacion(false);
+      setMensajeGestionOk(
+        'Tu reserva ha sido cancelada correctamente. Se han liberado tus raciones y tu mesa.'
+      );
+      await cargarDatos();
+    } catch (err: any) {
+      setMensajeGestionError('Error al cancelar tu reserva: ' + (err.message || String(err)));
+    } finally {
+      setProcesandoGestion(false);
     }
   };
 
@@ -538,6 +853,22 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
               </div>
             </div>
           </div>
+
+          {/* BOTÓN RÁPIDO PARA GESTIONAR O CONSULTAR RESERVA */}
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setMostrarModalGestion(true);
+                setMensajeGestionOk(null);
+                setMensajeGestionError(null);
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-cyan-950/80 hover:bg-cyan-900/90 border border-cyan-500/50 text-cyan-300 font-bold text-xs sm:text-sm shadow-[0_0_20px_rgba(6,182,212,0.2)] transition-all cursor-pointer"
+            >
+              <span>🔍</span>
+              <span>Gestionar / Cambiar mi reserva</span>
+            </button>
+          </div>
         </div>
       </section>
 
@@ -557,8 +888,22 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
               </h2>
             </div>
 
-            {/* SELECTOR LIMPIO ESTA SEMANA / PRÓXIMA SEMANA SIN MEZCLAR SEMANAS */}
-            <div className="flex items-center gap-2 self-start sm:self-auto">
+            {/* SELECTOR LIMPIO ESTA SEMANA / PRÓXIMA SEMANA + BOTÓN MI RESERVA */}
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  setMostrarModalGestion(true);
+                  setMensajeGestionOk(null);
+                  setMensajeGestionError(null);
+                }}
+                className="px-3 py-2 rounded-xl text-xs font-bold text-cyan-300 bg-cyan-950/50 hover:bg-cyan-900/60 border border-cyan-500/40 cursor-pointer flex items-center gap-1.5"
+                title="Buscar o modificar mi reserva existente"
+              >
+                <span>🔍</span>
+                <span>Mi reserva</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -1438,6 +1783,21 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       <CreditCard className="h-4 w-4" />
                       <span>Formalización de Abono Directo</span>
                     </div>
+
+                    {/* CUENTA ATRÁS DEL PLAZO DE PAGO */}
+                    {reservaCompletada.reserva.expira_pago_at && (
+                      <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/30 text-center space-y-2">
+                        <div className="flex justify-center">
+                          <RelojCuentaAtras expiraISO={reservaCompletada.reserva.expira_pago_at} />
+                        </div>
+                        <p className="text-xs text-amber-200">
+                          ⏳ Tienes hasta las{' '}
+                          <strong>{reservaCompletada.horaLimiteHumana || 'la hora de corte'}</strong>{' '}
+                          para abonar tu reserva (Bizum o Tarjeta). Si no se abona antes de esa hora, la reserva y tu mesa se liberarán automáticamente.
+                        </p>
+                      </div>
+                    )}
+
                     <p className="text-xs text-slate-300 leading-relaxed">
                       Importe a abonar por tus <strong>{reservaCompletada.reserva.raciones} raciones</strong>:{' '}
                       <strong className="text-emerald-400 text-sm">
@@ -1473,6 +1833,20 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
                   <button
                     type="button"
+                    onClick={() => {
+                      const res = reservaCompletada.reserva;
+                      cerrarModalReserva();
+                      setReservaSeleccionada(res);
+                      setMostrarModalGestion(true);
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-500/40 text-xs font-bold text-cyan-300 cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <span>🔍</span>
+                    <span>Acceder a la autogestión de mi reserva</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={cerrarModalReserva}
                     className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-bold text-slate-300 cursor-pointer"
                   >
@@ -1480,6 +1854,438 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   </button>
                 </div>
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL / PORTAL DE AUTOGESTIÓN DE RESERVAS PARA EL CLIENTE ================= */}
+      {mostrarModalGestion && (
+        <div
+          className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto"
+          onClick={() => setMostrarModalGestion(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-3xl border border-cyan-500/40 bg-[#0c0d14] p-5 sm:p-7 shadow-2xl space-y-4 my-auto max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* CABECERA DEL MODAL */}
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-white/10">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-300 font-bold text-base shrink-0">
+                  🔍
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-white leading-tight">
+                    Gestión de mi Reserva
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Consulta el estado de tu plato, cambia de guiso o cancela tu reserva.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMostrarModalGestion(false)}
+                className="text-slate-400 hover:text-white p-1.5 rounded-xl bg-white/5 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* AVISOS DE MENSAJE OK O ERROR */}
+            {mensajeGestionOk && (
+              <div className="p-3.5 rounded-2xl bg-emerald-950/60 border border-emerald-500/50 text-xs text-emerald-200 leading-relaxed font-bold animate-in fade-in-50">
+                {mensajeGestionOk}
+              </div>
+            )}
+            {mensajeGestionError && (
+              <div className="p-3.5 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-xs text-rose-200 leading-relaxed font-bold animate-in fade-in-50">
+                ⚠️ {mensajeGestionError}
+              </div>
+            )}
+
+            {/* CASO A: SI NO HAY RESERVA SELECCIONADA -> FORMULARIO DE BÚSQUEDA POR TELÉFONO */}
+            {!reservaSeleccionada ? (
+              <div className="space-y-4">
+                <form onSubmit={handleBuscarReservasPorTelefono} className="space-y-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1.5">
+                      Introduce tu número de teléfono / WhatsApp para localizar tu reserva:
+                    </label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <Phone className="absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
+                        <input
+                          type="tel"
+                          required
+                          value={telBusqueda}
+                          onChange={(e) => setTelBusqueda(e.target.value)}
+                          placeholder="Ej: 600 123 456"
+                          className="w-full bg-[#131722] border border-white/15 focus:border-cyan-400 rounded-xl pl-10 pr-3.5 py-2.5 text-xs font-bold text-white outline-none"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        className="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs cursor-pointer shadow-md whitespace-nowrap"
+                      >
+                        Buscar
+                      </button>
+                    </div>
+                  </div>
+                </form>
+
+                {/* RESULTADOS DE BÚSQUEDA */}
+                {busquedaRealizada && (
+                  <div className="space-y-2 pt-2 border-t border-white/10">
+                    <h4 className="text-xs font-bold uppercase text-slate-400">
+                      Reservas encontradas ({reservasEncontradasPorTelefono.length})
+                    </h4>
+
+                    {reservasEncontradasPorTelefono.length === 0 ? (
+                      <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 text-center space-y-1">
+                        <p className="text-xs font-bold text-slate-300">
+                          No encontramos reservas con el número indicado.
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          Revisa que hayas escrito el mismo teléfono con el que te apuntaste al guiso.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                        {reservasEncontradasPorTelefono.map((res) => {
+                          const guisoObj = guisos.find((g) => g.id === res.guiso_id);
+                          return (
+                            <div
+                              key={res.id}
+                              className="p-3 rounded-2xl border border-white/10 bg-[#131722] hover:border-cyan-500/50 flex items-center justify-between gap-3 transition-colors"
+                            >
+                              <div className="min-w-0">
+                                <h5 className="text-xs font-black text-white truncate">
+                                  {guisoObj?.nombre_plato || 'Guiso'}
+                                </h5>
+                                <p className="text-[11px] text-slate-400 mt-0.5">
+                                  📅 {guisoObj ? formatearFechaHumana(guisoObj.fecha) : ''} ·{' '}
+                                  {res.raciones} {res.raciones === 1 ? 'ración' : 'raciones'} ·{' '}
+                                  {res.modalidad === 'takeaway' ? '🛍️ Llevar' : '🏠 Sala'}
+                                </p>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => setReservaSeleccionada(res)}
+                                className="px-3 py-1.5 rounded-xl bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-300 font-bold text-xs whitespace-nowrap cursor-pointer"
+                              >
+                                Ver y Gestionar →
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* CASO B: DETALLE Y ACCIONES DE LA RESERVA SELECCIONADA */
+              (() => {
+                const guisoActual = guisos.find((g) => g.id === reservaSeleccionada.guiso_id);
+                const precioTotal = guisoActual
+                  ? calcularImporteReserva(
+                      guisoActual,
+                      reservaSeleccionada.raciones,
+                      reservaSeleccionada.modalidad
+                    )
+                  : 0;
+
+                const waUrl = guisoActual
+                  ? generarEnlaceWhatsAppClienteABar(
+                      reservaSeleccionada,
+                      guisoActual,
+                      guisoActual.estado === 'confirmado'
+                    )
+                  : `https://wa.me/${configPago?.telefonoWhatsAppBar || '34624454242'}`;
+
+                const esCancelada = reservaSeleccionada.estado_pago === 'cancelado';
+                const esExpirada = reservaSeleccionada.estado_pago === 'expirado';
+                const esPagada = reservaSeleccionada.estado_pago === 'pagado';
+                const esPendiente = reservaSeleccionada.estado_pago === 'pendiente';
+
+                const otrosGuisosDisponibles = guisos.filter(
+                  (g) =>
+                    g.id !== reservaSeleccionada.guiso_id &&
+                    g.estado !== 'cancelado' &&
+                    !haSuperadoFechaHoraCorte(g)
+                );
+
+                return (
+                  <div className="space-y-4">
+                    {/* BOTÓN VOLVER A LA BÚSQUEDA */}
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReservaSeleccionada(null);
+                          setModoCambiarGuiso(false);
+                          setConfirmandoCancelacion(false);
+                        }}
+                        className="text-xs text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>◀</span>
+                        <span>Buscar otra reserva</span>
+                      </button>
+
+                      <span className="text-[10px] font-mono text-slate-500">
+                        ID: {reservaSeleccionada.id.slice(0, 8)}...
+                      </span>
+                    </div>
+
+                    {/* TARJETA DE RESUMEN DE LA RESERVA */}
+                    <div className="p-4 rounded-2xl border border-white/10 bg-[#131722] space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2.5">
+                        <div>
+                          <span className="text-[10px] font-black uppercase text-amber-400 block">
+                            📅 {guisoActual ? formatearFechaHumana(guisoActual.fecha) : ''}
+                          </span>
+                          <h4 className="text-base font-black text-white">
+                            {guisoActual?.nombre_plato || 'Guiso'}
+                          </h4>
+                        </div>
+
+                        <div className="text-right">
+                          <span className="text-sm font-black text-emerald-400 font-mono">
+                            {precioTotal.toFixed(2)} €
+                          </span>
+                          <span className="text-[10px] text-slate-400 block">
+                            {reservaSeleccionada.raciones}{' '}
+                            {reservaSeleccionada.raciones === 1 ? 'ración' : 'raciones'} ·{' '}
+                            {reservaSeleccionada.modalidad === 'takeaway' ? '🛍️ Llevar' : '🏠 Sala'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* ESTADO DEL PLATO Y ESTADO DE PAGO */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                        <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 space-y-0.5">
+                          <span className="text-[10px] uppercase text-slate-400 block">Estado del Plato</span>
+                          <p className="font-bold text-white">
+                            {guisoActual?.estado === 'confirmado'
+                              ? '🟢 Confirmado en fogones'
+                              : guisoActual?.estado === 'cancelado'
+                              ? '🚫 Cancelado (Plan B activo)'
+                              : '🟡 Preventa (Buscando mínimo)'}
+                          </p>
+                        </div>
+
+                        <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 space-y-0.5">
+                          <span className="text-[10px] uppercase text-slate-400 block">Estado de tu Reserva</span>
+                          <p className="font-bold">
+                            {esPagada ? (
+                              <span className="text-emerald-300">✅ Pagada y 100% asegurada</span>
+                            ) : esCancelada ? (
+                              <span className="text-rose-400">❌ Cancelada</span>
+                            ) : esExpirada ? (
+                              <span className="text-rose-400">⌛ Plazo expirado</span>
+                            ) : (
+                              <span className="text-amber-300">⏳ Pendiente de abono</span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* BLOQUE INFORMATIVO DE PAGO CON CUENTA ATRÁS SI ESTÁ CONFIRMADO Y PENDIENTE */}
+                      {esPendiente && guisoActual?.estado === 'confirmado' && (
+                        <div className="p-3.5 rounded-xl border border-amber-500/40 bg-amber-950/25 space-y-2 text-center">
+                          <div className="flex justify-center">
+                            <RelojCuentaAtras expiraISO={reservaSeleccionada.expira_pago_at} />
+                          </div>
+
+                          <p className="text-xs text-amber-200/90 leading-relaxed">
+                            ⏳ <strong>Importante:</strong> Tienes hasta las{' '}
+                            <strong>
+                              {formatearHoraLimiteHumana(reservaSeleccionada.expira_pago_at) || 'la hora de corte'}
+                            </strong>{' '}
+                            para abonar tu reserva (Bizum o Tarjeta). Si no se abona antes de esa hora, la reserva y tu mesa se liberarán automáticamente.
+                          </p>
+
+                          <div className="p-2.5 rounded-lg bg-black/50 border border-amber-500/30 text-xs text-slate-200 text-left space-y-1">
+                            <p>
+                              💳 <strong>Bizum:</strong>{' '}
+                              <span className="text-amber-300 font-mono font-bold">
+                                {configPago?.numeroBizum || '624 45 42 42'}
+                              </span>
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              Concepto: GUISO {String(reservaSeleccionada.nombre_cliente).toUpperCase()}
+                            </p>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                            <a
+                              href={waUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs inline-flex items-center gap-1.5 shadow-md cursor-pointer"
+                            >
+                              <span>📲</span>
+                              <span>Enviar Justificante WhatsApp</span>
+                            </a>
+
+                            {configPago?.enlacePago && (
+                              <a
+                                href={configPago.enlacePago}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-bold text-xs inline-flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+                              >
+                                <span>💳</span>
+                                <span>Pagar Online</span>
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* MENSAJE SI YA ESTÁ PAGADA */}
+                      {esPagada && (
+                        <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/40 text-center">
+                          <p className="text-xs text-emerald-300 font-bold">
+                            🎉 ¡Tu plaza y tu mesa están completamente confirmadas! Te esperamos en Café Bar Nexus.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* MENSAJE SI ESTÁ EN PREVENTA (BUSCANDO MÍNIMO) */}
+                      {esPendiente && guisoActual?.estado === 'buscando_minimo' && (
+                        <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-500/40 text-center">
+                          <p className="text-xs text-cyan-200">
+                            🟡 Tu reserva está guardada en preventa. No tienes que pagar nada hasta que alcancemos el mínimo de raciones.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* SECCIÓN DE ACCIONES: CAMBIAR POR OTRO GUISO O CANCELAR */}
+                    {!esCancelada && !esExpirada && (
+                      <div className="space-y-3 pt-2">
+                        {/* BOTONES DE ACCIÓN PRINCIPAL */}
+                        {!modoCambiarGuiso && !confirmandoCancelacion && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <button
+                              type="button"
+                              onClick={() => setModoCambiarGuiso(true)}
+                              className="py-3 px-4 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all"
+                            >
+                              <span>🔄</span>
+                              <span>Cambiar por otro guiso</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => setConfirmandoCancelacion(true)}
+                              className="py-3 px-4 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all"
+                            >
+                              <span>❌</span>
+                              <span>Cancelar mi reserva</span>
+                            </button>
+                          </div>
+                        )}
+
+                        {/* SUB-PANEL: 🔄 CAMBIAR POR OTRO GUISO */}
+                        {modoCambiarGuiso && (
+                          <div className="p-4 rounded-2xl border border-indigo-500/40 bg-indigo-950/20 space-y-3 animate-in fade-in-50">
+                            <div className="flex items-center justify-between border-b border-indigo-500/30 pb-2">
+                              <h4 className="text-xs font-black text-indigo-300 uppercase">
+                                🔄 Selecciona el nuevo guiso al que deseas cambiar:
+                              </h4>
+                              <button
+                                type="button"
+                                onClick={() => setModoCambiarGuiso(false)}
+                                className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+
+                            {otrosGuisosDisponibles.length === 0 ? (
+                              <p className="text-xs text-slate-400 py-2 text-center">
+                                No hay otros guisos disponibles para cambiar en este momento.
+                              </p>
+                            ) : (
+                              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                                {otrosGuisosDisponibles.map((og) => (
+                                  <div
+                                    key={og.id}
+                                    className="p-3 rounded-xl border border-white/10 bg-[#0c0d14] hover:border-indigo-400 flex items-center justify-between gap-3 transition-colors"
+                                  >
+                                    <div className="min-w-0">
+                                      <span className="text-[10px] text-amber-400 font-bold block">
+                                        📅 {formatearFechaHumana(og.fecha)}
+                                      </span>
+                                      <h5 className="text-xs font-bold text-white truncate">
+                                        {og.nombre_plato}
+                                      </h5>
+                                      <span className="text-[10px] text-slate-400">
+                                        {og.estado === 'confirmado' ? '🟢 Confirmado' : '🟡 Preventa'} ·{' '}
+                                        {reservaSeleccionada.modalidad === 'takeaway'
+                                          ? `${Number(og.precio_takeaway).toFixed(2)}€ llevar`
+                                          : `${Number(og.precio_barra).toFixed(2)}€ sala`}
+                                      </span>
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      disabled={procesandoGestion}
+                                      onClick={() => handleCambiarGuiso(og)}
+                                      className="px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-black text-xs cursor-pointer disabled:opacity-50 whitespace-nowrap shadow-sm"
+                                    >
+                                      {procesandoGestion ? 'Cambiando...' : 'Elegir este plato'}
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* SUB-PANEL: ❌ CONFIRMACIÓN DE CANCELACIÓN */}
+                        {confirmandoCancelacion && (
+                          <div className="p-4 rounded-2xl border border-rose-500/50 bg-rose-950/30 space-y-3 text-center animate-in fade-in-50">
+                            <AlertTriangle className="h-8 w-8 text-rose-400 mx-auto" />
+                            <h4 className="text-sm font-black text-white">
+                              ¿Confirmas que deseas cancelar tu reserva?
+                            </h4>
+                            <p className="text-xs text-rose-200/90 leading-relaxed max-w-md mx-auto">
+                              Al cancelar, se liberarán inmediatamente tus{' '}
+                              <strong>{reservaSeleccionada.raciones} raciones</strong> y la mesa reservada en el local, permitiendo que otros clientes puedan ocuparla.
+                            </p>
+
+                            <div className="flex items-center justify-center gap-2.5 pt-1">
+                              <button
+                                type="button"
+                                disabled={procesandoGestion}
+                                onClick={() => setConfirmandoCancelacion(false)}
+                                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer"
+                              >
+                                No, mantener mi reserva
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={procesandoGestion}
+                                onClick={handleCancelarReserva}
+                                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs cursor-pointer shadow-lg disabled:opacity-50"
+                              >
+                                {procesandoGestion ? 'Cancelando...' : 'Sí, confirmar cancelación'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()
             )}
           </div>
         </div>

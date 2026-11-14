@@ -9,7 +9,12 @@ import {
   formatearFechaHumana,
   formatearFechaCorteHumana,
   obtenerConfiguracionPagoGuisos,
-  guardarConfiguracionPagoGuisos,
+  cargarConfiguracionGuisosDB,
+  guardarConfiguracionGuisosDB,
+  calcularExpiraPagoAt,
+  formatearHoraLimiteHumana,
+  limpiarReservasExpiradasEnDB,
+  generarEnlaceGestionCliente,
   dispararEmailGuiso,
   type ConfiguracionPagoGuisos,
   type GuisoProgramado,
@@ -236,6 +241,8 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   const [tempBizum, setTempBizum] = useState<string>(() => configPago.numeroBizum);
   const [tempEnlacePago, setTempEnlacePago] = useState<string>(() => configPago.enlacePago);
   const [tempInstruccionesPago, setTempInstruccionesPago] = useState<string>(() => configPago.instruccionesPago);
+  const [tempHorasPreventa, setTempHorasPreventa] = useState<number>(() => configPago.horas_limite_preventa || 4);
+  const [tempHorasDirecto, setTempHorasDirecto] = useState<number>(() => configPago.horas_limite_directo || 1);
 
   const [enlacePagoConfig, setEnlacePagoConfig] = useState<string>(() => configPago.enlacePago);
 
@@ -339,6 +346,23 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   };
 
   useEffect(() => {
+    // Cargar configuración de pago desde DB y sincronizar con estado
+    cargarConfiguracionGuisosDB().then((cfg) => {
+      setConfigPago(cfg);
+      setEnlacePagoConfig(cfg.enlacePago);
+      setTempTelefonoWA(cfg.telefonoWhatsAppBar);
+      setTempBizum(cfg.numeroBizum);
+      setTempEnlacePago(cfg.enlacePago);
+      setTempInstruccionesPago(cfg.instruccionesPago);
+      setTempHorasPreventa(cfg.horas_limite_preventa);
+      setTempHorasDirecto(cfg.horas_limite_directo);
+    });
+
+    // Limpieza automática de reservas cuyo plazo haya expirado
+    limpiarReservasExpiradasEnDB().catch((err) =>
+      console.warn('Aviso limpiando reservas expiradas en admin:', err)
+    );
+
     cargarGuisosYReservas();
 
     const channel = supabase
@@ -370,11 +394,15 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     const totalGuisos = guisos.length;
     const confirmados = guisos.filter((g) => g.estado === 'confirmado').length;
     const buscando = guisos.filter((g) => g.estado === 'buscando_minimo').length;
-    const totalRaciones = reservas.reduce((acc, r) => acc + Number(r.raciones || 0), 0);
+    // Las reservas expiradas y canceladas NO computan para el total de raciones ni importes
+    const reservasValidas = reservas.filter(
+      (r) => r.estado_pago !== 'expirado' && r.estado_pago !== 'cancelado'
+    );
+    const totalRaciones = reservasValidas.reduce((acc, r) => acc + Number(r.raciones || 0), 0);
     let importePagado = 0;
     let importePendiente = 0;
 
-    for (const r of reservas) {
+    for (const r of reservasValidas) {
       const g = guisos.find((item) => item.id === r.guiso_id);
       if (!g || g.estado === 'cancelado') continue;
       const imp = calcularImporteReserva(g, r.raciones, r.modalidad);
@@ -770,28 +798,75 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         .eq('id', guiso.id);
       if (error) throw error;
 
-      // Disparar envío automático de email con datos de pago a los clientes inscritos
-      const clientesDeEsteGuiso = reservas.filter((r) => r.guiso_id === guiso.id);
+      // Calcular plazo límite de pago con horas_limite_preventa (ej. 4 horas o corte)
+      const expiraISO = calcularExpiraPagoAt(
+        guiso,
+        configPago.horas_limite_preventa || 4,
+        new Date()
+      );
+      const horaLimiteTexto = formatearHoraLimiteHumana(expiraISO);
+
+      // Asignar expira_pago_at a las reservas que estén pendientes
+      await supabase
+        .from('reservas_guisos')
+        .update({ expira_pago_at: expiraISO })
+        .eq('guiso_id', guiso.id)
+        .eq('estado_pago', 'pendiente');
+
+      // Disparar envío automático de email con datos de pago y plazo a los clientes inscritos
+      const clientesDeEsteGuiso = reservas.filter(
+        (r) => r.guiso_id === guiso.id && r.estado_pago !== 'cancelado' && r.estado_pago !== 'expirado'
+      );
       let emailsEnviados = 0;
       for (const res of clientesDeEsteGuiso) {
         if (res.email && res.email.includes('@')) {
           dispararEmailGuiso({
             tipo: 'plato_confirmado_pago',
-            reserva: res,
-            guiso
+            reserva: { ...res, expira_pago_at: expiraISO },
+            guiso,
+            horaLimiteHumana: horaLimiteTexto,
+            enlaceGestion: generarEnlaceGestionCliente(res.id)
           }).catch((e) => console.warn('Error enviando email confirmacion guiso:', e));
           emailsEnviados++;
         }
       }
 
       notificar(
-        `🟢 "${guiso.nombre_plato}" confirmado.${emailsEnviados > 0 ? ` Enviados ${emailsEnviados} emails con instrucciones de pago.` : ''} ¡Ya puedes enviar WhatsApp con un toque!`,
+        `🟢 "${guiso.nombre_plato}" confirmado.${emailsEnviados > 0 ? ` Enviados ${emailsEnviados} avisos con plazo (${horaLimiteTexto}).` : ''} ¡Ya puedes enviar WhatsApp con un toque!`,
         'ok'
       );
       setGuisoDesplegadoId(guiso.id);
       await cargarGuisosYReservas();
     } catch (err: any) {
       notificar('Error al confirmar el guiso: ' + err.message, 'error');
+    }
+  };
+
+  const reactivarReservaMasDosHoras = async (res: ReservaGuiso) => {
+    try {
+      const ahora = new Date();
+      // Si la fecha actual es posterior a expira_pago_at o estaba expirada, sumar 2h desde ahora; si no, 2h desde expira actual
+      const baseDate =
+        res.expira_pago_at && new Date(res.expira_pago_at).getTime() > ahora.getTime()
+          ? new Date(res.expira_pago_at)
+          : ahora;
+      const nuevaFechaMs = baseDate.getTime() + 2 * 3600 * 1000;
+      const nuevoExpiraISO = new Date(nuevaFechaMs).toISOString();
+
+      const { error } = await supabase
+        .from('reservas_guisos')
+        .update({
+          expira_pago_at: nuevoExpiraISO,
+          estado_pago: 'pendiente' // Reactivar si estaba expirada o cancelada
+        })
+        .eq('id', res.id);
+
+      if (error) throw error;
+      const horaHumana = formatearHoraLimiteHumana(nuevoExpiraISO);
+      notificar(`⏱️ Plazo ampliado para ${res.nombre_cliente} hasta las ${horaHumana}.`, 'ok');
+      await cargarGuisosYReservas();
+    } catch (err: any) {
+      notificar('Error ampliando plazo: ' + err.message, 'error');
     }
   };
 
@@ -1044,14 +1119,22 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
 
   const eliminarReservaCliente = async (reserva: ReservaGuiso) => {
     const ok = window.confirm(
-      `¿Eliminar la reserva de ${reserva.nombre_cliente} (${reserva.raciones} raciones)?`
+      `¿Eliminar la reserva de ${reserva.nombre_cliente} (${reserva.raciones} raciones)? Si tenía mesa asignada, también será liberada.`
     );
     if (!ok) return;
 
     try {
+      // Liberar mesa asociada si la hubiera
+      try {
+        await supabase
+          .from('reservas_mesas')
+          .update({ estado: 'cancelada' })
+          .eq('reserva_guiso_id', reserva.id);
+      } catch {}
+
       const { error } = await supabase.from('reservas_guisos').delete().eq('id', reserva.id);
       if (error) throw error;
-      notificar(`Reserva de ${reserva.nombre_cliente} eliminada.`, 'info');
+      notificar(`Reserva de ${reserva.nombre_cliente} eliminada y mesa liberada.`, 'info');
       await cargarGuisosYReservas();
     } catch (err: any) {
       notificar('Error al eliminar reserva: ' + err.message, 'error');
@@ -1743,14 +1826,16 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                     setTempBizum(configPago.numeroBizum);
                     setTempEnlacePago(configPago.enlacePago);
                     setTempInstruccionesPago(configPago.instruccionesPago);
+                    setTempHorasPreventa(configPago.horas_limite_preventa || 4);
+                    setTempHorasDirecto(configPago.horas_limite_directo || 1);
                     setMostrarModalConfigPago(true);
                   }}
                   className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap shadow-sm"
-                  title="Configurar teléfono WhatsApp de cobro, Bizum y enlaces de pago"
+                  title="Configurar plazos de pago, WhatsApp de cobro, Bizum y enlaces de pago"
                 >
                   <span>⚙️ Configurar WhatsApp y Datos de Pago</span>
                   <span className="text-[10px] bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-500/40 text-emerald-200">
-                    Bizum: {configPago.numeroBizum}
+                    Bizum: {configPago.numeroBizum} · Plazo: {configPago.horas_limite_preventa || 4}h/{configPago.horas_limite_directo || 1}h
                   </span>
                 </button>
               </div>
@@ -1764,10 +1849,10 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                     <span className="text-xl">⚙️</span>
                     <div>
                       <h4 className="text-sm font-black text-white">
-                        Configuración de WhatsApp y Datos de Pago
+                        Configuración de Plazos de Pago, WhatsApp y Cobros
                       </h4>
                       <p className="text-[11px] text-slate-400">
-                        Estos datos se inyectan automáticamente en los emails de Resend y en los mensajes redactados de WhatsApp.
+                        Estos límites y datos se guardan en la base de datos (config_guisos) y se aplican automáticamente en emails y WhatsApp.
                       </p>
                     </div>
                   </div>
@@ -1778,6 +1863,83 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                   >
                     ✕
                   </button>
+                </div>
+
+                {/* BLOQUE DESTACADO: LÍMITES CONFIGURABLES DE TIEMPO PARA ABONO */}
+                <div className="bg-amber-950/20 border border-amber-500/40 rounded-xl p-3 space-y-3">
+                  <div className="flex items-center gap-1.5 text-amber-400 font-black text-xs uppercase">
+                    <span>⏱️ Límites de tiempo para abonar la reserva (Expiración automática)</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-amber-300 block mb-1">
+                        ⏱️ Plazo al confirmarse el plato (horas)
+                      </label>
+                      <input
+                        type="number"
+                        min="0.5"
+                        max="72"
+                        step="0.5"
+                        value={tempHorasPreventa}
+                        onChange={(e) => setTempHorasPreventa(parseFloat(e.target.value) || 4)}
+                        className="w-full bg-slate-950 border border-amber-500/50 rounded-xl px-3 py-2 text-white font-mono font-bold focus:border-amber-400 outline-none"
+                      />
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {[1, 2, 4, 6, 12, 24].map((h) => (
+                          <button
+                            key={h}
+                            type="button"
+                            onClick={() => setTempHorasPreventa(h)}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer border ${
+                              tempHorasPreventa === h
+                                ? 'bg-amber-500 text-slate-950 border-amber-400'
+                                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                            }`}
+                          >
+                            {h}h {h === 4 ? '(def)' : ''}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-[10px] text-slate-400 mt-1 block">
+                        Tiempo otorgado al cliente cuando el plato alcanza el mínimo y pasa a confirmado.
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-amber-300 block mb-1">
+                        ⚡ Plazo si el plato YA estaba confirmado (horas)
+                      </label>
+                      <input
+                        type="number"
+                        min="0.5"
+                        max="24"
+                        step="0.5"
+                        value={tempHorasDirecto}
+                        onChange={(e) => setTempHorasDirecto(parseFloat(e.target.value) || 1)}
+                        className="w-full bg-slate-950 border border-amber-500/50 rounded-xl px-3 py-2 text-white font-mono font-bold focus:border-amber-400 outline-none"
+                      />
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {[0.5, 1, 2, 3, 4].map((h) => (
+                          <button
+                            key={h}
+                            type="button"
+                            onClick={() => setTempHorasDirecto(h)}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer border ${
+                              tempHorasDirecto === h
+                                ? 'bg-amber-500 text-slate-950 border-amber-400'
+                                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                            }`}
+                          >
+                            {h}h {h === 1 ? '(def)' : ''}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-[10px] text-slate-400 mt-1 block">
+                        Tiempo que tiene el cliente que reserva a última hora en un guiso ya confirmado.
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
@@ -1850,8 +2012,10 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      const guardado = guardarConfiguracionPagoGuisos({
+                    onClick={async () => {
+                      const guardado = await guardarConfiguracionGuisosDB({
+                        horas_limite_preventa: Number(tempHorasPreventa) || 4,
+                        horas_limite_directo: Number(tempHorasDirecto) || 1,
                         telefonoWhatsAppBar: tempTelefonoWA,
                         numeroBizum: tempBizum,
                         enlacePago: tempEnlacePago,
@@ -1859,7 +2023,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                       });
                       setConfigPago(guardado);
                       setEnlacePagoConfig(guardado.enlacePago);
-                      notificar('⚙️ Configuración de WhatsApp y Datos de Pago guardada.', 'ok');
+                      notificar('⚙️ Configuración de Plazos y Datos de Pago guardada en DB.', 'ok');
                       setMostrarModalConfigPago(false);
                     }}
                     className="px-4 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs cursor-pointer shadow-lg"
@@ -2084,14 +2248,17 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-2.5">
               {guisosFiltrados.map((guiso) => {
                 const listaReservasGuiso = reservasPorGuiso.get(guiso.id) || [];
-                const racionesApuntadas = listaReservasGuiso.reduce(
+                const listaReservasActivas = listaReservasGuiso.filter(
+                  (r) => r.estado_pago !== 'expirado' && r.estado_pago !== 'cancelado'
+                );
+                const racionesApuntadas = listaReservasActivas.reduce(
                   (acc, r) => acc + Number(r.raciones || 0),
                   0
                 );
-                const racionesBarra = listaReservasGuiso
+                const racionesBarra = listaReservasActivas
                   .filter((r) => r.modalidad === 'barra')
                   .reduce((acc, r) => acc + Number(r.raciones || 0), 0);
-                const racionesTakeaway = listaReservasGuiso
+                const racionesTakeaway = listaReservasActivas
                   .filter((r) => r.modalidad === 'takeaway')
                   .reduce((acc, r) => acc + Number(r.raciones || 0), 0);
                 const minReq = Math.max(1, Number(guiso.min_raciones || 1));
@@ -2316,16 +2483,63 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                                       {importeCliente.toFixed(2)}€
                                     </span>
 
+                                    {/* BADGE DE PLAZO / EXPIRACIÓN */}
+                                    {res.estado_pago === 'pagado' ? (
+                                      <span className="px-1.5 py-0.5 rounded font-black text-[9px] uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 whitespace-nowrap">
+                                        ✅ Pagado
+                                      </span>
+                                    ) : res.estado_pago === 'expirado' ? (
+                                      <span className="px-1.5 py-0.5 rounded font-black text-[9px] uppercase bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap">
+                                        ⌛ EXPIRADO
+                                      </span>
+                                    ) : res.estado_pago === 'cancelado' ? (
+                                      <span className="px-1.5 py-0.5 rounded font-black text-[9px] uppercase bg-slate-800 text-slate-400 border border-slate-700 whitespace-nowrap">
+                                        ❌ Cancelada
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded font-black text-[9px] uppercase whitespace-nowrap ${
+                                          res.expira_pago_at &&
+                                          new Date(res.expira_pago_at).getTime() < Date.now()
+                                            ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                        }`}
+                                        title={
+                                          res.expira_pago_at
+                                            ? `Expira: ${res.expira_pago_at}`
+                                            : 'Pendiente de cobro'
+                                        }
+                                      >
+                                        {res.expira_pago_at
+                                          ? new Date(res.expira_pago_at).getTime() < Date.now()
+                                            ? '⌛ EXPIRADO'
+                                            : `⏳ Vence ${formatearHoraLimiteHumana(res.expira_pago_at)}`
+                                          : '⏳ Pendiente'}
+                                      </span>
+                                    )}
+
+                                    {/* BOTÓN +2h (AMPLIAR PLAZO / REACTIVAR) */}
+                                    <button
+                                      type="button"
+                                      onClick={() => reactivarReservaMasDosHoras(res)}
+                                      className="px-1.5 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-bold text-[9px] cursor-pointer whitespace-nowrap"
+                                      title="Ampliar plazo 2 horas o reactivar si estaba expirada"
+                                    >
+                                      🔄 +2h
+                                    </button>
+
+                                    {/* BOTÓN CONMUTAR PAGO */}
                                     <button
                                       type="button"
                                       onClick={() => alternarEstadoPagoReserva(res)}
                                       className={`px-1.5 py-0.5 rounded font-black text-[9px] uppercase cursor-pointer whitespace-nowrap ${
                                         res.estado_pago === 'pagado'
                                           ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                          : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 hover:text-white'
                                       }`}
+                                      title="Alternar entre Pagado y Pendiente"
                                     >
-                                      {res.estado_pago === 'pagado' ? '✅ Pagado' : '⏳ Pend.'}
+                                      {res.estado_pago === 'pagado' ? 'Pendiente' : '✓ Pagado'}
                                     </button>
 
                                     <a

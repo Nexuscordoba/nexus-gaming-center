@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 
 export type EstadoGuiso = 'buscando_minimo' | 'confirmado' | 'cancelado';
 export type ModalidadReservaGuiso = 'barra' | 'takeaway';
-export type EstadoPagoReservaGuiso = 'pendiente' | 'pagado';
+export type EstadoPagoReservaGuiso = 'pendiente' | 'pagado' | 'expirado' | 'cancelado';
 
 export interface GuisoProgramado {
   id: string;
@@ -29,6 +29,7 @@ export interface ReservaGuiso {
   raciones: number;
   modalidad: ModalidadReservaGuiso;
   estado_pago: EstadoPagoReservaGuiso;
+  expira_pago_at?: string | null;
   hora_servicio?: string;
   zona_preferida?: 'interior' | 'terraza';
   comensales?: number;
@@ -62,15 +63,19 @@ export interface ReservaMesa {
 }
 
 export interface ConfiguracionPagoGuisos {
+  horas_limite_preventa: number; // Horas para abonar al confirmarse el guiso (defecto: 4)
+  horas_limite_directo: number;  // Horas para abonar si se reserva en guiso YA confirmado (defecto: 1)
   telefonoWhatsAppBar: string;
   numeroBizum: string;
   enlacePago: string;
   instruccionesPago: string;
 }
 
-const STORAGE_KEY_CONFIG_PAGO = 'nexus_guisos_config_pago';
+const STORAGE_KEY_CONFIG_PAGO = 'nexus_guisos_config_pago_v3';
 
 export const CONFIGURACION_PAGO_DEFAULT: ConfiguracionPagoGuisos = {
+  horas_limite_preventa: 4,
+  horas_limite_directo: 1,
   telefonoWhatsAppBar: '34624454242',
   numeroBizum: '624 45 42 42',
   enlacePago: 'https://www.nexusgamingcenter.es/#guisos',
@@ -83,6 +88,8 @@ export const obtenerConfiguracionPagoGuisos = (): ConfiguracionPagoGuisos => {
     if (!raw) return CONFIGURACION_PAGO_DEFAULT;
     const parsed = JSON.parse(raw);
     return {
+      horas_limite_preventa: Number(parsed.horas_limite_preventa || 4),
+      horas_limite_directo: Number(parsed.horas_limite_directo || 1),
       telefonoWhatsAppBar: parsed.telefonoWhatsAppBar || CONFIGURACION_PAGO_DEFAULT.telefonoWhatsAppBar,
       numeroBizum: parsed.numeroBizum || CONFIGURACION_PAGO_DEFAULT.numeroBizum,
       enlacePago: parsed.enlacePago || CONFIGURACION_PAGO_DEFAULT.enlacePago,
@@ -93,22 +100,190 @@ export const obtenerConfiguracionPagoGuisos = (): ConfiguracionPagoGuisos => {
   }
 };
 
-export const guardarConfiguracionPagoGuisos = (
+/**
+ * Carga la configuración desde Supabase (tabla config_guisos id=1) con fallback a localStorage
+ */
+export const cargarConfiguracionGuisosDB = async (): Promise<ConfiguracionPagoGuisos> => {
+  try {
+    const { data, error } = await supabase
+      .from('config_guisos')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (!error && data) {
+      const config: ConfiguracionPagoGuisos = {
+        horas_limite_preventa: Number(data.horas_limite_preventa ?? 4),
+        horas_limite_directo: Number(data.horas_limite_directo ?? 1),
+        telefonoWhatsAppBar: data.telefono_whatsapp || CONFIGURACION_PAGO_DEFAULT.telefonoWhatsAppBar,
+        numeroBizum: data.numero_bizum || CONFIGURACION_PAGO_DEFAULT.numeroBizum,
+        enlacePago: data.enlace_pago || CONFIGURACION_PAGO_DEFAULT.enlacePago,
+        instruccionesPago: data.instrucciones_pago || CONFIGURACION_PAGO_DEFAULT.instruccionesPago
+      };
+      localStorage.setItem(STORAGE_KEY_CONFIG_PAGO, JSON.stringify(config));
+      return config;
+    }
+  } catch (err) {
+    console.warn('No se pudo leer config_guisos en DB, usando local:', err);
+  }
+  return obtenerConfiguracionPagoGuisos();
+};
+
+/**
+ * Guarda la configuración en Supabase (tabla config_guisos id=1) y en localStorage
+ */
+export const guardarConfiguracionGuisosDB = async (
   nuevaConfig: Partial<ConfiguracionPagoGuisos>
-): ConfiguracionPagoGuisos => {
+): Promise<ConfiguracionPagoGuisos> => {
   const actual = obtenerConfiguracionPagoGuisos();
   const fusionada: ConfiguracionPagoGuisos = {
+    horas_limite_preventa:
+      nuevaConfig.horas_limite_preventa !== undefined
+        ? Number(nuevaConfig.horas_limite_preventa)
+        : actual.horas_limite_preventa,
+    horas_limite_directo:
+      nuevaConfig.horas_limite_directo !== undefined
+        ? Number(nuevaConfig.horas_limite_directo)
+        : actual.horas_limite_directo,
     telefonoWhatsAppBar: nuevaConfig.telefonoWhatsAppBar?.trim() || actual.telefonoWhatsAppBar,
     numeroBizum: nuevaConfig.numeroBizum?.trim() || actual.numeroBizum,
     enlacePago: nuevaConfig.enlacePago?.trim() || actual.enlacePago,
-    instruccionesPago: nuevaConfig.instruccionesPago !== undefined ? nuevaConfig.instruccionesPago.trim() : actual.instruccionesPago
+    instruccionesPago:
+      nuevaConfig.instruccionesPago !== undefined
+        ? nuevaConfig.instruccionesPago.trim()
+        : actual.instruccionesPago
   };
+
   try {
     localStorage.setItem(STORAGE_KEY_CONFIG_PAGO, JSON.stringify(fusionada));
-  } catch {
-    // ignorar quota localstorage
+  } catch {}
+
+  try {
+    await supabase.from('config_guisos').upsert([
+      {
+        id: 1,
+        horas_limite_preventa: fusionada.horas_limite_preventa,
+        horas_limite_directo: fusionada.horas_limite_directo,
+        telefono_whatsapp: fusionada.telefonoWhatsAppBar,
+        numero_bizum: fusionada.numeroBizum,
+        enlace_pago: fusionada.enlacePago,
+        instrucciones_pago: fusionada.instruccionesPago,
+        updated_at: new Date().toISOString()
+      }
+    ]);
+  } catch (err) {
+    console.warn('Error upsert config_guisos:', err);
   }
+
   return fusionada;
+};
+
+// Aliases para compatibilidad
+export const guardarConfiguracionPagoGuisos = guardarConfiguracionGuisosDB;
+
+/**
+ * Genera el enlace de autogestión de reserva para el cliente
+ */
+export const generarEnlaceGestionCliente = (reservaId: string): string => {
+  if (!reservaId) return 'https://www.nexusgamingcenter.es/#guisos';
+  return `https://www.nexusgamingcenter.es/?reserva=${reservaId}#guisos`;
+};
+
+/**
+ * Calcula la fecha/hora exacta en la que expira el pago de una reserva:
+ * LEAST(ahora + X horas, fecha_hora_corte_del_guiso)
+ */
+export const calcularExpiraPagoAt = (
+  guiso: Pick<GuisoProgramado, 'fecha' | 'fecha_corte' | 'hora_corte'>,
+  horasLimite: number = 4,
+  desdeDate: Date = new Date()
+): string => {
+  const limiteMs = desdeDate.getTime() + horasLimite * 3600 * 1000;
+
+  try {
+    const fCorte = obtenerFechaCorteEfectiva(guiso);
+    const hCorte = (guiso.hora_corte || '21:00').trim();
+    const match = hCorte.match(/^(\d{1,2}):(\d{2})/);
+    const hh = match ? match[1].padStart(2, '0') : '21';
+    const mm = match ? match[2].padStart(2, '0') : '00';
+    const corteDate = new Date(`${fCorte}T${hh}:${mm}:00`);
+
+    if (!isNaN(corteDate.getTime())) {
+      const minMs = Math.min(limiteMs, corteDate.getTime());
+      return new Date(minMs).toISOString();
+    }
+  } catch {}
+
+  return new Date(limiteMs).toISOString();
+};
+
+/**
+ * Formatea una fecha ISO en hora humana de expiración (ej: "18:30h de hoy" o "mañana a las 11:00h")
+ */
+export const formatearHoraLimiteHumana = (expiraISO?: string | null): string => {
+  if (!expiraISO) return '';
+  try {
+    const d = new Date(expiraISO);
+    if (isNaN(d.getTime())) return '';
+    const hoy = new Date();
+    const esMismoDia =
+      d.getDate() === hoy.getDate() &&
+      d.getMonth() === hoy.getMonth() &&
+      d.getFullYear() === hoy.getFullYear();
+
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+
+    if (esMismoDia) {
+      return `hoy a las ${hh}:${mm}h`;
+    }
+
+    const diaSem = d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+    return `${diaSem} a las ${hh}:${mm}h`;
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * Ejecuta la limpieza de reservas expiradas en Supabase llamando a la RPC o aplicando fallback
+ */
+export const limpiarReservasExpiradasEnDB = async (): Promise<number> => {
+  try {
+    const { data, error } = await supabase.rpc('limpiar_reservas_guisos_expiradas');
+    if (!error && typeof data === 'number') {
+      return data;
+    }
+  } catch {}
+
+  // Fallback si RPC aún no existiese en DB
+  try {
+    const ahoraISO = new Date().toISOString();
+    const { data: vencidas } = await supabase
+      .from('reservas_guisos')
+      .select('id')
+      .eq('estado_pago', 'pendiente')
+      .not('expira_pago_at', 'is', null)
+      .lt('expira_pago_at', ahoraISO);
+
+    if (vencidas && vencidas.length > 0) {
+      const ids = vencidas.map((v) => v.id);
+      await supabase
+        .from('reservas_guisos')
+        .update({ estado_pago: 'expirado' })
+        .in('id', ids);
+
+      await supabase
+        .from('reservas_mesas')
+        .update({ estado: 'cancelada' })
+        .in('reserva_guiso_id', ids);
+
+      return ids.length;
+    }
+  } catch (err) {
+    console.warn('Aviso limpiando reservas expiradas:', err);
+  }
+  return 0;
 };
 
 export interface ResultadoNotificacionEmail {
@@ -261,7 +436,8 @@ export const generarEnlaceWhatsAppAdminAClienteConfirmacion = (
     reserva.modalidad === 'takeaway' ? 'Para llevar / Takeaway 🛍️' : 'Para tomar en Barra / Sala 🪑';
   const totalImporte = calcularImporteReserva(guiso, reserva.raciones, reserva.modalidad).toFixed(2);
   const enlacePago = (linkPagoPersonalizado || cfg.enlacePago).trim();
-  const fechaCorteTxt = formatearFechaCorteHumana(guiso);
+  const horaLimiteTxt = formatearHoraLimiteHumana(reserva.expira_pago_at);
+  const linkGestion = generarEnlaceGestionCliente(reserva.id);
 
   const mensaje = [
     `¡Hola ${reserva.nombre_cliente}! 👋 Te escribimos desde *Café Bar Nexus* (Chinales 45).`,
@@ -277,9 +453,11 @@ export const generarEnlaceWhatsAppAdminAClienteConfirmacion = (
     `💳 *Instrucciones de Pago / Bizum:*`,
     `• Bizum al: *${cfg.numeroBizum}*`,
     `• Concepto: GUISO ${String(reserva.nombre_cliente).toUpperCase().slice(0, 15)}`,
-    fechaCorteTxt ? `• Límite para abonar: ${fechaCorteTxt}` : '',
+    horaLimiteTxt ? `• ⏳ *Plazo límite:* Tienes hasta *${horaLimiteTxt}* para abonar. Pasada esa hora, la plaza y mesa se liberan automáticamente.` : '',
     cfg.instruccionesPago ? `• ${cfg.instruccionesPago}` : '',
     enlacePago ? `• O abona online: ${enlacePago}` : '',
+    ``,
+    `🔗 Gestionar o cambiar mi reserva: ${linkGestion}`,
     ``,
     `Por favor, responde con el justificante para dejar tu ración 100% asegurada. ¡Muchas gracias y buen provecho! 🥄`
   ].filter(Boolean).join('\n');
@@ -291,7 +469,7 @@ export const generarEnlaceWhatsAppAdminAClienteConfirmacion = (
  * Generador de enlace wa.me para el CLIENTE (Vista Pública #guisos):
  */
 export const generarEnlaceWhatsAppClienteABar = (
-  reserva: Pick<ReservaGuiso, 'nombre_cliente' | 'telefono' | 'raciones' | 'modalidad'>,
+  reserva: Pick<ReservaGuiso, 'id' | 'nombre_cliente' | 'telefono' | 'raciones' | 'modalidad' | 'expira_pago_at'>,
   guiso: GuisoProgramado,
   platoConfirmado: boolean,
   telefonoBarPersonalizado?: string
@@ -302,6 +480,7 @@ export const generarEnlaceWhatsAppClienteABar = (
   const modalidadTexto =
     reserva.modalidad === 'takeaway' ? 'Para llevar / Delivery 🛍️' : 'Para tomar en el bar 🪑';
   const totalImporte = calcularImporteReserva(guiso, reserva.raciones, reserva.modalidad).toFixed(2);
+  const horaLimiteTxt = formatearHoraLimiteHumana(reserva.expira_pago_at);
 
   const mensaje = platoConfirmado
     ? [
@@ -313,9 +492,10 @@ export const generarEnlaceWhatsAppClienteABar = (
         `📞 Teléfono: ${reserva.telefono}`,
         `🥄 Raciones: ${reserva.raciones} (${modalidadTexto})`,
         `💶 Importe total: *${totalImporte} €*`,
+        horaLimiteTxt ? `⏳ Plazo límite informado: ${horaLimiteTxt}` : '',
         ``,
         `Quiero formalizar ahora el abono directo de mi reserva mediante Bizum o justificante. ¡Gracias!`
-      ].join('\n')
+      ].filter(Boolean).join('\n')
     : [
         `¡Hola equipo de Nexus! 👋`,
         `Me acabo de apuntar a la preventa del guiso casero:`,
@@ -384,10 +564,26 @@ export const guardarSuscripcionNewsletterGuisos = async (datos: {
  * 3. 'plato_cancelado_plan_b': Notifica guiso no preparado y ofrece alternativas o carta del bar.
  */
 export const dispararEmailGuiso = async (params: {
-  tipo: 'reserva_en_cola' | 'plato_confirmado_pago' | 'plato_cancelado_plan_b';
-  reserva: Pick<ReservaGuiso, 'nombre_cliente' | 'telefono' | 'email' | 'raciones' | 'modalidad' | 'hora_servicio' | 'zona_preferida'>;
+  tipo:
+    | 'reserva_en_cola'
+    | 'plato_confirmado_pago'
+    | 'plato_cancelado_plan_b'
+    | 'reserva_cancelada'
+    | 'plato_cambiado';
+  reserva: Pick<
+    ReservaGuiso,
+    | 'nombre_cliente'
+    | 'telefono'
+    | 'email'
+    | 'raciones'
+    | 'modalidad'
+    | 'hora_servicio'
+    | 'zona_preferida'
+  > & { id?: string; expira_pago_at?: string | null };
   guiso: GuisoProgramado;
   zonaMesa?: string;
+  horaLimiteHumana?: string;
+  enlaceGestion?: string;
   platosAlternativos?: Array<{ nombre_plato: string }>;
 }): Promise<ResultadoNotificacionEmail> => {
   const { tipo, reserva, guiso, zonaMesa, platosAlternativos } = params;
@@ -411,6 +607,10 @@ export const dispararEmailGuiso = async (params: {
   const fechaTexto = formatearFechaHumana(guiso.fecha);
   const totalImporte = calcularImporteReserva(guiso, reserva.raciones, reserva.modalidad);
   const fechaCorteHumana = formatearFechaCorteHumana(guiso);
+  const horaLimiteHumana =
+    params.horaLimiteHumana || formatearHoraLimiteHumana((reserva as any).expira_pago_at);
+  const enlaceGestion =
+    params.enlaceGestion || ((reserva as any).id ? generarEnlaceGestionCliente((reserva as any).id) : '');
 
   try {
     const res = await fetch(RESEND_ENDPOINT_GUISOS, {
@@ -437,6 +637,8 @@ export const dispararEmailGuiso = async (params: {
         enlacePago: cfg.enlacePago,
         instruccionesPago: cfg.instruccionesPago,
         fechaCorteHumana,
+        horaLimiteHumana,
+        enlaceGestion,
         telefonoWhatsAppBar: cfg.telefonoWhatsAppBar,
         platosAlternativos: platosAlternativos || []
       })

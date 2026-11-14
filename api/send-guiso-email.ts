@@ -29,7 +29,7 @@ export default async function handler(req: any, res: any) {
   }
 
   const {
-    tipo = 'reserva_en_cola', // 'reserva_en_cola' | 'plato_confirmado_pago' | 'plato_cancelado_plan_b'
+    tipo = 'reserva_en_cola', // 'reserva_en_cola' | 'plato_confirmado_pago' | 'plato_cancelado_plan_b' | 'reserva_cancelada' | 'plato_cambiado'
     email,
     nombre,
     telefono,
@@ -45,6 +45,8 @@ export default async function handler(req: any, res: any) {
     enlacePago = 'https://www.nexusgamingcenter.es/#guisos',
     instruccionesPago = '',
     fechaCorteHumana = '',
+    horaLimiteHumana = '',
+    enlaceGestion = '',
     telefonoWhatsAppBar = '34624454242',
     platosAlternativos = []
   } = req.body || {};
@@ -140,7 +142,7 @@ export default async function handler(req: any, res: any) {
           </div>
 
           <p style="font-size: 12px; color: #94a3b8; line-height: 1.6; margin: 20px 0 0 0;">
-            Si necesitas modificar o cancelar tus raciones antes del corte, puedes escribirnos por WhatsApp al <a href="https://wa.me/${waNumeroLimpio}" style="color: #38bdf8; text-decoration: underline;">${waNumeroLimpio}</a>.
+            Si necesitas modificar o cancelar tus raciones antes del corte, puedes gestionarlo directamente desde <a href="${enlaceGestion || 'https://www.nexusgamingcenter.es/#guisos'}" style="color: #38bdf8; text-decoration: underline;">tu enlace personal de reserva</a> o escribirnos por WhatsApp al <a href="https://wa.me/${waNumeroLimpio}" style="color: #38bdf8; text-decoration: underline;">${waNumeroLimpio}</a>.
           </p>
         </div>
 
@@ -165,6 +167,9 @@ export default async function handler(req: any, res: any) {
       ``,
       `Buenas noticias: el guiso "${plato}" para el ${fechaTexto} ya ha alcanzado el mínimo requerido y está oficialmente confirmado en nuestros fogones.`,
       ``,
+      horaLimiteHumana
+        ? `IMPORTANTE - PLAZO LÍMITE: Tienes hasta las ${horaLimiteHumana} para abonar tu reserva (Bizum o Tarjeta). Si no se abona antes de esa hora, la reserva y tu mesa se liberarán automáticamente.\n`
+        : '',
       `Resumen de tu reserva:`,
       `- Plato: ${plato}`,
       `- Día: ${fechaTexto}`,
@@ -176,11 +181,12 @@ export default async function handler(req: any, res: any) {
       `Instrucciones de Pago:`,
       `- Bizum al teléfono: ${numeroBizum}`,
       `- Concepto: GUISO ${String(nombre).toUpperCase().slice(0, 15)}`,
-      fechaCorteHumana ? `- Fecha límite de abono: ${fechaCorteHumana}` : '',
+      horaLimiteHumana ? `- Plazo para abonar: Hasta las ${horaLimiteHumana}` : (fechaCorteHumana ? `- Fecha límite: ${fechaCorteHumana}` : ''),
       instruccionesPago ? `- ${instruccionesPago}` : '',
       enlacePago ? `- O paga online con tarjeta: ${enlacePago}` : '',
       ``,
       `Por favor, envía tu justificante por WhatsApp al teléfono ${waNumeroLimpio} para dejar tu ración 100% asegurada.`,
+      enlaceGestion ? `\nPara cambiar de guiso o cancelar tu reserva: ${enlaceGestion}` : '',
       ``,
       `Café Bar Nexus · Polígono Chinales 45, Córdoba`,
       `https://www.nexusgamingcenter.es/#guisos`
@@ -198,6 +204,18 @@ export default async function handler(req: any, res: any) {
           <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6; margin: 0 0 18px 0;">
             El guiso <strong>${plato}</strong> para el <strong>${fechaTexto}</strong> ya ha alcanzado el mínimo requerido y está <strong>confirmado en cocina</strong>.
           </p>
+
+          <!-- AVISO DE PLAZO LÍMITE DE PAGO -->
+          ${horaLimiteHumana ? `
+            <div style="background-color: #3b1405; border: 1.5px solid #f59e0b; border-radius: 14px; padding: 16px; margin: 18px 0; text-align: center;">
+              <p style="color: #fde68a; font-size: 14px; font-weight: 900; margin: 0 0 6px 0;">
+                ⏳ PLAZO DE PAGO: HASTA LAS ${horaLimiteHumana.toUpperCase()}
+              </p>
+              <p style="color: #fed7aa; font-size: 12px; margin: 0; line-height: 1.5;">
+                Tienes hasta las <strong>${horaLimiteHumana}</strong> para abonar tu reserva. Pasada esa hora, la reserva y tu mesa se liberarán automáticamente.
+              </p>
+            </div>
+          ` : ''}
 
           <!-- CAJA DESTACADA DE PAGO -->
           <div style="background: linear-gradient(145deg, #062817 0%, #081a12 100%); border: 1.5px solid #10b981; border-radius: 16px; padding: 22px; margin: 22px 0; box-shadow: 0 10px 25px rgba(16, 185, 129, 0.15);">
@@ -243,6 +261,14 @@ export default async function handler(req: any, res: any) {
           <p style="font-size: 12px; color: #94a3b8; line-height: 1.5; margin: 16px 0 0 0;">
             * Tu ración quedará 100% asegurada una vez recibido el abono o justificante antes de la hora de corte.
           </p>
+
+          ${enlaceGestion ? `
+            <div style="text-align: center; margin-top: 18px; padding-top: 14px; border-top: 1px dashed #334155;">
+              <a href="${enlaceGestion}" style="color: #38bdf8; font-size: 12px; font-weight: bold; text-decoration: underline;">
+                🔍 Gestionar mi reserva o cambiar de plato
+              </a>
+            </div>
+          ` : ''}
         </div>
 
         <div style="border-top: 1px solid #1e293b; padding-top: 18px; text-align: center;">
@@ -316,6 +342,130 @@ export default async function handler(req: any, res: any) {
           <p style="font-size: 13px; color: #94a3b8; line-height: 1.6; margin: 16px 0 0 0;">
             ¡Muchas gracias por tu confianza y esperamos verte pronto por Chinales 45!
           </p>
+        </div>
+
+        <div style="border-top: 1px solid #1e293b; padding-top: 18px; text-align: center;">
+          <p style="color: #64748b; font-size: 11px; margin: 0;">Café Bar Nexus · Chinales 45, Córdoba · <a href="https://www.nexusgamingcenter.es/#guisos" style="color: #38bdf8;">nexusgamingcenter.es/#guisos</a></p>
+        </div>
+      </div>
+    `;
+  }
+
+  // 4. RESERVA CANCELADA
+  else if (tipo === 'reserva_cancelada') {
+    asunto = `Confirmación de cancelación de reserva: ${plato} - Nexus`;
+
+    textContent = [
+      `Hola ${nombre},`,
+      ``,
+      `Te confirmamos que tu reserva para el guiso "${plato}" (${fechaTexto}) de ${raciones} ${raciones === 1 ? 'ración' : 'raciones'} ha sido cancelada correctamente.`,
+      ``,
+      `Tanto tus raciones como tu mesa asignada han quedado liberadas en el sistema.`,
+      ``,
+      `Si deseas volver a reservar en cualquier momento u optar por otro plato de la semana, puedes hacerlo desde nuestra web:`,
+      `https://www.nexusgamingcenter.es/#guisos`,
+      ``,
+      `O contactar directamente con nosotros por WhatsApp: ${waNumeroLimpio}.`,
+      ``,
+      `¡Esperamos recibirte pronto!`,
+      `Café Bar Nexus · Polígono Chinales 45, Córdoba`
+    ].filter(Boolean).join('\n');
+
+    htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #050609; color: #f1f5f9; padding: 32px 20px; max-width: 600px; margin: 0 auto; border-radius: 20px; border: 1px solid #475569;">
+        <div style="text-align: center; border-bottom: 1px solid #1e293b; padding-bottom: 20px;">
+          <h1 style="color: #94a3b8; margin: 0; font-size: 20px; font-weight: 900;">CAFÉ BAR NEXUS</h1>
+          <p style="color: #64748b; font-size: 12px; margin: 4px 0 0 0;">Gestión de Reservas de Guisos Caseros</p>
+        </div>
+
+        <div style="padding: 24px 0;">
+          <p style="font-size: 16px; margin: 0 0 12px 0;">Hola <strong>${nombre}</strong>,</p>
+          <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6; margin: 0 0 16px 0;">
+            Te confirmamos que tu reserva de <strong>${raciones} ${raciones === 1 ? 'ración' : 'raciones'}</strong> para el plato <strong>${plato}</strong> (${fechaTexto}) ha sido cancelada satisfactoriamente.
+          </p>
+
+          <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 14px; padding: 18px; margin: 18px 0;">
+            <p style="font-size: 13px; color: #94a3b8; margin: 0; line-height: 1.5;">
+              Tus plazas y tu mesa han quedado liberadas. No tienes ningún compromiso ni cargo pendiente.
+            </p>
+          </div>
+
+          <div style="text-align: center; margin: 24px 0;">
+            <a href="https://www.nexusgamingcenter.es/#guisos" style="display: inline-block; background-color: #f59e0b; color: #020617; font-weight: 900; font-size: 13px; padding: 12px 24px; border-radius: 12px; text-decoration: none;">
+              Ver Guisos Disponibles
+            </a>
+          </div>
+        </div>
+
+        <div style="border-top: 1px solid #1e293b; padding-top: 18px; text-align: center;">
+          <p style="color: #64748b; font-size: 11px; margin: 0;">Café Bar Nexus · Chinales 45, Córdoba · <a href="https://www.nexusgamingcenter.es/#guisos" style="color: #38bdf8;">nexusgamingcenter.es/#guisos</a></p>
+        </div>
+      </div>
+    `;
+  }
+
+  // 5. GUISO CAMBIADO POR EL CLIENTE
+  else if (tipo === 'plato_cambiado') {
+    asunto = `Actualización de reserva: Nuevo plato ${plato} - Nexus`;
+
+    textContent = [
+      `Hola ${nombre},`,
+      ``,
+      `Hemos actualizado tu reserva. Tu nuevo plato asignado es: ${plato} (${fechaTexto}).`,
+      ``,
+      `- Raciones: ${raciones} (${modalidadTexto})`,
+      horaServicio ? `- Hora prevista: ${horaServicio}` : '',
+      zonaMesa ? `- Mesa / Ubicación: ${zonaMesa}` : '',
+      `- Total importe: ${importeFormateado} €`,
+      ``,
+      horaLimiteHumana ? `Plazo para abonar: Hasta las ${horaLimiteHumana}\n` : '',
+      `Puedes consultar y gestionar tu reserva siempre que quieras en:`,
+      `${enlaceGestion || 'https://www.nexusgamingcenter.es/#guisos'}`,
+      ``,
+      `Café Bar Nexus · Polígono Chinales 45, Córdoba`
+    ].filter(Boolean).join('\n');
+
+    htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #050609; color: #f1f5f9; padding: 32px 20px; max-width: 600px; margin: 0 auto; border-radius: 20px; border: 1px solid #0284c7;">
+        <div style="text-align: center; border-bottom: 1px solid #1e293b; padding-bottom: 20px;">
+          <h1 style="color: #38bdf8; margin: 0; font-size: 20px; font-weight: 900;">CAFÉ BAR NEXUS</h1>
+          <p style="color: #94a3b8; font-size: 12px; margin: 4px 0 0 0;">Tu reserva ha sido cambiada con éxito</p>
+        </div>
+
+        <div style="padding: 24px 0;">
+          <p style="font-size: 16px; margin: 0 0 12px 0;">Hola <strong>${nombre}</strong>,</p>
+          <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6; margin: 0 0 16px 0;">
+            Hemos registrado tu cambio de plato. Ahora disfrutarás de: <strong>${plato}</strong>.
+          </p>
+
+          <div style="background-color: #0b0e17; border: 1px solid #334155; border-radius: 14px; padding: 18px; margin: 18px 0;">
+            <table style="width: 100%; font-size: 13px; color: #e2e8f0; line-height: 1.9;">
+              <tr><td style="color: #94a3b8; width: 42%;">Nuevo plato:</td><td><strong style="color: #38bdf8;">${plato}</strong></td></tr>
+              <tr><td style="color: #94a3b8;">Día de servicio:</td><td><strong>${fechaTexto}</strong></td></tr>
+              ${horaServicio ? `<tr><td style="color: #94a3b8;">Hora prevista:</td><td><strong>${horaServicio}</strong></td></tr>` : ''}
+              <tr><td style="color: #94a3b8;">Raciones:</td><td><strong>${raciones}</strong></td></tr>
+              <tr><td style="color: #94a3b8;">Modalidad:</td><td><strong>${modalidadTexto}</strong></td></tr>
+              ${zonaMesa ? `<tr><td style="color: #94a3b8;">Ubicación:</td><td><strong>${zonaMesa}</strong></td></tr>` : ''}
+              <tr style="border-top: 1px solid #1e293b;">
+                <td style="color: #38bdf8; padding-top: 10px; font-weight: bold;">Importe total:</td>
+                <td style="color: #38bdf8; padding-top: 10px; font-size: 16px; font-weight: 900;">${importeFormateado} €</td>
+              </tr>
+            </table>
+          </div>
+
+          ${horaLimiteHumana ? `
+            <div style="background-color: #451a03; border: 1px solid #f59e0b; border-radius: 12px; padding: 14px; margin: 16px 0; text-align: center;">
+              <p style="color: #fde68a; font-size: 13px; font-weight: bold; margin: 0;">
+                ⏳ Plazo para abonar: Tienes hasta las ${horaLimiteHumana}
+              </p>
+            </div>
+          ` : ''}
+
+          <div style="text-align: center; margin: 22px 0;">
+            <a href="${enlaceGestion || 'https://www.nexusgamingcenter.es/#guisos'}" style="display: inline-block; background-color: #0284c7; color: #ffffff; font-weight: 900; font-size: 13px; padding: 12px 24px; border-radius: 12px; text-decoration: none;">
+              Gestionar mi Reserva
+            </a>
+          </div>
         </div>
 
         <div style="border-top: 1px solid #1e293b; padding-top: 18px; text-align: center;">

@@ -158,8 +158,11 @@ export default function BarDisplay() {
       const guisosHoy = (resGuisos.data as GuisoProgramado[] || []).filter(
         (g) => g.fecha === hoyISO && g.estado === 'confirmado'
       );
-      const reservasHoy = (resReservas.data as ReservaGuiso[] || []).filter((r) =>
-        guisosHoy.some((g) => g.id === r.guiso_id)
+      const reservasHoy = (resReservas.data as ReservaGuiso[] || []).filter(
+        (r) =>
+          guisosHoy.some((g) => g.id === r.guiso_id) &&
+          r.estado_pago !== 'expirado' &&
+          r.estado_pago !== 'cancelado'
       );
 
       const mapaMesas = new Map<string, MesaLocal>();
