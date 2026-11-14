@@ -55,31 +55,57 @@ export default async function handler(req: any, res: any) {
   }
 
   const emailEmpresa = process.env.NEXUS_ALERT_EMAIL || 'nexuscordoba26@gmail.com';
+  // Remitente verificado en Resend para máxima reputación y entregabilidad a bandeja de entrada
   const remitente =
-    process.env.RESEND_FROM_EMAIL || 'Nexus Guisos <reservas@nexusgamingcenter.es>';
+    process.env.RESEND_FROM_EMAIL || 'Nexus Centro <reservas@nexusgamingcenter.es>';
 
   const modalidadTexto =
-    modalidad === 'takeaway' ? '🛍️ Para llevar / Takeaway' : '🪑 Comer en el local (Sala/Terraza)';
+    modalidad === 'takeaway' ? 'Para llevar / Takeaway' : 'En el local (Sala/Terraza)';
   const fechaTexto = fechaHumana || fecha || 'próximamente';
   const importeFormateado = Number(totalImporte || 0).toFixed(2);
   const waNumeroLimpio = String(telefonoWhatsAppBar || '').replace(/\D+/g, '') || '34624454242';
 
   let asunto = '';
   let htmlContent = '';
+  let textContent = '';
 
   // 1. RESERVA EN COLA (BUSCANDO MÍNIMO)
   if (tipo === 'reserva_en_cola') {
-    asunto = `🍲 Reserva Registrada: ${plato} (${fechaTexto}) · Café Bar Nexus`;
+    asunto = `Reserva registrada en Nexus: ${plato} (${fechaTexto})`;
+
+    textContent = [
+      `Hola ${nombre},`,
+      ``,
+      `Hemos registrado tu reserva para el guiso casero: ${plato}.`,
+      `Tu plaza ha quedado guardada en nuestra preventa.`,
+      ``,
+      `IMPORTANTE - FASE DE PREVENTA: NO DEBES PAGAR NADA TODAVÍA.`,
+      `Este plato necesita alcanzar un mínimo de raciones para encender los fogones. En cuanto alcancemos el objetivo te enviaremos la confirmación definitiva con los datos de abono.`,
+      ``,
+      `Detalles de tu reserva:`,
+      `- Plato: ${plato}`,
+      `- Día de servicio: ${fechaTexto}`,
+      horaServicio ? `- Hora prevista: ${horaServicio}` : '',
+      `- Raciones: ${raciones}`,
+      `- Modalidad: ${modalidadTexto}`,
+      zonaMesa ? `- Ubicación: ${zonaMesa}` : '',
+      `- Importe previsto al confirmar: ${importeFormateado} €`,
+      ``,
+      `Si necesitas consultar o modificar tu reserva, puedes escribirnos por WhatsApp al ${waNumeroLimpio}.`,
+      ``,
+      `Café Bar Nexus · Polígono Chinales 45, Córdoba`,
+      `https://www.nexusgamingcenter.es/#guisos`
+    ].filter(Boolean).join('\n');
+
     htmlContent = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #050609; color: #f1f5f9; padding: 32px 20px; max-width: 600px; margin: 0 auto; border-radius: 20px; border: 1px solid #1e293b;">
         <div style="text-align: center; border-bottom: 1px solid #1e293b; padding-bottom: 20px;">
-          <span style="font-size: 32px;">🍲</span>
-          <h1 style="color: #00f2fe; margin: 6px 0 0 0; font-size: 22px; font-weight: 900; letter-spacing: 0.5px;">CAFÉ BAR NEXUS</h1>
+          <h1 style="color: #00f2fe; margin: 0; font-size: 22px; font-weight: 900; letter-spacing: 0.5px;">CAFÉ BAR NEXUS</h1>
           <p style="color: #94a3b8; font-size: 12px; margin: 4px 0 0 0;">Polígono Chinales 45, Córdoba · Guisos Caseros Bajo Demanda</p>
         </div>
 
         <div style="padding: 24px 0;">
-          <p style="font-size: 16px; margin: 0 0 12px 0;">Hola <strong>${nombre}</strong> 👋,</p>
+          <p style="font-size: 16px; margin: 0 0 12px 0;">Hola <strong>${nombre}</strong>,</p>
           <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6; margin: 0 0 18px 0;">
             Hemos registrado tu reserva para el guiso del día. Tu plaza está guardada en nuestra preventa.
           </p>
@@ -87,7 +113,7 @@ export default async function handler(req: any, res: any) {
           <!-- AVISO IMPORTANTE: NO PAGAR AÚN -->
           <div style="background-color: #1e1b4b; border: 1px solid #6366f1; border-radius: 14px; padding: 16px; margin: 18px 0;">
             <p style="color: #a5b4fc; font-size: 13px; font-weight: bold; margin: 0 0 4px 0;">
-              ⏳ FASE DE PREVENTA: NO DEBES PAGAR NADA TODAVÍA
+              Fase de Preventa: No debes pagar nada todavía
             </p>
             <p style="color: #e0e7ff; font-size: 13px; line-height: 1.5; margin: 0;">
               Este guiso necesita alcanzar un mínimo de raciones para encender los fogones. En cuanto alcancemos el objetivo te enviaremos un correo y WhatsApp con la confirmación y los datos de abono.
@@ -114,7 +140,7 @@ export default async function handler(req: any, res: any) {
           </div>
 
           <p style="font-size: 12px; color: #94a3b8; line-height: 1.6; margin: 20px 0 0 0;">
-            Si necesitas modificar o cancelar tus raciones antes del corte, puedes avisarnos por WhatsApp al <a href="https://wa.me/${waNumeroLimpio}" style="color: #38bdf8; text-decoration: underline;">${waNumeroLimpio}</a>.
+            Si necesitas modificar o cancelar tus raciones antes del corte, puedes escribirnos por WhatsApp al <a href="https://wa.me/${waNumeroLimpio}" style="color: #38bdf8; text-decoration: underline;">${waNumeroLimpio}</a>.
           </p>
         </div>
 
@@ -127,24 +153,50 @@ export default async function handler(req: any, res: any) {
 
   // 2. PLATO CONFIRMADO (SOLICITUD DE PAGO / ABONO)
   else if (tipo === 'plato_confirmado_pago') {
-    asunto = `🟢 ¡Fogones Confirmados! Abono de tu reserva: ${plato} (${fechaTexto}) · Café Bar Nexus`;
+    asunto = `Confirmacion de plato y datos de abono: ${plato} - Nexus`;
+
     const waMensajeJustificante = encodeURIComponent(
-      `¡Hola equipo de Nexus! 👋 Envío el justificante de pago para mi reserva del guiso "${plato}" (${fechaTexto}) a nombre de ${nombre} (${raciones} raciones · ${importeFormateado} €).`
+      `Hola equipo de Nexus. Envío el justificante de pago para mi reserva del guiso "${plato}" (${fechaTexto}) a nombre de ${nombre} (${raciones} raciones · ${importeFormateado} €).`
     );
     const linkWhatsAppJustificante = `https://wa.me/${waNumeroLimpio}?text=${waMensajeJustificante}`;
+
+    textContent = [
+      `Hola ${nombre},`,
+      ``,
+      `Buenas noticias: el guiso "${plato}" para el ${fechaTexto} ya ha alcanzado el mínimo requerido y está oficialmente confirmado en nuestros fogones.`,
+      ``,
+      `Resumen de tu reserva:`,
+      `- Plato: ${plato}`,
+      `- Día: ${fechaTexto}`,
+      horaServicio ? `- Hora: ${horaServicio}` : '',
+      `- Raciones: ${raciones} (${modalidadTexto})`,
+      zonaMesa ? `- Mesa / Destino: ${zonaMesa}` : '',
+      `- TOTAL A ABONAR: ${importeFormateado} €`,
+      ``,
+      `Instrucciones de Pago:`,
+      `- Bizum al teléfono: ${numeroBizum}`,
+      `- Concepto: GUISO ${String(nombre).toUpperCase().slice(0, 15)}`,
+      fechaCorteHumana ? `- Fecha límite de abono: ${fechaCorteHumana}` : '',
+      instruccionesPago ? `- ${instruccionesPago}` : '',
+      enlacePago ? `- O paga online con tarjeta: ${enlacePago}` : '',
+      ``,
+      `Por favor, envía tu justificante por WhatsApp al teléfono ${waNumeroLimpio} para dejar tu ración 100% asegurada.`,
+      ``,
+      `Café Bar Nexus · Polígono Chinales 45, Córdoba`,
+      `https://www.nexusgamingcenter.es/#guisos`
+    ].filter(Boolean).join('\n');
 
     htmlContent = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #050609; color: #f1f5f9; padding: 32px 20px; max-width: 600px; margin: 0 auto; border-radius: 20px; border: 1px solid #10b981;">
         <div style="text-align: center; border-bottom: 1px solid #1e293b; padding-bottom: 20px;">
-          <span style="font-size: 36px;">🔥🍲</span>
-          <h1 style="color: #10b981; margin: 6px 0 0 0; font-size: 22px; font-weight: 900; letter-spacing: 0.5px;">¡FOGONES CONFIRMADOS!</h1>
+          <h1 style="color: #10b981; margin: 0; font-size: 22px; font-weight: 900; letter-spacing: 0.5px;">FOGONES CONFIRMADOS</h1>
           <p style="color: #cbd5e1; font-size: 13px; margin: 4px 0 0 0;">Café Bar Nexus · Chinales 45, Córdoba</p>
         </div>
 
         <div style="padding: 24px 0;">
-          <p style="font-size: 16px; margin: 0 0 12px 0;">¡Buenas noticias, <strong>${nombre}</strong>! 🎉</p>
+          <p style="font-size: 16px; margin: 0 0 12px 0;">Buenas noticias, <strong>${nombre}</strong>,</p>
           <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6; margin: 0 0 18px 0;">
-            El guiso <strong>${plato}</strong> para el <strong>${fechaTexto}</strong> ya ha alcanzado el mínimo requerido y está <strong>oficialmente confirmado</strong> en nuestra cocina.
+            El guiso <strong>${plato}</strong> para el <strong>${fechaTexto}</strong> ya ha alcanzado el mínimo requerido y está <strong>confirmado en cocina</strong>.
           </p>
 
           <!-- CAJA DESTACADA DE PAGO -->
@@ -156,7 +208,7 @@ export default async function handler(req: any, res: any) {
             </div>
 
             <div style="background-color: rgba(0, 0, 0, 0.4); border-radius: 12px; padding: 14px; margin-bottom: 16px; font-size: 13px; line-height: 1.6;">
-              <p style="margin: 0 0 8px 0; color: #f1f5f9;"><strong>Instrucciones de Abono:</strong></p>
+              <p style="margin: 0 0 8px 0; color: #f1f5f9;"><strong>Instrucciones de Pago:</strong></p>
               <ul style="margin: 0; padding-left: 20px; color: #e2e8f0;">
                 <li><strong>Bizum al teléfono:</strong> <span style="color: #34d399; font-weight: 900; font-size: 15px;">${numeroBizum}</span></li>
                 <li><strong>Concepto:</strong> <span style="font-family: monospace; color: #a7f3d0;">GUISO ${String(nombre).toUpperCase().slice(0, 15)}</span></li>
@@ -168,7 +220,7 @@ export default async function handler(req: any, res: any) {
             <!-- BOTÓN WHATSAPP JUSTIFICANTE -->
             <div style="text-align: center; margin-top: 14px;">
               <a href="${linkWhatsAppJustificante}" style="display: inline-block; background-color: #25D366; color: #042f1a; font-weight: 900; font-size: 13px; padding: 12px 24px; border-radius: 12px; text-decoration: none; box-shadow: 0 4px 15px rgba(37, 211, 102, 0.4);">
-                📲 Enviar Justificante por WhatsApp
+                Enviar Justificante por WhatsApp
               </a>
               ${enlacePago ? `
                 <div style="margin-top: 10px;">
@@ -202,7 +254,24 @@ export default async function handler(req: any, res: any) {
 
   // 3. PLATO CANCELADO (PLAN B INTELIGENTE)
   else if (tipo === 'plato_cancelado_plan_b') {
-    asunto = `🍲 Actualización del Guiso: ${plato} (${fechaTexto}) · Café Bar Nexus`;
+    asunto = `Actualizacion sobre tu reserva de guiso: ${plato} - Nexus`;
+
+    textContent = [
+      `Hola ${nombre},`,
+      ``,
+      `Te escribimos para avisarte de que el guiso "${plato}" previsto para el ${fechaTexto} no ha alcanzado el mínimo de raciones necesario para cocinarlo en esta ocasión, por lo que hemos tenido que suspender su preparación.`,
+      ``,
+      Array.isArray(platosAlternativos) && platosAlternativos.length > 0
+        ? `Otros guisos confirmados para esa fecha:\n${platosAlternativos.map((p: any) => `- ${p.nombre_plato || p}`).join('\n')}\n`
+        : '',
+      `Te esperamos igualmente en Café Bar Nexus con nuestra carta habitual de raciones, bocadillos y tapas en sala y terraza:`,
+      `https://www.nexusgamingcenter.es/#bar`,
+      ``,
+      `Muchas gracias por tu confianza y comprensión.`,
+      ``,
+      `Café Bar Nexus · Polígono Chinales 45, Córdoba`
+    ].filter(Boolean).join('\n');
+
     const alternativosHtml = Array.isArray(platosAlternativos) && platosAlternativos.length > 0
       ? `
         <div style="background-color: #0b0e17; border: 1px solid #334155; border-radius: 14px; padding: 18px; margin: 18px 0;">
@@ -219,8 +288,7 @@ export default async function handler(req: any, res: any) {
     htmlContent = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #050609; color: #f1f5f9; padding: 32px 20px; max-width: 600px; margin: 0 auto; border-radius: 20px; border: 1px solid #f43f5e;">
         <div style="text-align: center; border-bottom: 1px solid #1e293b; padding-bottom: 20px;">
-          <span style="font-size: 32px;">🍲</span>
-          <h1 style="color: #fb7185; margin: 6px 0 0 0; font-size: 20px; font-weight: 900;">CAFÉ BAR NEXUS</h1>
+          <h1 style="color: #fb7185; margin: 0; font-size: 20px; font-weight: 900;">CAFÉ BAR NEXUS</h1>
           <p style="color: #94a3b8; font-size: 12px; margin: 4px 0 0 0;">Actualización de Guisos Bajo Demanda</p>
         </div>
 
@@ -241,7 +309,7 @@ export default async function handler(req: any, res: any) {
               Nuestras tapas caseras, bocadillos especiales, hamburguesas y raciones están listas para ti en sala y terraza.
             </p>
             <a href="https://www.nexusgamingcenter.es/#bar" style="display: inline-block; background-color: #00f2fe; color: #020617; font-weight: 900; font-size: 13px; padding: 12px 24px; border-radius: 12px; text-decoration: none;">
-              🍔 Ver Carta Completa de Café Bar
+              Ver Carta Completa de Café Bar
             </a>
           </div>
 
@@ -263,7 +331,8 @@ export default async function handler(req: any, res: any) {
       to: [emailDestino],
       replyTo: emailEmpresa,
       subject: asunto,
-      html: htmlContent
+      html: htmlContent,
+      text: textContent
     });
 
     return res.status(200).json({ ok: true, id: (data as any)?.id, tipo, email: emailDestino });

@@ -115,11 +115,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   const [nombreCliente, setNombreCliente] = useState<string>('');
   const [telefonoCliente, setTelefonoCliente] = useState<string>('');
   const [emailCliente, setEmailCliente] = useState<string>('');
-  const [racionesReserva, setRacionesReserva] = useState<number>(2);
+  const [racionesReserva, setRacionesReserva] = useState<number>(1);
   const [modalidadReserva, setModalidadReserva] = useState<ModalidadReservaGuiso>('barra');
   const [horaServicio, setHoraServicio] = useState<string>('14:00');
   const [zonaPreferida, setZonaPreferida] = useState<'interior' | 'terraza'>('interior');
-  const [comensalesMesa, setComensalesMesa] = useState<number>(2);
+  const [comensalesMesa, setComensalesMesa] = useState<number>(1);
   const [enviandoReserva, setEnviandoReserva] = useState<boolean>(false);
   const [errorReserva, setErrorReserva] = useState<string | null>(null);
 
@@ -273,8 +273,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     setGuisoActivoModal(guiso);
     setReservaCompletada(null);
     setErrorReserva(null);
-    setRacionesReserva(2);
-    setComensalesMesa(2);
+    setRacionesReserva(1);
+    setComensalesMesa(1);
     setHoraServicio('14:00');
     setZonaPreferida('interior');
     setModalidadReserva('barra');
@@ -1068,11 +1068,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       {/* ================= MODAL DE RESERVA SIN FRICCIÓN Y LÓGICA HÍBRIDA ================= */}
       {guisoActivoModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto"
+          className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto"
           onClick={cerrarModalReserva}
         >
           <div
-            className="w-full max-w-lg rounded-3xl border border-amber-500/40 bg-[#0c0d14] p-6 sm:p-8 shadow-2xl space-y-5 my-8"
+            className="w-full max-w-lg rounded-3xl border border-amber-500/40 bg-[#0c0d14] p-5 sm:p-7 shadow-2xl space-y-4 my-auto max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             {/* CABECERA DEL MODAL */}
@@ -1297,10 +1297,10 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   )}
                 </div>
 
-                {/* 2. SELECTOR NUMÉRICO DE RACIONES */}
+                {/* 3. SELECTOR NUMÉRICO DE RACIONES */}
                 <div>
                   <label className="text-xs font-black uppercase text-slate-300 block mb-2">
-                    2. Número de raciones
+                    3. Número de raciones
                   </label>
                   <div className="flex items-center justify-between bg-[#131722] border border-white/10 rounded-2xl p-3">
                     <div className="flex items-center gap-3">
@@ -1339,8 +1339,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   </div>
                 </div>
 
-                {/* 3. DATOS DEL CLIENTE SIN FRICCIÓN */}
+                {/* 4. DATOS DEL CLIENTE SIN FRICCIÓN */}
                 <div className="space-y-3 pt-1">
+                  <label className="text-xs font-black uppercase text-slate-300 block mb-1">
+                    4. Tus datos de contacto
+                  </label>
                   <div>
                     <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-1">
                       <User className="h-3.5 w-3.5 text-amber-400" />

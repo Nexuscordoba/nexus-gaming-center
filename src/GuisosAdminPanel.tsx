@@ -2160,9 +2160,10 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                         </div>
                       </div>
 
-                      {/* LÍNEA INFERIOR: EN UNA MISMA FILA HORIZONTAL -> BADGE ESTADO + PROGRESO + CLIENTES + ACCIONES COMPACTAS */}
-                      <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1.5 border-t border-slate-800/80">
-                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      {/* LÍNEA INFERIOR EN DOS LÍNEAS LIMPIAS: LÍNEA A (PROGRESO) Y LÍNEA B (ACCIONES) */}
+                      <div className="space-y-1.5 pt-1.5 border-t border-slate-800/80">
+                        {/* LÍNEA A: BADGE DE ESTADO + BARRA DE PROGRESO + TEXTO DE RACIONES */}
+                        <div className="flex items-center gap-2 min-w-0">
                           {guiso.estado === 'confirmado' && (
                             <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 whitespace-nowrap">
                               🟢 Conf.
@@ -2181,7 +2182,7 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
 
                           {/* BARRA DE PROGRESO COMPACTA + DESGLOSE SALA/LLEVAR */}
                           <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                            <div className="w-14 h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800 shrink-0">
+                            <div className="w-16 h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800 shrink-0">
                               <div
                                 className={`h-full rounded-full ${
                                   guiso.estado === 'confirmado' || racionesApuntadas >= minReq
@@ -2193,17 +2194,17 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                                 style={{ width: `${porcentaje}%` }}
                               />
                             </div>
-                            <span className="text-[10px] font-bold text-slate-300 whitespace-nowrap">
+                            <span className="text-[10px] font-bold text-slate-300 truncate">
                               <strong className="text-white">
                                 {racionesApuntadas}/{minReq}
                               </strong>{' '}
-                              rac. · {racionesBarra} sala / {racionesTakeaway} llevar
+                              rac. ({racionesBarra} sala · {racionesTakeaway} llevar)
                             </span>
                           </div>
                         </div>
 
-                        {/* BOTÓN DESPLEGABLE CLIENTES + BOTONES DE ACCIÓN COMPACTOS */}
-                        <div className="flex items-center gap-1 shrink-0">
+                        {/* LÍNEA B: BOTÓN CLIENTES + BOTONES DE ACCIÓN */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                           <button
                             type="button"
                             onClick={() => setGuisoDesplegadoId(desplegado ? null : guiso.id)}
@@ -2264,97 +2265,92 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
                       </div>
                     </div>
 
-                    {/* DESGLOSE DESPLEGABLE DE CLIENTES APUNTADOS */}
+                    {/* DESGLOSE DESPLEGABLE DE CLIENTES APUNTADOS SIN SCROLL HORIZONTAL */}
                     {desplegado && (
-                      <div className="border-t border-slate-800 bg-slate-950/90 p-2.5 space-y-2">
+                      <div className="border-t border-slate-800 bg-slate-950/90 p-2 sm:p-2.5 space-y-1.5">
                         {listaReservasGuiso.length === 0 ? (
                           <p className="text-[11px] text-slate-400 text-center py-1.5">
                             Aún no hay clientes apuntados a este guiso.
                           </p>
                         ) : (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse text-[11px]">
-                              <thead>
-                                <tr className="text-[9px] uppercase text-slate-400 border-b border-slate-800">
-                                  <th className="p-1.5">Cliente</th>
-                                  <th className="p-1.5">Tel / Email</th>
-                                  <th className="p-1.5 text-center">Rac.</th>
-                                  <th className="p-1.5 text-right">Total</th>
-                                  <th className="p-1.5 text-center">Pago</th>
-                                  <th className="p-1.5 text-right">Acciones</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-800/60">
-                                {listaReservasGuiso.map((res) => {
-                                  const importeCliente = calcularImporteReserva(
-                                    guiso,
-                                    res.raciones,
-                                    res.modalidad
-                                  );
-                                  const waUrl = generarEnlaceWhatsAppAdminAClienteConfirmacion(
-                                    res,
-                                    guiso,
-                                    enlacePagoConfig
-                                  );
+                          <div className="space-y-1.5">
+                            {listaReservasGuiso.map((res) => {
+                              const importeCliente = calcularImporteReserva(
+                                guiso,
+                                res.raciones,
+                                res.modalidad
+                              );
+                              const waUrl = generarEnlaceWhatsAppAdminAClienteConfirmacion(
+                                res,
+                                guiso,
+                                enlacePagoConfig
+                              );
 
-                                  return (
-                                    <tr key={res.id} className="hover:bg-slate-900/50">
-                                      <td className="p-1.5 font-bold text-white">{res.nombre_cliente}</td>
-                                      <td className="p-1.5">
-                                        <span className="font-bold text-slate-200">{res.telefono}</span>
-                                        {res.email && (
-                                          <span className="text-[9px] text-cyan-400 block">{res.email}</span>
-                                        )}
-                                      </td>
-                                      <td className="p-1.5 text-center whitespace-nowrap">
-                                        <span className="font-black text-white">{res.raciones}</span>{' '}
-                                        <span className="text-[10px] text-amber-300">
-                                          {res.modalidad === 'takeaway' ? '🛍️' : '🪑'}
-                                        </span>
-                                      </td>
-                                      <td className="p-1.5 text-right font-black text-emerald-400">
-                                        {importeCliente.toFixed(2)}€
-                                      </td>
-                                      <td className="p-1.5 text-center">
-                                        <button
-                                          type="button"
-                                          onClick={() => alternarEstadoPagoReserva(res)}
-                                          className={`px-1.5 py-0.5 rounded font-black text-[9px] uppercase cursor-pointer ${
-                                            res.estado_pago === 'pagado'
-                                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                                          }`}
-                                        >
-                                          {res.estado_pago === 'pagado' ? '✅ Pagado' : '⏳ Pend.'}
-                                        </button>
-                                      </td>
-                                      <td className="p-1.5 text-right">
-                                          <div className="flex items-center justify-end gap-1.5">
-                                            <a
-                                              href={waUrl}
-                                              target="_blank"
-                                              rel="noreferrer"
-                                              className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] whitespace-nowrap shadow-sm flex items-center gap-1 cursor-pointer"
-                                              title="Abrir WhatsApp para enviar instrucciones de pago y Bizum"
-                                            >
-                                              <span>📲</span>
-                                              <span>WhatsApp Pago</span>
-                                            </a>
-                                            <button
-                                              type="button"
-                                              onClick={() => eliminarReservaCliente(res)}
-                                              className="px-1.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 text-[10px] font-bold cursor-pointer"
-                                              title="Eliminar reserva"
-                                            >
-                                              🗑️
-                                            </button>
-                                          </div>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
+                              return (
+                                <div
+                                  key={res.id}
+                                  className="bg-slate-900/70 border border-slate-800 rounded-xl p-2 flex flex-wrap items-center justify-between gap-2 text-[11px] hover:border-slate-700 transition-colors"
+                                >
+                                  {/* DATOS DEL CLIENTE Y CONTACTO */}
+                                  <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
+                                    <span className="font-bold text-white whitespace-nowrap">
+                                      {res.nombre_cliente}
+                                    </span>
+                                    <span className="font-mono text-slate-300 text-[10px] whitespace-nowrap">
+                                      📞 {res.telefono}
+                                    </span>
+                                    {res.email && (
+                                      <span className="text-[10px] text-cyan-400 truncate max-w-[150px]">
+                                        ✉️ {res.email}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {/* RACIONES + IMPORTE + ESTADO PAGO + ACCIONES */}
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className="font-black text-amber-300 bg-amber-950/60 border border-amber-500/30 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap">
+                                      {res.raciones} rac. {res.modalidad === 'takeaway' ? '🛍️' : '🪑'}
+                                    </span>
+
+                                    <span className="font-black text-emerald-400 font-mono whitespace-nowrap text-[11px]">
+                                      {importeCliente.toFixed(2)}€
+                                    </span>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => alternarEstadoPagoReserva(res)}
+                                      className={`px-1.5 py-0.5 rounded font-black text-[9px] uppercase cursor-pointer whitespace-nowrap ${
+                                        res.estado_pago === 'pagado'
+                                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                      }`}
+                                    >
+                                      {res.estado_pago === 'pagado' ? '✅ Pagado' : '⏳ Pend.'}
+                                    </button>
+
+                                    <a
+                                      href={waUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] whitespace-nowrap shadow-sm flex items-center gap-1 cursor-pointer"
+                                      title="Abrir WhatsApp para enviar instrucciones de pago y Bizum"
+                                    >
+                                      <span>📲</span>
+                                      <span>WhatsApp Pago</span>
+                                    </a>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => eliminarReservaCliente(res)}
+                                      className="px-1.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 text-[10px] font-bold cursor-pointer"
+                                      title="Eliminar reserva"
+                                    >
+                                      🗑️
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
