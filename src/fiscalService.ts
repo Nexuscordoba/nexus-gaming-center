@@ -234,13 +234,20 @@ export function escaparHtml(texto: any): string {
 }
 
 /**
- * Genera una ventana de impresión limpia y optimizada para impresora térmica de 80mm o 58mm
+ * Genera la impresión limpia y optimizada para impresora térmica de 80mm o 58mm.
  * Cumple con el RD 1619/2012 (Reglamento de Facturación) y Ley 11/2021 Antifraude.
- * - Codificación garantizada UTF-8.
- * - @page y márgenes a cero para evitar arrastre de cabeceras/pies de página del navegador (URL, fecha, pág).
- * - Ancho controlado (80mm / 58mm) sin desbordamientos que rompan el formato de columnas.
+ * - Sin bloqueos de vista previa: inicializa un iframe síncrono con dimensiones reales
+ *   (sin display: none ni visibility: hidden) para que el motor de Chromium/Edge calcule
+ *   el layout de inmediato sin congelarse en "Preparando vista previa...".
+ * - Retraso controlado (350ms) entre la inyección del DOM y window.print().
+ * - Cero recursos de red o imágenes externas: texto plano e iconos vectoriales puros.
+ * - Callback onComplete para liberar de inmediato modales y botones de la interfaz.
  */
-export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionFiscal) {
+export function imprimirDocumentoFiscalHTML(
+  factura: any,
+  config: ConfiguracionFiscal,
+  onComplete?: () => void
+) {
   const anchoMm = Number(factura?.ancho_papel_mm || config?.ancho_papel_mm || 80) === 58 ? 58 : 80;
   const anchoImprimibleMm = anchoMm === 58 ? 48 : 72;
 
@@ -570,57 +577,82 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
 </body>
 </html>`;
 
-  const ventana = window.open('', '_blank', 'width=420,height=680');
-  if (ventana) {
-    try {
-      ventana.document.open('text/html', 'replace');
-      ventana.document.write(html);
-      ventana.document.close();
-      ventana.focus();
-      ventana.onafterprint = () => {
-        try {
-          ventana.close();
-        } catch (_) {}
-      };
-      setTimeout(() => {
-        ventana.focus();
-        ventana.print();
-      }, 350);
-      return;
-    } catch (e) {
-      console.warn('Fallo al abrir ventana de impresión térmica, recurriendo a iframe:', e);
+  // Control de finalización y limpieza de estados para evitar interfaces colgadas
+  let terminado = false;
+  const notificarFin = () => {
+    if (terminado) return;
+    terminado = true;
+    if (onComplete) {
+      try {
+        onComplete();
+      } catch (_) {}
     }
-  }
+  };
 
-  // Fallback transparente mediante iframe si los popups están bloqueados por el navegador
   try {
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    iframe.style.visibility = 'hidden';
-    document.body.appendChild(iframe);
+    const iframeId = 'nexus-thermal-print-frame';
+    let iframe = document.getElementById(iframeId) as HTMLIFrameElement | null;
+
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.id = iframeId;
+      iframe.setAttribute('title', 'Ticket de Impresion Termica');
+      iframe.setAttribute('aria-hidden', 'true');
+      // Importante: No usar display: none ni visibility: hidden ni 0px.
+      // Chrome/Edge requiere que el elemento tenga layout geométrico válido (>0px) y opacidad para
+      // poder calcular el render tree y generar la vista previa sin quedarse en bucle infinito.
+      iframe.style.position = 'fixed';
+      iframe.style.top = '-9999px';
+      iframe.style.left = '-9999px';
+      iframe.style.width = `${anchoMm}mm`;
+      iframe.style.height = '400mm';
+      iframe.style.border = '0';
+      iframe.style.margin = '0';
+      iframe.style.padding = '0';
+      iframe.style.opacity = '0.01';
+      iframe.style.pointerEvents = 'none';
+      iframe.style.zIndex = '-9999';
+      document.body.appendChild(iframe);
+    } else {
+      iframe.style.width = `${anchoMm}mm`;
+    }
 
     const doc = iframe.contentWindow?.document || iframe.contentDocument;
-    if (doc) {
-      doc.open('text/html', 'replace');
-      doc.write(html);
-      doc.close();
-      setTimeout(() => {
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-        setTimeout(() => {
-          try {
-            document.body.removeChild(iframe);
-          } catch (_) {}
-        }, 2000);
-      }, 350);
+    if (!doc) {
+      console.error('No se pudo acceder al documento del frame de impresión.');
+      notificarFin();
+      return;
     }
+
+    // Escritura síncrona en el DOM del iframe
+    doc.open('text/html', 'replace');
+    doc.write(html);
+    doc.close();
+
+    // Retraso controlado (350ms) para garantizar que el DOM esté completamente parseado,
+    // layout calculado y estilos aplicados antes de invocar window.print()
+    setTimeout(() => {
+      try {
+        const win = iframe?.contentWindow;
+        if (win) {
+          win.focus();
+          win.onafterprint = () => {
+            notificarFin();
+          };
+          win.print();
+          // Fallback de seguridad por si el navegador o driver no dispara onafterprint
+          setTimeout(notificarFin, 1000);
+        } else {
+          notificarFin();
+        }
+      } catch (err) {
+        console.error('Error al invocar impresión térmica:', err);
+        notificarFin();
+      }
+    }, 350);
   } catch (err) {
-    console.error('Error al imprimir ticket térmico:', err);
+    console.error('Error en inicialización de frame de impresión térmica:', err);
+    notificarFin();
   }
 }
 

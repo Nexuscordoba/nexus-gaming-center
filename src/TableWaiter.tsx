@@ -1358,12 +1358,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       });
 
       const { data: facturaCompleta } = await supabase.from('facturas_tickets').select('*').eq('id', docEmitido.id).maybeSingle();
-      if (facturaCompleta) { imprimirDocumentoFiscalHTML(facturaCompleta, cfg); }
+      setModalCobroParcial(null);
+      if (facturaCompleta) {
+        imprimirDocumentoFiscalHTML(facturaCompleta, cfg);
+      }
 
       await descontarInventarioSupabase(itemsProcesados);
 
       mostrarAlerta(`Cobro parcial de ${desglose.totalFinal.toFixed(2)} € registrado y descontado.`, 'exito');
-      setModalCobroParcial(null);
       await Promise.all([cargarMesasAbiertas(), cargarCaja(), cargarProductosCarta()]);
     } catch (err: any) {
       guardarEnColaLocalOffline({
@@ -2207,6 +2209,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .eq('id', docEmitido.id)
         .maybeSingle();
 
+      setCobrandoMesa(null);
       if (facturaCompleta) {
         imprimirDocumentoFiscalHTML(facturaCompleta, cfg);
       }
@@ -2563,12 +2566,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .eq('id', docRect.id)
         .maybeSingle();
 
+      setModalRectificativa(null);
       if (rectCompleta) {
         imprimirDocumentoFiscalHTML(rectCompleta, cfg);
       }
 
       mostrarAlerta(`Factura Rectificativa ${docRect.numero_completo} emitida e impresa.`, 'exito');
-      setModalRectificativa(null);
       await Promise.all([cargarCaja(), cargarProductosCarta()]);
     } catch (err: any) {
       mostrarAlerta('Error al emitir factura rectificativa: ' + err.message, 'error');
@@ -2664,12 +2667,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .eq('id', docNom.id)
         .maybeSingle();
 
+      setModalFacturaNominativa(null);
       if (nomCompleta) {
         imprimirDocumentoFiscalHTML(nomCompleta, cfg);
       }
 
       mostrarAlerta(`Factura Nominativa ${docNom.numero_completo} generada e impresa correctamente.`, 'exito');
-      setModalFacturaNominativa(null);
       await cargarCaja();
     } catch (err: any) {
       mostrarAlerta('Error al generar factura nominativa: ' + err.message, 'error');
@@ -2713,8 +2716,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           lineas: desgloseMesaSeleccionada.lineasCalculadas,
           hash_actual: 'PENDIENTE_DE_COBRO_DEFINITIVO'
         },
-        cfg
+        cfg,
+        () => setImprimiendoPreTicket(false)
       );
+    } catch (err) {
+      console.error(err);
+      setImprimiendoPreTicket(false);
     } finally {
       setImprimiendoPreTicket(false);
     }

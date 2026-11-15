@@ -932,12 +932,12 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         .eq('id', docRect.id)
         .maybeSingle();
 
+      setModalRectificativa(null);
       if (rectCompleta) {
         imprimirDocumentoFiscalHTML(rectCompleta, cfg);
       }
 
       notificar(`Factura Rectificativa ${docRect.numero_completo} emitida e impresa.`, 'ok');
-      setModalRectificativa(null);
       await Promise.all([cargarTicketsYVentas(), cargarArticulosYCategorias()]);
     } catch (err: any) {
       notificar('Error al emitir factura rectificativa: ' + err.message, 'error');
@@ -1032,12 +1032,12 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         .eq('id', docNom.id)
         .maybeSingle();
 
+      setModalFacturaNominativa(null);
       if (nomCompleta) {
         imprimirDocumentoFiscalHTML(nomCompleta, cfg);
       }
 
       notificar(`Factura Nominativa ${docNom.numero_completo} generada e impresa correctamente.`, 'ok');
-      setModalFacturaNominativa(null);
       await cargarTicketsYVentas();
     } catch (err: any) {
       notificar('Error al generar factura nominativa: ' + err.message, 'error');
