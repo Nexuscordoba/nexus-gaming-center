@@ -111,6 +111,7 @@ export interface ConfiguracionFiscal {
   ancho_papel_mm?: number;
   usar_rawbt?: boolean;
   impresora_tipo?: 'auto' | 'navegador' | 'rawbt';
+  solo_texto_plano?: boolean;
 }
 
 /**
@@ -432,8 +433,61 @@ export function generarTicketTextoRawBT(
 }
 
 /**
- * Conecta e imprime directamente a la aplicación Android RawBT mediante esquema Intent / URL directa
- * sin pasar por el spooler gráfico de Android ni generar volcados binarios.
+ * Convierte un Uint8Array de bytes binarios puros directamente a Base64
+ * sin pasar por conversiones UTF-8 ni TextDecoder que alteren los bytes de control ESC/POS.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const len = bytes.byteLength;
+  const chunkSize = 8192;
+  for (let i = 0; i < len; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Genera el búfer de bytes para impresión en formato Uint8Array limpio.
+ * Convierte el ticket a bytes puros sin conversiones UTF-8 intermedias.
+ */
+export function generarBytesTicketRawBT(
+  factura: any,
+  config: ConfiguracionFiscal,
+  anchoCaracteresPersonalizado?: number
+): Uint8Array {
+  const text = generarTicketTextoRawBT(factura, config, anchoCaracteresPersonalizado);
+  const bytesList: number[] = [];
+
+  // Comandos ESC/POS estándar de inicialización y fijación de página de códigos PC437
+  if (!factura?.solo_texto_plano && !config?.solo_texto_plano) {
+    bytesList.push(0x1B, 0x40);       // ESC @: Inicializar impresora y purgar búfer residual
+    bytesList.push(0x1B, 0x74, 0x00);  // ESC t 0: Fijar página de códigos 0 (PC437 / ASCII estándar)
+  }
+
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 10) { // Salto de línea (\n, 0x0A)
+      bytesList.push(0x0A);
+    } else if (code >= 32 && code <= 126) { // Rango ASCII estándar puro
+      bytesList.push(code);
+    }
+  }
+
+  // 4 avances de línea para que el pie del ticket libre la cuchilla térmica
+  bytesList.push(0x0A, 0x0A, 0x0A, 0x0A);
+
+  // Comando de corte de papel ESC/POS si no se fuerza modo solo texto plano
+  if (!factura?.solo_texto_plano && !config?.solo_texto_plano) {
+    bytesList.push(0x1D, 0x56, 0x42, 0x00); // GS V 66 0: Corte de papel parcial
+  }
+
+  return new Uint8Array(bytesList);
+}
+
+/**
+ * Conecta e imprime directamente a la aplicación Android RawBT mediante el esquema oficial
+ * rawbt:base64,{base64String} garantizando que los bytes binarios no sufran alteraciones.
  */
 export function imprimirConRawBT(
   factura: any,
@@ -441,32 +495,32 @@ export function imprimirConRawBT(
   onComplete?: () => void
 ): boolean {
   try {
-    const textoTicket = generarTicketTextoRawBT(factura, config);
+    const bytes = generarBytesTicketRawBT(factura, config);
+    const base64String = uint8ArrayToBase64(bytes);
+    const rawbtUrl = 'rawbt:base64,' + base64String;
 
-    // Codificación en Base64 segura
-    const base64Data = btoa(
-      encodeURIComponent(textoTicket).replace(/%([0-9A-F]{2})/g, (_, p1) =>
-        String.fromCharCode(parseInt(p1, 16))
-      )
-    );
+    // Disparar la apertura de RawBT con enlace dinámico <a> y navegación directa
+    try {
+      const link = document.createElement('a');
+      link.href = rawbtUrl;
+      link.setAttribute('rel', 'noopener noreferrer');
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        try {
+          document.body.removeChild(link);
+        } catch (_) {}
+      }, 500);
+    } catch (_) {}
 
-    // Esquema de Intent oficial de Android para RawBT
-    const rawbtUri = `rawbt:data:text/plain;base64,${base64Data}`;
-    const intentUrl = `intent:${rawbtUri}#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;`;
+    try {
+      window.location.href = rawbtUrl;
+    } catch (_) {}
 
-    // Disparar la llamada a la app RawBT mediante un enlace temporal
-    const link = document.createElement('a');
-    link.href = intentUrl;
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-
-    setTimeout(() => {
-      try {
-        document.body.removeChild(link);
-      } catch (_) {}
-      if (onComplete) onComplete();
-    }, 400);
+    if (onComplete) {
+      setTimeout(onComplete, 400);
+    }
 
     return true;
   } catch (err) {
