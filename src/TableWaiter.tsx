@@ -3,6 +3,13 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
 import MesasReservasPanel from './MesasReservasPanel';
+import BarraView from './BarraView';
+import {
+  cargarTicketsBarraAbiertos,
+  cobrarTicketBarra,
+  imprimirComandaTicketBarra,
+  type TicketBarra
+} from './barraService';
 import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
@@ -28,6 +35,7 @@ import {
   Lock,
   LockOpen,
   Calculator,
+  Beer,
   User,
   X,
   AlertTriangle,
@@ -209,7 +217,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mostrarBackoffice, setMostrarBackoffice] = useState(false);
 
   const [configFiscal, setConfigFiscal] = useState<ConfiguracionFiscal | null>(null);
-  const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('BARRA');
+  const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
+  const [ticketsBarraAbiertos, setTicketsBarraAbiertos] = useState<TicketBarra[]>([]);
+  const [ticketCobroRapido, setTicketCobroRapido] = useState<TicketBarra | null>(null);
+  const [metodoCobroRapido, setMetodoCobroRapido] = useState<'efectivo' | 'tarjeta' | 'bizum'>('efectivo');
+  const [procesandoCobroRapido, setProcesandoCobroRapido] = useState(false);
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas']);
   const [categoriaActiva, setCategoriaActiva] = useState<string>('Cafetería');
@@ -242,20 +254,31 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .order('id', { ascending: true });
       if (!error && data && data.length > 0) {
         setMesasLocal(data);
+        const primeraActiva = data.find((m: any) => m.activa !== false);
+        if (primeraActiva) {
+          const nom = (primeraActiva.nombre || '').trim();
+          const zona = primeraActiva.zona === 'terraza' ? 'terraza' : 'interior';
+          const numMatch = nom.match(/\d+/);
+          const num = numMatch ? numMatch[0] : String(primeraActiva.id);
+          const val = zona === 'terraza' ? `T${num}` : num;
+          setMesaSeleccionada((prev) => (prev === 'BARRA' || !prev ? val : prev));
+        }
       }
     } catch (err) {
       console.warn('Excepción al cargar mesas_local:', err);
     }
   };
 
-  const listaBotonesMesas = useMemo<BotonMesaConfig[]>(() => {
-    const barraBtn: BotonMesaConfig = {
-      val: 'BARRA',
-      nombreMesaDB: 'BARRA',
-      etiquetaBoton: 'BARRA',
-      zona: 'barra'
-    };
+  const cargarTicketsBarra = async () => {
+    try {
+      const tickets = await cargarTicketsBarraAbiertos();
+      setTicketsBarraAbiertos(tickets);
+    } catch (err) {
+      console.warn('Excepción al cargar tickets de barra:', err);
+    }
+  };
 
+  const listaBotonesMesas = useMemo<BotonMesaConfig[]>(() => {
     if (mesasLocal.length > 0) {
       const activas = mesasLocal.filter((m) => m.activa !== false);
       const mapeadas: BotonMesaConfig[] = activas.map((m) => {
@@ -274,7 +297,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         };
       });
 
-      return [barraBtn, ...mapeadas];
+      return mapeadas;
     }
 
     const interioresFallback: BotonMesaConfig[] = Array.from({ length: 10 }, (_, i) => {
@@ -297,12 +320,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       };
     });
 
-    return [barraBtn, ...interioresFallback, ...terrazasFallback];
+    return [...interioresFallback, ...terrazasFallback];
   }, [mesasLocal]);
 
   const botonesMesasFiltradas = useMemo<BotonMesaConfig[]>(() => {
     if (filtroZonaMesas === 'interior') {
-      return listaBotonesMesas.filter((b: BotonMesaConfig) => b.zona === 'interior' || b.zona === 'barra');
+      return listaBotonesMesas.filter((b: BotonMesaConfig) => b.zona === 'interior');
     }
     if (filtroZonaMesas === 'terraza') {
       return listaBotonesMesas.filter((b: BotonMesaConfig) => b.zona === 'terraza');
@@ -395,7 +418,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [procesandoDescuento, setProcesandoDescuento] = useState(false);
   const [procesandoLogin, setProcesandoLogin] = useState(false);
   const [procesandoCocina, setProcesandoCocina] = useState(false);
-  const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'mesas_abiertas' | 'reservas' | 'caja'>('tomar_nota');
+  const [vistaSeccion, setVistaSeccion] = useState<'tomar_nota' | 'barra' | 'mesas_abiertas' | 'reservas' | 'caja'>('tomar_nota');
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
@@ -462,6 +485,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             cargarConfiguracion(),
             cargarProductosCarta(),
             cargarMesasAbiertas(),
+            cargarTicketsBarra(),
             cargarCaja()
           ]);
         } catch (err) {
@@ -537,6 +561,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           cargarMesasLocal(),
           cargarProductosCarta(),
           cargarMesasAbiertas(),
+          cargarTicketsBarra(),
           cargarCaja()
         ]);
       } else {
@@ -588,6 +613,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mesas_local' }, () => {
         cargarMesasLocal();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tickets_barra' }, () => {
+        cargarTicketsBarra();
       })
       .subscribe();
 
@@ -803,7 +831,12 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         const cuentasPedidasSet = new Set<string>();
 
         data.forEach((row: any) => {
-          const mKey = row.mesa;
+          const mKey = String(row.mesa || '').trim();
+
+          // Las comandas de barra van por su módulo independiente y no deben bloquear mesas del plano
+          if (!mKey || mKey.toUpperCase() === 'BARRA' || mKey.toUpperCase().startsWith('BARRA')) {
+            return;
+          }
 
           if (row.tipo_destino === 'cuenta') {
             if (row.estado !== 'servido') {
@@ -2727,6 +2760,44 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
+  const cobrarTicketBarraDirecto = async (
+    ticket: TicketBarra,
+    metodo: 'efectivo' | 'tarjeta' | 'bizum'
+  ) => {
+    setProcesandoCobroRapido(true);
+    try {
+      const res = await cobrarTicketBarra({
+        ticket,
+        metodo,
+        camareroNombre: camareroActivo?.nombre || 'Barra',
+        configFiscal,
+        cajaHoyId: cajaHoy?.id
+      });
+      if (res.ok) {
+        mostrarAlerta(`¡Ticket ${ticket.numero_ticket} cobrado (${ticket.total.toFixed(2)} €)!`, 'exito');
+        setTicketCobroRapido(null);
+        await Promise.all([cargarTicketsBarra(), cargarCaja()]);
+      } else {
+        mostrarAlerta(`Error al cobrar ticket: ${res.error || 'Desconocido'}`, 'error');
+      }
+    } catch (err) {
+      console.error(err);
+      mostrarAlerta('Error al cobrar ticket de barra', 'error');
+    } finally {
+      setProcesandoCobroRapido(false);
+    }
+  };
+
+  const imprimirTicketBarraDirecto = (ticket: TicketBarra) => {
+    try {
+      imprimirComandaTicketBarra(ticket, configFiscal, camareroActivo?.nombre || 'Barra');
+      mostrarAlerta(`Imprimiendo ticket de barra ${ticket.numero_ticket}...`, 'exito');
+    } catch (err) {
+      console.error(err);
+      mostrarAlerta('Error al imprimir ticket de barra', 'error');
+    }
+  };
+
   const abrirModalAperturaCaja = () => {
     setRemanenteAperturaInput('50.00');
     setShowModalApertura(true);
@@ -3421,6 +3492,83 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
+      {/* MODAL COBRO RÁPIDO TICKET DE BARRA */}
+      {ticketCobroRapido && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
+          <div className="w-full max-w-md bg-[#0d0f17] border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-amber-400">
+                <Beer className="h-5 w-5" />
+                <h3 className="font-black text-white text-base">
+                  Cobrar Ticket {ticketCobroRapido.numero_ticket}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTicketCobroRapido(null)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="text-center py-3 bg-black/60 rounded-2xl border border-white/10">
+              <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">{ticketCobroRapido.cliente_alias || 'Cliente Barra'}</p>
+              <p className="text-3xl font-black text-amber-400 mt-1">{Number(ticketCobroRapido.total).toFixed(2)} €</p>
+            </div>
+
+            <div className="space-y-2">
+              <span className="text-xs font-bold text-slate-300">Selecciona método de cobro:</span>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMetodoCobroRapido('efectivo')}
+                  className={`py-3 rounded-2xl border text-xs font-black transition-all cursor-pointer ${
+                    metodoCobroRapido === 'efectivo'
+                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md'
+                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                  }`}
+                >
+                  💵 Efectivo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMetodoCobroRapido('tarjeta')}
+                  className={`py-3 rounded-2xl border text-xs font-black transition-all cursor-pointer ${
+                    metodoCobroRapido === 'tarjeta'
+                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md'
+                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                  }`}
+                >
+                  💳 Tarjeta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMetodoCobroRapido('bizum')}
+                  className={`py-3 rounded-2xl border text-xs font-black transition-all cursor-pointer ${
+                    metodoCobroRapido === 'bizum'
+                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md'
+                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                  }`}
+                >
+                  📱 Bizum
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={procesandoCobroRapido}
+              onClick={() => cobrarTicketBarraDirecto(ticketCobroRapido, metodoCobroRapido)}
+              className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              <Printer className="h-4 w-4" />
+              <span>{procesandoCobroRapido ? 'Emitiendo e Imprimiendo...' : 'Confirmar Cobro e Imprimir Ticket'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* MODAL COBRO PARCIAL */}
       {modalCobroParcial && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
@@ -3871,6 +4019,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
             <span>{refrescandoMesas ? 'Sincronizando...' : 'Refrescar Mesas'}</span>
           </button>
 
+          {/* BOTÓN DESTACADO: NUEVO TICKET DE BARRA */}
+          <button
+            type="button"
+            onClick={() => setVistaSeccion('barra')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer ${
+              vistaSeccion === 'barra'
+                ? 'bg-amber-400 text-slate-950 shadow-[0_0_20px_rgba(245,158,11,0.5)] ring-2 ring-white/50'
+                : 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-[0_0_18px_rgba(245,158,11,0.35)] hover:scale-105'
+            }`}
+          >
+            <Beer className="h-4 w-4 stroke-[2.5]" />
+            <span>🍺 Nuevo Ticket de Barra</span>
+            {ticketsBarraAbiertos.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full bg-slate-950 text-amber-400 text-[10px] font-black">
+                {ticketsBarraAbiertos.length}
+              </span>
+            )}
+          </button>
+
           <div className="flex gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
             <button
               onClick={() => setVistaSeccion('tomar_nota')}
@@ -3879,6 +4046,14 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               }`}
             >
               📝 Toma Notas
+            </button>
+            <button
+              onClick={() => setVistaSeccion('barra')}
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all relative cursor-pointer ${
+                vistaSeccion === 'barra' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              🍺 Barra {ticketsBarraAbiertos.length > 0 && `(${ticketsBarraAbiertos.length})`}
             </button>
             <button
               onClick={() => setVistaSeccion('mesas_abiertas')}
@@ -3951,6 +4126,20 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </form>
 
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVistaSeccion('barra')}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 font-bold text-xs shadow-lg transition-all cursor-pointer"
+                    title="Ir a TPV de Barra"
+                  >
+                    <Beer className="h-4 w-4" />
+                    <span className="hidden sm:inline">Barra</span>
+                    {ticketsBarraAbiertos.length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black">
+                        {ticketsBarraAbiertos.length}
+                      </span>
+                    )}
+                  </button>
                   <button
                     type="button"
                     onClick={() => setModalCuentasAparcadas(true)}
@@ -4498,7 +4687,114 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                 </button>
               </div>
             </div>
+
+            {/* PANEL LATERAL DE CUENTAS DE BARRA ABIERTAS */}
+            <div className="p-4 rounded-3xl bg-[#0d0f17] border border-amber-500/30 space-y-3 shadow-xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Beer className="h-4 w-4 text-amber-400" />
+                  <span className="text-xs font-black uppercase tracking-wider text-amber-400">
+                    Cuentas de Barra Abiertas
+                  </span>
+                </div>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-black border border-amber-500/30">
+                  {ticketsBarraAbiertos.length} activas
+                </span>
+              </div>
+
+              {ticketsBarraAbiertos.length === 0 ? (
+                <div className="text-center py-4 bg-black/40 rounded-2xl border border-white/5 space-y-1">
+                  <p className="text-xs text-slate-400 font-bold">No hay cuentas de barra pendientes</p>
+                  <p className="text-[10px] text-slate-500">Los cobros de barra no ocupan ni bloquean mesas</p>
+                  <button
+                    type="button"
+                    onClick={() => setVistaSeccion('barra')}
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold text-xs border border-amber-500/40 transition-all cursor-pointer"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>Abrir Ticket de Barra</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {ticketsBarraAbiertos.map((t) => (
+                    <div
+                      key={t.id}
+                      className="p-2.5 rounded-2xl bg-black/50 border border-white/10 hover:border-amber-500/40 space-y-2 transition-all"
+                    >
+                      <div className="flex items-start justify-between gap-1">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-black text-xs">
+                              {t.numero_ticket}
+                            </span>
+                            <span className="font-bold text-white text-xs truncate max-w-[120px]">
+                              {t.cliente_alias || 'Barra'}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 block mt-0.5">
+                            {t.items?.length || 0} prod. · {new Date(t.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <span className="text-sm font-black text-amber-400">
+                          {Number(t.total).toFixed(2)} €
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-white/5">
+                        <button
+                          type="button"
+                          onClick={() => imprimirTicketBarraDirecto(t)}
+                          className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] font-bold transition-all cursor-pointer"
+                          title="Imprimir comanda térmica con Raw Print"
+                        >
+                          <Printer className="h-3 w-3" />
+                          <span>Imprimir</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTicketCobroRapido(t);
+                            setMetodoCobroRapido('efectivo');
+                          }}
+                          className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-black transition-all cursor-pointer shadow-sm"
+                          title="Cobrar y cerrar ticket de barra"
+                        >
+                          <CreditCard className="h-3 w-3" />
+                          <span>Cobrar</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setVistaSeccion('barra')}
+                  className="w-full py-2.5 px-3 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <Beer className="h-3.5 w-3.5" />
+                  <span>Ver Gestión Completa de Barra</span>
+                </button>
+              </div>
+            </div>
           </div>
+        </main>
+      )}
+
+      {/* VISTA COMPLETA DEDICADA DE BARRA */}
+      {vistaSeccion === 'barra' && (
+        <main className="flex-1 max-w-7xl w-full mx-auto pb-24">
+          <BarraView
+            productos={productosCarta}
+            camareroNombre={camareroActivo?.nombre || 'Barra'}
+            configFiscal={configFiscal}
+            cajaHoyId={cajaHoy?.id}
+            onAlerta={mostrarAlerta}
+            modoIncrustado={true}
+          />
         </main>
       )}
 
