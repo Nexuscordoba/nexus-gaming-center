@@ -109,6 +109,8 @@ export interface ConfiguracionFiscal {
   iva_defecto: number;
   pin_administrador: string;
   ancho_papel_mm?: number;
+  usar_rawbt?: boolean;
+  impresora_tipo?: 'auto' | 'navegador' | 'rawbt';
 }
 
 /**
@@ -234,9 +236,251 @@ export function escaparHtml(texto: any): string {
 }
 
 /**
+ * Detecta si el entorno actual es un navegador corriendo en Android
+ */
+export function esDispositivoAndroid(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /Android/i.test(navigator.userAgent || navigator.vendor || '');
+}
+
+/**
+ * Normaliza y convierte cadenas a 7-bit ASCII puro (0x20 a 0x7E) + \n para RawBT y térmicas.
+ * Elimina de raíz cualquier desajuste de páginas de códigos (CP437, Latin1, UTF-8) en la impresora.
+ */
+export function sanitizarParaRawBT(texto: any): string {
+  if (texto === null || texto === undefined) return '';
+  return String(texto)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ñ/g, 'n')
+    .replace(/Ñ/g, 'N')
+    .replace(/€/g, 'EUR')
+    .replace(/[ºª]/g, '.')
+    .replace(/¡/g, '!')
+    .replace(/¿/g, '?')
+    .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim();
+}
+
+/**
+ * Genera el ticket estructurado en texto plano puro de 7-bit ASCII, formateado para rollos térmicos de 80mm o 58mm.
+ * Sin códigos de escape binarios crudos que puedan corromper el búfer de la impresora térmica con RawBT.
+ */
+export function generarTicketTextoRawBT(
+  factura: any,
+  config: ConfiguracionFiscal,
+  anchoCaracteresPersonalizado?: number
+): string {
+  const anchoMm = Number(factura?.ancho_papel_mm || config?.ancho_papel_mm || 80) === 58 ? 58 : 80;
+  const ancho = anchoCaracteresPersonalizado || (anchoMm === 58 ? 32 : 42);
+
+  const cPadCenter = (texto: string) => {
+    const t = sanitizarParaRawBT(texto);
+    if (t.length >= ancho) return t.slice(0, ancho);
+    const espIzq = Math.floor((ancho - t.length) / 2);
+    const espDer = ancho - t.length - espIzq;
+    return ' '.repeat(espIzq) + t + ' '.repeat(espDer);
+  };
+
+  const cPadLR = (izq: string, der: string) => {
+    const tIzq = sanitizarParaRawBT(izq);
+    const tDer = sanitizarParaRawBT(der);
+    const espacios = Math.max(1, ancho - tIzq.length - tDer.length);
+    return tIzq + ' '.repeat(espacios) + tDer;
+  };
+
+  const separador = '-'.repeat(ancho);
+  const separadorDoble = '='.repeat(ancho);
+
+  const esRectificativa = factura.serie === 'R' || factura.tipo_documento === 'RECTIFICATIVA';
+  const esNominativa = factura.serie === 'F' || factura.tipo_documento === 'NOMINATIVA';
+  const esPreTicket =
+    factura.serie === 'PROFORMA' ||
+    String(factura.tipo_documento || '').toUpperCase().includes('PRE-TICKET') ||
+    String(factura.tipo_documento || '').toUpperCase().includes('CUENTA MESA');
+
+  const tituloLegal = esRectificativa
+    ? 'FACTURA RECTIFICATIVA SIMPLIFICADA'
+    : esNominativa
+    ? 'FACTURA COMPLETA NOMINATIVA'
+    : esPreTicket
+    ? 'PRE-TICKET / CUENTA MESA'
+    : sanitizarParaRawBT(factura.tipo_documento || 'FACTURA SIMPLIFICADA');
+
+  const fechaFormateada = new Date(factura.fecha_expedicion || new Date()).toLocaleString('es-ES', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+
+  const lineas: LineaTicketFiscal[] = Array.isArray(factura.lineas) ? factura.lineas : [];
+  const desgloseIvaFactura = calcularDesgloseImpuestosLineas(
+    lineas,
+    Number(factura.descuento_general_porcentaje || 0),
+    factura.total_final !== undefined ? Number(factura.total_final) : undefined
+  );
+  const base10Print = redondearMoneda(Number(factura.base_imponible_10 ?? desgloseIvaFactura.base_imponible_10));
+  const iva10Print = redondearMoneda(Number(factura.iva_10 ?? desgloseIvaFactura.iva_10));
+  const base21Print = redondearMoneda(Number(factura.base_imponible_21 ?? desgloseIvaFactura.base_imponible_21));
+  const iva21Print = redondearMoneda(Number(factura.iva_21 ?? desgloseIvaFactura.iva_21));
+
+  const buf: string[] = [];
+
+  // Cabecera Comercial
+  buf.push(cPadCenter(config.nombre_comercial || 'NEXUS'));
+  if (config.razon_social) buf.push(cPadCenter(config.razon_social));
+  if (config.nif_cif) buf.push(cPadCenter(`NIF/CIF: ${config.nif_cif}`));
+  if (config.direccion_fiscal) buf.push(cPadCenter(config.direccion_fiscal));
+  if (config.telefono) buf.push(cPadCenter(`Tel: ${config.telefono}`));
+
+  buf.push(separador);
+  buf.push(cPadCenter(tituloLegal));
+  if (esPreTicket) {
+    buf.push(cPadCenter('(NO VALIDO COMO FACTURA)'));
+  }
+  buf.push(separador);
+
+  buf.push(cPadLR(`Doc: ${factura.numero_completo || 'T-0000'}`, `Mesa: ${factura.mesa || 'Barra'}`));
+  buf.push(cPadLR(`Fecha: ${fechaFormateada}`, `Vend: ${factura.vendedor_nombre || 'Camarero'}`));
+
+  if (esRectificativa && factura.ticket_origen_numero) {
+    buf.push(separador);
+    buf.push(`DOC. RECTIFICADO: ${sanitizarParaRawBT(factura.ticket_origen_numero)}`);
+    if (factura.motivo_rectificacion) {
+      buf.push(`MOTIVO: ${sanitizarParaRawBT(factura.motivo_rectificacion)}`);
+    }
+  }
+
+  if (esNominativa) {
+    buf.push(separador);
+    buf.push('DATOS CLIENTE:');
+    if (factura.cliente_nombre_razon) buf.push(`R.Social: ${sanitizarParaRawBT(factura.cliente_nombre_razon)}`);
+    if (factura.cliente_nif) buf.push(`NIF/CIF: ${sanitizarParaRawBT(factura.cliente_nif)}`);
+    if (factura.cliente_direccion) buf.push(`Direccion: ${sanitizarParaRawBT(factura.cliente_direccion)}`);
+  }
+
+  buf.push(separador);
+  const colCant = 4;
+  const colTotal = 9;
+  const colConcepto = Math.max(10, ancho - colCant - colTotal - 2);
+
+  buf.push(
+    'Cant'.padEnd(colCant) + ' ' +
+    'Concepto'.padEnd(colConcepto) + ' ' +
+    'Total'.padStart(colTotal)
+  );
+  buf.push(separador);
+
+  for (const l of lineas) {
+    const cantStr = `${Number(l.cantidad || 0)}x`.padEnd(colCant);
+    const subtotalNum = Number(l.subtotal_linea || 0).toFixed(2);
+    const totStr = `${subtotalNum}E`.padStart(colTotal);
+    const nombreLimpio = sanitizarParaRawBT(l.nombre || 'Articulo');
+    const nomStr = nombreLimpio.slice(0, colConcepto).padEnd(colConcepto);
+
+    buf.push(`${cantStr} ${nomStr} ${totStr}`);
+    if (Number(l.descuento_porcentaje) > 0) {
+      buf.push(' '.repeat(colCant + 1) + `(Dto. -${l.descuento_porcentaje}%)`);
+    }
+  }
+
+  buf.push(separador);
+
+  if (Math.abs(Number(factura.descuento_total_importe || 0)) > 0) {
+    buf.push(cPadLR('Subtotal Bruto:', `${Number(factura.subtotal_bruto).toFixed(2)} EUR`));
+    const dtoPorc = Number(factura.descuento_general_porcentaje || 0) > 0 ? ` (${factura.descuento_general_porcentaje}%)` : '';
+    buf.push(cPadLR(`Descuento${dtoPorc}:`, `-${Math.abs(Number(factura.descuento_total_importe)).toFixed(2)} EUR`));
+  }
+
+  if (Math.abs(base10Print) > 0 || (Math.abs(base10Print) === 0 && Math.abs(base21Print) === 0)) {
+    buf.push(cPadLR('Base Imp. (10%):', `${base10Print.toFixed(2)} EUR`));
+    buf.push(cPadLR('Cuota IVA (10%):', `${iva10Print.toFixed(2)} EUR`));
+  }
+
+  if (Math.abs(base21Print) > 0) {
+    buf.push(cPadLR('Base Imp. (21%):', `${base21Print.toFixed(2)} EUR`));
+    buf.push(cPadLR('Cuota IVA (21%):', `${iva21Print.toFixed(2)} EUR`));
+  }
+
+  buf.push(separadorDoble);
+  buf.push(cPadLR('TOTAL (IVA INC):', `${Number(factura.total_final).toFixed(2)} EUR`));
+  buf.push(separadorDoble);
+
+  buf.push(cPadLR('Forma de Pago:', sanitizarParaRawBT(String(factura.metodo_pago || 'EFECTIVO').toUpperCase())));
+  if (factura.autorizado_por) {
+    buf.push(`Autorizado: ${sanitizarParaRawBT(factura.autorizado_por)}`);
+  }
+
+  buf.push(separador);
+  if (esPreTicket) {
+    buf.push(cPadCenter('DOCUMENTO NO VALIDO COMO FACTURA'));
+    buf.push(cPadCenter('Pendiente de cobro definitivo'));
+  } else {
+    buf.push(cPadCenter('Doc. emitido conf. RD 1619/2012'));
+    if (factura.hash_actual && factura.hash_actual !== 'PENDIENTE_DE_COBRO_DEFINITIVO') {
+      buf.push(cPadCenter(`Huella: ${String(factura.hash_actual).substring(0, 16)}...`));
+    }
+  }
+  buf.push(cPadCenter('!Gracias por su visita!'));
+  buf.push('\n\n\n');
+
+  return buf.join('\n');
+}
+
+/**
+ * Conecta e imprime directamente a la aplicación Android RawBT mediante esquema Intent / URL directa
+ * sin pasar por el spooler gráfico de Android ni generar volcados binarios.
+ */
+export function imprimirConRawBT(
+  factura: any,
+  config: ConfiguracionFiscal,
+  onComplete?: () => void
+): boolean {
+  try {
+    const textoTicket = generarTicketTextoRawBT(factura, config);
+
+    // Codificación en Base64 segura
+    const base64Data = btoa(
+      encodeURIComponent(textoTicket).replace(/%([0-9A-F]{2})/g, (_, p1) =>
+        String.fromCharCode(parseInt(p1, 16))
+      )
+    );
+
+    // Esquema de Intent oficial de Android para RawBT
+    const rawbtUri = `rawbt:data:text/plain;base64,${base64Data}`;
+    const intentUrl = `intent:${rawbtUri}#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;`;
+
+    // Disparar la llamada a la app RawBT mediante un enlace temporal
+    const link = document.createElement('a');
+    link.href = intentUrl;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+
+    setTimeout(() => {
+      try {
+        document.body.removeChild(link);
+      } catch (_) {}
+      if (onComplete) onComplete();
+    }, 400);
+
+    return true;
+  } catch (err) {
+    console.error('Error al enviar ticket a RawBT:', err);
+    if (onComplete) onComplete();
+    return false;
+  }
+}
+
+/**
  * Genera la impresión limpia y optimizada para impresora térmica de 80mm o 58mm.
  * Cumple con el RD 1619/2012 (Reglamento de Facturación) y Ley 11/2021 Antifraude.
- * - Sin bloqueos de vista previa: inicializa un iframe síncrono con dimensiones reales
+ * - Detecta automáticamente tablets Android y redirige de forma directa y limpia a RawBT.
+ * - Sin bloqueos de vista previa: en navegadores de escritorio inicializa un iframe síncrono con dimensiones reales
  *   (sin display: none ni visibility: hidden) para que el motor de Chromium/Edge calcule
  *   el layout de inmediato sin congelarse en "Preparando vista previa...".
  * - Retraso controlado (350ms) entre la inyección del DOM y window.print().
@@ -248,6 +492,17 @@ export function imprimirDocumentoFiscalHTML(
   config: ConfiguracionFiscal,
   onComplete?: () => void
 ) {
+  // Si estamos en un dispositivo Android o se ha configurado RawBT, usar la pasarela directa de RawBT
+  const usarRawBT =
+    factura?.usar_rawbt ||
+    config?.usar_rawbt ||
+    config?.impresora_tipo === 'rawbt' ||
+    (config?.impresora_tipo !== 'navegador' && !factura?.forzar_navegador && esDispositivoAndroid());
+
+  if (usarRawBT) {
+    const enviado = imprimirConRawBT(factura, config, onComplete);
+    if (enviado) return;
+  }
   const anchoMm = Number(factura?.ancho_papel_mm || config?.ancho_papel_mm || 80) === 58 ? 58 : 80;
   const anchoImprimibleMm = anchoMm === 58 ? 48 : 72;
 
