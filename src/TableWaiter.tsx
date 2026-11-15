@@ -4,7 +4,7 @@ import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
 import MesasReservasPanel from './MesasReservasPanel';
 import BarraView from './BarraView';
-import CobroModal from './CobroModal';
+import CobroModal, { type DatosFiscalesCliente } from './CobroModal';
 import {
   cargarTicketsBarraAbiertos,
   cobrarTicketBarra,
@@ -227,6 +227,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     total: number;
     items?: ItemPedido[];
     esExpressConCarrito?: boolean;
+    modoFacturaInicial?: boolean;
   } | null>(null);
   const [procesandoCobroRapido, setProcesandoCobroRapido] = useState(false);
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
@@ -2030,7 +2031,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const descontarInventarioSupabase = descontarStockPedidoOffline;
 
   // Función auxiliar VeriFactu: calcula el hash SHA-256 (NumeroTicket + FechaExpedicion + Total + HashAnterior)
-  // y actualiza/inserta en facturas_tickets con tipo_factura: 'F2', hash_anterior y hash_actual dentro de try/catch
+  // y actualiza/inserta en facturas_tickets con tipo_factura: 'F2' o 'F1', hash_anterior y hash_actual dentro de try/catch
   const encadenarTicketVeriFactu = async (params: {
     docEmitido: any;
     hash_anterior: string;
@@ -2040,13 +2041,19 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     desglose: any;
     ivaDefecto: number;
     autorizadoPor: string | null;
+    datosFiscales?: DatosFiscalesCliente;
   }) => {
     try {
-      const { docEmitido, hash_anterior, mesa, vendedor, metodo, desglose, ivaDefecto, autorizadoPor } = params;
+      const { docEmitido, hash_anterior, mesa, vendedor, metodo, desglose, ivaDefecto, autorizadoPor, datosFiscales } = params;
       const fechaExpedicion = String(docEmitido?.fecha_expedicion || new Date().toISOString());
       const numeroTicket = String(
         docEmitido?.numero_completo || `T-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`
       );
+
+      const esFacturaCompleta = Boolean(datosFiscales && datosFiscales.nifCif && datosFiscales.razonSocial);
+      const direccionCompleta = datosFiscales
+        ? `${datosFiscales.direccion}${datosFiscales.codigoPostal ? ` (CP ${datosFiscales.codigoPostal})` : ''}`.trim()
+        : null;
 
       // Paso 3: Calcular Hash Actual (SHA-256) nativo del navegador sobre NumeroTicket + FechaExpedicion + Total + HashAnterior
       const hash_actual = await calcularHashVeriFactu(
@@ -2067,23 +2074,32 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         Number(desglose.cuotaIvaTotal ?? redondearMoneda(desglose.totalFinal - baseImponible))
       );
 
-      // Paso 3 (IVA) y Paso 4 (VeriFactu): Guardar desglose de impuestos (10% y 21%), tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
+      // Paso 3 (IVA) y Paso 4 (VeriFactu): Guardar desglose de impuestos (10% y 21%), tipo_factura: 'F1' (Nominativa) o 'F2' (Simplificada), hash_anterior y hash_actual en facturas_tickets
       if (docEmitido?.id) {
+        const updatePayload: any = {
+          tipo_factura: esFacturaCompleta ? 'F1' : 'F2',
+          metodo_pago: metodo,
+          base_imponible_10: base10,
+          iva_10: iva10,
+          base_imponible_21: base21,
+          iva_21: iva21,
+          base_imponible: baseImponible,
+          cuota_iva: cuotaIva,
+          total_final: desglose.totalFinal,
+          hash_anterior,
+          hash_actual
+        };
+        if (esFacturaCompleta) {
+          updatePayload.serie = 'F';
+          updatePayload.tipo_documento = 'NOMINATIVA';
+          updatePayload.cliente_nombre_razon = datosFiscales!.razonSocial.trim();
+          updatePayload.cliente_nif = datosFiscales!.nifCif.trim().toUpperCase();
+          updatePayload.cliente_direccion = direccionCompleta;
+        }
+
         const { error: updateErr } = await supabase
           .from('facturas_tickets')
-          .update({
-            tipo_factura: 'F2',
-            metodo_pago: metodo,
-            base_imponible_10: base10,
-            iva_10: iva10,
-            base_imponible_21: base21,
-            iva_21: iva21,
-            base_imponible: baseImponible,
-            cuota_iva: cuotaIva,
-            total_final: desglose.totalFinal,
-            hash_anterior,
-            hash_actual
-          })
+          .update(updatePayload)
           .eq('id', docEmitido.id);
 
         if (updateErr) {
@@ -2096,15 +2112,24 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               cuota_iva: cuotaIva,
               total_final: desglose.totalFinal,
               hash_anterior,
-              hash_actual
+              hash_actual,
+              ...(esFacturaCompleta
+                ? {
+                    serie: 'F',
+                    tipo_documento: 'NOMINATIVA',
+                    cliente_nombre_razon: datosFiscales!.razonSocial.trim(),
+                    cliente_nif: datosFiscales!.nifCif.trim().toUpperCase(),
+                    cliente_direccion: direccionCompleta
+                  }
+                : {})
             })
             .eq('id', docEmitido.id);
         }
       } else {
-        const payloadTicketCompleto = {
-          serie: 'T',
-          tipo_documento: 'SIMPLIFICADA',
-          tipo_factura: 'F2',
+        const payloadTicketCompleto: any = {
+          serie: esFacturaCompleta ? 'F' : 'T',
+          tipo_documento: esFacturaCompleta ? 'NOMINATIVA' : 'SIMPLIFICADA',
+          tipo_factura: esFacturaCompleta ? 'F1' : 'F2',
           numero_completo: numeroTicket,
           fecha_expedicion: fechaExpedicion,
           mesa,
@@ -2127,7 +2152,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           lineas: desglose.lineasCalculadas,
           estado_fiscal: 'EMITIDO',
           hash_anterior,
-          hash_actual
+          hash_actual,
+          cliente_nombre_razon: esFacturaCompleta ? datosFiscales!.razonSocial.trim() : null,
+          cliente_nif: esFacturaCompleta ? datosFiscales!.nifCif.trim().toUpperCase() : null,
+          cliente_direccion: esFacturaCompleta ? direccionCompleta : null
         };
         const { error: insertErr } = await supabase.from('facturas_tickets').insert([payloadTicketCompleto]);
         if (insertErr) {
@@ -2145,7 +2173,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     mesaNombre: string,
     metodo: 'efectivo' | 'tarjeta' | 'bizum',
     itemsOverride?: ItemPedido[],
-    comandasInsertsOffline?: any[]
+    comandasInsertsOffline?: any[],
+    datosFiscales?: DatosFiscalesCliente
   ) => {
     if (cobrandoMesa) return;
 
@@ -2169,6 +2198,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
     const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
+    const esFacturaCompleta = Boolean(datosFiscales && datosFiscales.nifCif && datosFiscales.razonSocial);
+    const direccionCompleta = datosFiscales
+      ? `${datosFiscales.direccion}${datosFiscales.codigoPostal ? ` (CP ${datosFiscales.codigoPostal})` : ''}`.trim()
+      : null;
+
     try {
       if (!navigator.onLine) {
         throw new Error('Sin conexión a internet (offline)');
@@ -2190,8 +2224,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }
 
       const { data: docEmitido, error: rpcError } = await supabase.rpc('emitir_documento_fiscal', {
-        p_serie: 'T',
-        p_tipo_documento: 'SIMPLIFICADA',
+        p_serie: esFacturaCompleta ? 'F' : 'T',
+        p_tipo_documento: esFacturaCompleta ? 'NOMINATIVA' : 'SIMPLIFICADA',
         p_mesa: mesaNombre,
         p_vendedor: camareroActivo.nombre,
         p_metodo_pago: metodo === 'efectivo' ? 'efectivo' : 'tarjeta',
@@ -2203,7 +2237,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         p_autorizado_por: autorizadorDescuentoMesa[mesaNombre] || null,
         p_tipo_iva: cfg.iva_defecto || 10,
         p_total_final: desglose.totalFinal,
-        p_lineas: desglose.lineasCalculadas
+        p_lineas: desglose.lineasCalculadas,
+        p_cliente_nombre: esFacturaCompleta ? datosFiscales!.razonSocial.trim() : null,
+        p_cliente_nif: esFacturaCompleta ? datosFiscales!.nifCif.trim().toUpperCase() : null,
+        p_cliente_direccion: esFacturaCompleta ? direccionCompleta : null
       });
 
       if (rpcError) throw rpcError;
@@ -2233,7 +2270,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         })
         .eq('id', cajaHoy.id);
 
-      // Paso 3 y Paso 4 (VeriFactu): Calcular SHA-256 y guardar tipo_factura: 'F2', hash_anterior y hash_actual en facturas_tickets
+      // Paso 3 y Paso 4 (VeriFactu): Calcular SHA-256 y guardar tipo_factura: 'F2' o 'F1', hash_anterior y hash_actual en facturas_tickets
       await encadenarTicketVeriFactu({
         docEmitido,
         hash_anterior,
@@ -2242,7 +2279,8 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         metodo,
         desglose,
         ivaDefecto: cfg.iva_defecto || 10,
-        autorizadoPor: autorizadorDescuentoMesa[mesaNombre] || null
+        autorizadoPor: autorizadorDescuentoMesa[mesaNombre] || null,
+        datosFiscales
       });
 
       const { data: facturaCompleta } = await supabase
@@ -2253,7 +2291,19 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       setCobrandoMesa(null);
       if (facturaCompleta) {
-        imprimirDocumentoFiscalHTML({ ...facturaCompleta, metodo_pago: metodo }, cfg);
+        imprimirDocumentoFiscalHTML({
+          ...facturaCompleta,
+          metodo_pago: metodo,
+          ...(esFacturaCompleta
+            ? {
+                serie: 'F',
+                tipo_documento: 'NOMINATIVA',
+                cliente_nombre_razon: datosFiscales!.razonSocial.trim(),
+                cliente_nif: datosFiscales!.nifCif.trim().toUpperCase(),
+                cliente_direccion: direccionCompleta
+              }
+            : {})
+        }, cfg);
       }
 
       await descontarInventarioSupabase(itemsACobrar);
@@ -2273,7 +2323,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       });
 
       mostrarAlerta(
-        `¡Ticket Legal ${docEmitido.numero_completo} emitido y cobrado (${desglose.totalFinal.toFixed(2)} €)!`,
+        esFacturaCompleta
+          ? `¡Factura Nominativa ${docEmitido.numero_completo} emitida a ${datosFiscales!.razonSocial} (${desglose.totalFinal.toFixed(2)} €)!`
+          : `¡Ticket Legal ${docEmitido.numero_completo} emitido y cobrado (${desglose.totalFinal.toFixed(2)} €)!`,
         'exito'
       );
 
@@ -2329,7 +2381,10 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  const enviarYCobrarExpress = async (metodo: 'efectivo' | 'tarjeta' | 'bizum') => {
+  const enviarYCobrarExpress = async (
+    metodo: 'efectivo' | 'tarjeta' | 'bizum',
+    datosFiscales?: DatosFiscalesCliente
+  ) => {
     if (!camareroActivo || enviando || cobrandoMesa !== null) return;
     if (cuentaMesaActual.length === 0 && carritoActual.length === 0) return;
 
@@ -2463,17 +2518,20 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       }
     }
 
-    await cobrarMesaLegal(mesaDestinoFormat, metodo, itemsCombinados, comandasInsertsPendientes);
+    await cobrarMesaLegal(mesaDestinoFormat, metodo, itemsCombinados, comandasInsertsPendientes, datosFiscales);
   };
 
-  const ejecutarCobroMesaModal = async (metodo: 'efectivo' | 'tarjeta' | 'bizum') => {
+  const ejecutarCobroMesaModal = async (
+    metodo: 'efectivo' | 'tarjeta' | 'bizum',
+    datosFiscales?: DatosFiscalesCliente
+  ) => {
     if (!modalCobroMesa) return;
     const { mesaNombre, esExpressConCarrito } = modalCobroMesa;
 
     if (esExpressConCarrito || (mesaCoincide(mesaSeleccionada, mesaNombre) && carritoActual.length > 0)) {
-      await enviarYCobrarExpress(metodo);
+      await enviarYCobrarExpress(metodo, datosFiscales);
     } else {
-      await cobrarMesaLegal(mesaNombre, metodo, modalCobroMesa.items);
+      await cobrarMesaLegal(mesaNombre, metodo, modalCobroMesa.items, undefined, datosFiscales);
     }
     setModalCobroMesa(null);
   };
@@ -2727,6 +2785,22 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       setModalFacturaNominativa(null);
       if (nomCompleta) {
         imprimirDocumentoFiscalHTML(nomCompleta, cfg);
+      }
+
+      // Guardar en el historial de clientes frecuentes
+      try {
+        const raw = localStorage.getItem('nexus_clientes_fiscales');
+        const lista: DatosFiscalesCliente[] = raw ? JSON.parse(raw) : [];
+        const nif = modalFacturaNominativa.nifCif.trim().toUpperCase();
+        const filtrada = lista.filter((c) => c.nifCif.toUpperCase() !== nif);
+        filtrada.unshift({
+          nifCif: nif,
+          razonSocial: modalFacturaNominativa.razonSocial.trim(),
+          direccion: modalFacturaNominativa.direccion.trim()
+        });
+        localStorage.setItem('nexus_clientes_fiscales', JSON.stringify(filtrada.slice(0, 50)));
+      } catch (e) {
+        console.error('Error guardando cliente en localStorage:', e);
       }
 
       mostrarAlerta(`Factura Nominativa ${docNom.numero_completo} generada e impresa correctamente.`, 'exito');
@@ -3519,12 +3593,17 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       {/* MODAL COBRO UNIFICADO MESA */}
       {modalCobroMesa && (
         <CobroModal
-          identificador={`COBRO DE MESA ${modalCobroMesa.mesaNombre.toUpperCase().replace('MESA ', '')}`}
+          identificador={
+            modalCobroMesa.modoFacturaInicial
+              ? `FACTURA DE MESA ${modalCobroMesa.mesaNombre.toUpperCase().replace('MESA ', '')}`
+              : `COBRO DE MESA ${modalCobroMesa.mesaNombre.toUpperCase().replace('MESA ', '')}`
+          }
           subtitulo={modalCobroMesa.subtitulo || `Mesa ${modalCobroMesa.mesaNombre}`}
           total={modalCobroMesa.total}
           procesando={cobrandoMesa !== null || enviando}
-          onConfirmarCobro={async (metodo) => {
-            await ejecutarCobroMesaModal(metodo);
+          modoFacturaInicial={modalCobroMesa.modoFacturaInicial}
+          onConfirmarCobro={async (metodo, _entregado, _cambio, datosFiscales) => {
+            await ejecutarCobroMesaModal(metodo, datosFiscales);
           }}
           onCerrar={() => setModalCobroMesa(null)}
         />
@@ -4150,6 +4229,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     <CreditCard className="h-4 w-4" />
                     <span className="hidden sm:inline">Cobrar Mesa</span>
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModalCobroMesa({
+                        mesaNombre: getNombreMesa(mesaSeleccionada),
+                        subtitulo: `Mesa ${getNombreMesa(mesaSeleccionada)} · ${cuentaMesaActual.length + carritoActual.length} artículos · Factura`,
+                        total: desgloseMesaSeleccionada.totalFinal,
+                        items: cuentaMesaActual,
+                        esExpressConCarrito: carritoActual.length > 0,
+                        modoFacturaInicial: true
+                      });
+                    }}
+                    disabled={cobrandoMesa !== null || (cuentaMesaActual.length === 0 && carritoActual.length === 0)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-600/30 hover:bg-cyan-600 text-cyan-200 hover:text-slate-950 border border-cyan-500/40 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                    title="Emitir Factura Completa con NIF para el cliente"
+                  >
+                    <FileText className="h-4 w-4" />
+                    <span className="hidden sm:inline">Facturar</span>
+                  </button>
                 </div>
               </div>
 
@@ -4647,33 +4745,59 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               )}
             </div>
 
-            {/* COBRO UNIFICADO DE MESA */}
+            {/* COBRO UNIFICADO Y FACTURACIÓN DE MESA */}
             <div className="p-4 rounded-3xl bg-[#0d0f17] border border-amber-500/30 space-y-2.5 shadow-xl">
               <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-amber-400">
-                <span>Cobro de Mesa ({getNombreMesa(mesaSeleccionada)})</span>
+                <span>Cobro & Facturación ({getNombreMesa(mesaSeleccionada)})</span>
                 <span className="font-mono text-white font-bold text-sm">{desgloseMesaSeleccionada.totalFinal.toFixed(2)} €</span>
               </div>
-              <button
-                type="button"
-                disabled={
-                  enviando ||
-                  cobrandoMesa !== null ||
-                  (cuentaMesaActual.length === 0 && carritoActual.length === 0)
-                }
-                onClick={() => {
-                  setModalCobroMesa({
-                    mesaNombre: getNombreMesa(mesaSeleccionada),
-                    subtitulo: `Mesa ${getNombreMesa(mesaSeleccionada)} · ${cuentaMesaActual.length + carritoActual.length} artículos`,
-                    total: desgloseMesaSeleccionada.totalFinal,
-                    items: cuentaMesaActual,
-                    esExpressConCarrito: carritoActual.length > 0
-                  });
-                }}
-                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-amber-500 via-emerald-500 to-amber-500 hover:from-amber-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <CreditCard className="h-4 w-4" />
-                <span>🖨️ 💳 Cobrar Mesa ({desgloseMesaSeleccionada.totalFinal.toFixed(2)} €)</span>
-              </button>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    enviando ||
+                    cobrandoMesa !== null ||
+                    (cuentaMesaActual.length === 0 && carritoActual.length === 0)
+                  }
+                  onClick={() => {
+                    setModalCobroMesa({
+                      mesaNombre: getNombreMesa(mesaSeleccionada),
+                      subtitulo: `Mesa ${getNombreMesa(mesaSeleccionada)} · ${cuentaMesaActual.length + carritoActual.length} artículos`,
+                      total: desgloseMesaSeleccionada.totalFinal,
+                      items: cuentaMesaActual,
+                      esExpressConCarrito: carritoActual.length > 0,
+                      modoFacturaInicial: false
+                    });
+                  }}
+                  className="sm:col-span-2 py-3.5 px-3 rounded-2xl bg-gradient-to-r from-amber-500 via-emerald-500 to-amber-500 hover:from-amber-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <CreditCard className="h-4 w-4" />
+                  <span>🖨️ 💳 Cobrar Mesa ({desgloseMesaSeleccionada.totalFinal.toFixed(2)} €)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    enviando ||
+                    cobrandoMesa !== null ||
+                    (cuentaMesaActual.length === 0 && carritoActual.length === 0)
+                  }
+                  onClick={() => {
+                    setModalCobroMesa({
+                      mesaNombre: getNombreMesa(mesaSeleccionada),
+                      subtitulo: `Mesa ${getNombreMesa(mesaSeleccionada)} · ${cuentaMesaActual.length + carritoActual.length} artículos · Factura`,
+                      total: desgloseMesaSeleccionada.totalFinal,
+                      items: cuentaMesaActual,
+                      esExpressConCarrito: carritoActual.length > 0,
+                      modoFacturaInicial: true
+                    });
+                  }}
+                  className="py-3.5 px-2 rounded-2xl bg-cyan-600/30 hover:bg-cyan-600 text-cyan-200 hover:text-slate-950 border border-cyan-500/40 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Emitir Factura Completa con NIF para el cliente"
+                >
+                  <FileText className="h-4 w-4" />
+                  <span>📄 Facturar</span>
+                </button>
+              </div>
             </div>
 
             {/* PANEL LATERAL DE CUENTAS DE BARRA ABIERTAS */}
@@ -4965,7 +5089,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       </div>
                     )}
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-3 border-t border-white/10">
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 pt-3 border-t border-white/10">
                       <button
                         type="button"
                         disabled={cobrandoMesa !== null}
@@ -4975,13 +5099,32 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                             subtitulo: `${m.mesa} · ${m.items.length} artículos`,
                             total: desglose.totalFinal,
                             items: m.items,
-                            esExpressConCarrito: false
+                            esExpressConCarrito: false,
+                            modoFacturaInicial: false
                           });
                         }}
                         className="sm:col-span-2 py-3 rounded-xl bg-gradient-to-r from-amber-500 via-emerald-500 to-amber-500 hover:from-amber-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <CreditCard className="h-4 w-4" />
                         <span>{estaCobrandoEstaMesa ? 'Cobrando...' : `Cobrar Mesa (${desglose.totalFinal.toFixed(2)} €)`}</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={cobrandoMesa !== null}
+                        onClick={() => {
+                          setModalCobroMesa({
+                            mesaNombre: m.mesa,
+                            subtitulo: `${m.mesa} · ${m.items.length} artículos · Factura`,
+                            total: desglose.totalFinal,
+                            items: m.items,
+                            esExpressConCarrito: false,
+                            modoFacturaInicial: true
+                          });
+                        }}
+                        className="py-3 rounded-xl bg-cyan-600/30 hover:bg-cyan-600 text-cyan-200 hover:text-slate-950 border border-cyan-500/40 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Emitir Factura Completa con NIF para el cliente"
+                      >
+                        <FileText className="h-4 w-4" /> Facturar
                       </button>
                       <button
                         type="button"
