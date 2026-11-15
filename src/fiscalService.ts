@@ -108,6 +108,7 @@ export interface ConfiguracionFiscal {
   telefono: string;
   iva_defecto: number;
   pin_administrador: string;
+  ancho_papel_mm?: number;
 }
 
 /**
@@ -204,18 +205,59 @@ export async function validarPinAdministrador(pinIntroducido: string): Promise<b
 }
 
 /**
- * Genera una ventana de impresión limpia y optimizada para impresora térmica de 80mm o PDF A4
- * Cumple con el RD 1619/2012 (Reglamento de Facturación) y Ley 11/2021 Antifraude
+ * Limpia y normaliza cadenas de texto para impresión térmica:
+ * - Convierte a UTF-8 normalizado NFC (tildes compuestas canónicas).
+ * - Elimina secuencias de control binarias ESC/POS crudas (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F, 0x7F-0x9F)
+ *   que provocan volcados binarios o desconfiguran las impresoras térmicas.
+ * - Elimina caracteres de control invisibles (BOM, zero-width spaces).
+ */
+export function limpiarTextoTermico(texto: any): string {
+  if (texto === null || texto === undefined) return '';
+  return String(texto)
+    .normalize('NFC')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim();
+}
+
+/**
+ * Escapa caracteres HTML especiales manteniendo codificación limpia UTF-8
+ */
+export function escaparHtml(texto: any): string {
+  const limpio = limpiarTextoTermico(texto);
+  return limpio
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Genera una ventana de impresión limpia y optimizada para impresora térmica de 80mm o 58mm
+ * Cumple con el RD 1619/2012 (Reglamento de Facturación) y Ley 11/2021 Antifraude.
+ * - Codificación garantizada UTF-8.
+ * - @page y márgenes a cero para evitar arrastre de cabeceras/pies de página del navegador (URL, fecha, pág).
+ * - Ancho controlado (80mm / 58mm) sin desbordamientos que rompan el formato de columnas.
  */
 export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionFiscal) {
+  const anchoMm = Number(factura?.ancho_papel_mm || config?.ancho_papel_mm || 80) === 58 ? 58 : 80;
+  const anchoImprimibleMm = anchoMm === 58 ? 48 : 72;
+
   const esRectificativa = factura.serie === 'R' || factura.tipo_documento === 'RECTIFICATIVA';
   const esNominativa = factura.serie === 'F' || factura.tipo_documento === 'NOMINATIVA';
+  const esPreTicket =
+    factura.serie === 'PROFORMA' ||
+    String(factura.tipo_documento || '').toUpperCase().includes('PRE-TICKET') ||
+    String(factura.tipo_documento || '').toUpperCase().includes('CUENTA MESA');
 
   const tituloLegal = esRectificativa
     ? 'FACTURA RECTIFICATIVA SIMPLIFICADA'
     : esNominativa
     ? 'FACTURA COMPLETA NOMINATIVA'
-    : 'FACTURA SIMPLIFICADA';
+    : esPreTicket
+    ? 'PRE-TICKET / CUENTA MESA'
+    : (factura.tipo_documento || 'FACTURA SIMPLIFICADA');
 
   const fechaFormateada = new Date(factura.fecha_expedicion || new Date()).toLocaleString('es-ES', {
     day: '2-digit',
@@ -236,184 +278,512 @@ export function imprimirDocumentoFiscalHTML(factura: any, config: ConfiguracionF
   const iva10Print = redondearMoneda(Number(factura.iva_10 ?? desgloseIvaFactura.iva_10));
   const base21Print = redondearMoneda(Number(factura.base_imponible_21 ?? desgloseIvaFactura.base_imponible_21));
   const iva21Print = redondearMoneda(Number(factura.iva_21 ?? desgloseIvaFactura.iva_21));
-  const huellaCorta = factura.hash_actual ? `${String(factura.hash_actual).substring(0, 16)}...` : 'N/A';
+
+  const tieneHuellaValida =
+    factura.hash_actual &&
+    factura.hash_actual !== 'PENDIENTE_DE_COBRO_DEFINITIVO' &&
+    String(factura.hash_actual).length >= 16;
+  const huellaCorta = tieneHuellaValida ? `${String(factura.hash_actual).substring(0, 16)}...` : '';
+
+  const nombreComercial = escaparHtml(config.nombre_comercial || 'NEXUS');
+  const razonSocial = escaparHtml(config.razon_social || '');
+  const nifCif = escaparHtml(config.nif_cif || '');
+  const direccionFiscal = escaparHtml(config.direccion_fiscal || '');
+  const telefono = config.telefono ? escaparHtml(config.telefono) : '';
+
+  const numeroCompleto = escaparHtml(factura.numero_completo || 'T-0000');
+  const mesa = escaparHtml(factura.mesa || 'Barra');
+  const vendedor = escaparHtml(factura.vendedor_nombre || 'Camarero');
+  const metodoPago = escaparHtml(String(factura.metodo_pago || 'efectivo').toUpperCase());
 
   const filasHTML = lineas
-    .map(
-      (l) => `
+    .map((l) => {
+      const cant = Number(l.cantidad || 0);
+      const nombreLimpio = escaparHtml(l.nombre || 'Artículo');
+      const pu = Number(l.precio_unitario || 0).toFixed(2);
+      const sub = Number(l.subtotal_linea || 0).toFixed(2);
+      const dto = Number(l.descuento_porcentaje || 0);
+
+      return `
       <tr>
-        <td style="padding: 3px 0; text-align: left;">
-          ${l.cantidad}x ${l.nombre}
-          ${Number(l.descuento_porcentaje) > 0 ? `<br/><small style="color:#555;">(Dto. -${l.descuento_porcentaje}%)</small>` : ''}
+        <td class="col-concepto">
+          ${cant}x ${nombreLimpio}
+          ${dto > 0 ? `<br/><small class="text-muted">(Dto. -${dto}%)</small>` : ''}
         </td>
-        <td style="padding: 3px 0; text-align: right; vertical-align: top;">${Number(l.precio_unitario).toFixed(2)}€</td>
-        <td style="padding: 3px 0; text-align: right; vertical-align: top; font-weight: bold;">${Number(l.subtotal_linea).toFixed(2)}€</td>
-      </tr>
-    `
-    )
+        <td class="col-precio">${pu}&euro;</td>
+        <td class="col-total">${sub}&euro;</td>
+      </tr>`;
+    })
     .join('');
 
-  const html = `
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="UTF-8" />
-      <title>${tituloLegal} - ${factura.numero_completo}</title>
-      <style>
-        @page { margin: 4mm; }
-        body {
-          font-family: 'Courier New', Courier, monospace;
-          font-size: 12px;
-          color: #000;
-          background: #fff;
-          width: 76mm;
-          margin: 0 auto;
-          padding: 4px;
-        }
-        .center { text-align: center; }
-        .bold { font-weight: bold; }
-        .divider { border-top: 1px dashed #000; margin: 6px 0; }
-        table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        .totales td { padding: 2px 0; font-size: 12px; }
-        .legal-box { font-size: 10px; margin-top: 8px; line-height: 1.3; }
-      </style>
-    </head>
-    <body>
-      <div class="center">
-        <div style="font-size: 16px;" class="bold">${config.nombre_comercial}</div>
-        <div class="bold">${config.razon_social}</div>
-        <div>NIF/CIF: ${config.nif_cif}</div>
-        <div>${config.direccion_fiscal}</div>
-        ${config.telefono ? `<div>Tel: ${config.telefono}</div>` : ''}
-      </div>
-
-      <div class="divider"></div>
-
-      <div class="center bold" style="font-size: 13px;">${tituloLegal}</div>
-      <div><strong>Nº Doc:</strong> ${factura.numero_completo}</div>
-      <div><strong>Fecha:</strong> ${fechaFormateada}</div>
-      <div><strong>Mesa/ Ubic.:</strong> ${factura.mesa || 'Barra'}</div>
-      <div><strong>Atendido por:</strong> ${factura.vendedor_nombre || 'Camarero'}</div>
-
-      ${
-        esRectificativa
-          ? `
-        <div class="divider"></div>
-        <div style="background:#eee; padding:4px; font-size:11px;">
-          <strong>DOC. RECTIFICADO:</strong> ${factura.ticket_origen_numero || 'N/A'}<br/>
-          <strong>MOTIVO:</strong> ${factura.motivo_rectificacion || 'Devolución / Anulación de operación'}
-        </div>
-      `
-          : ''
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escaparHtml(tituloLegal)} - ${numeroCompleto}</title>
+  <style>
+    @page {
+      size: ${anchoMm}mm auto;
+      margin: 0mm !important;
+    }
+    @media print {
+      *, *:before, *:after {
+        box-sizing: border-box !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
       }
-
-      ${
-        esNominativa
-          ? `
-        <div class="divider"></div>
-        <div style="font-size:11px;">
-          <strong>DATOS DEL CLIENTE:</strong><br/>
-          Razón Social: ${factura.cliente_nombre_razon || ''}<br/>
-          NIF/CIF: ${factura.cliente_nif || ''}<br/>
-          Dirección: ${factura.cliente_direccion || ''}<br/>
-          ${factura.ticket_origen_numero ? `Canje Ticket Simplificado: ${factura.ticket_origen_numero}` : ''}
-        </div>
-      `
-          : ''
+      html, body {
+        width: ${anchoMm}mm !important;
+        max-width: ${anchoMm}mm !important;
+        min-width: ${anchoMm}mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #ffffff !important;
+        color: #000000 !important;
       }
+      header, footer, nav, button, .no-print {
+        display: none !important;
+      }
+      .ticket-wrapper {
+        width: ${anchoImprimibleMm}mm !important;
+        max-width: ${anchoImprimibleMm}mm !important;
+        margin: 0 auto !important;
+        padding: 2mm 1mm !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+      }
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Courier New', Courier, 'Lucida Console', Monaco, monospace;
+      font-size: ${anchoMm === 58 ? '10px' : '11.5px'};
+      line-height: 1.25;
+      color: #000000;
+      background: #ffffff;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+    .ticket-wrapper {
+      width: ${anchoImprimibleMm}mm;
+      margin: 0 auto;
+      padding: 3mm 1.5mm;
+      text-align: left;
+    }
+    .center { text-align: center; }
+    .right { text-align: right; }
+    .left { text-align: left; }
+    .bold { font-weight: bold; }
+    .divider { border-top: 1px dashed #000000; margin: 4px 0; }
+    .divider-double { border-top: 1px double #000000; margin: 5px 0; }
+    .text-muted { color: #444444; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: ${anchoMm === 58 ? '9.5px' : '11px'};
+    }
+    table th {
+      border-bottom: 1px solid #000000;
+      padding: 2px 0;
+      font-weight: bold;
+    }
+    table td {
+      padding: 2px 0;
+      vertical-align: top;
+    }
+    .col-concepto {
+      width: 52%;
+      text-align: left;
+      word-break: break-word;
+    }
+    .col-precio {
+      width: 23%;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .col-total {
+      width: 25%;
+      text-align: right;
+      white-space: nowrap;
+      font-weight: bold;
+    }
+    .totales td {
+      padding: 1.5px 0;
+    }
+    .total-destacado {
+      font-size: ${anchoMm === 58 ? '12px' : '13.5px'};
+      font-weight: bold;
+      border-top: 1px solid #000000;
+      border-bottom: 1px solid #000000;
+      padding: 4px 0 !important;
+    }
+    .legal-box {
+      font-size: ${anchoMm === 58 ? '8.5px' : '9.5px'};
+      margin-top: 6px;
+      line-height: 1.25;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="ticket-wrapper">
+    <div class="center">
+      <div style="font-size: 15px;" class="bold">${nombreComercial}</div>
+      ${razonSocial ? `<div class="bold">${razonSocial}</div>` : ''}
+      ${nifCif ? `<div>NIF/CIF: ${nifCif}</div>` : ''}
+      ${direccionFiscal ? `<div>${direccionFiscal}</div>` : ''}
+      ${telefono ? `<div>Tel: ${telefono}</div>` : ''}
+    </div>
 
+    <div class="divider"></div>
+
+    <div class="center bold" style="font-size: 12.5px;">${escaparHtml(tituloLegal)}</div>
+    ${esPreTicket ? '<div class="center text-muted" style="font-size: 9.5px;">(DOCUMENTO NO V&Aacute;LIDO COMO FACTURA)</div>' : ''}
+    <div><strong>N&ordm; Doc:</strong> ${numeroCompleto}</div>
+    <div><strong>Fecha:</strong> ${fechaFormateada}</div>
+    <div><strong>Mesa / Ubic.:</strong> ${mesa}</div>
+    <div><strong>Atendido por:</strong> ${vendedor}</div>
+
+    ${
+      esRectificativa
+        ? `
       <div class="divider"></div>
+      <div style="background:#f4f4f4; padding:3px; font-size:10px;">
+        <strong>DOC. RECTIFICADO:</strong> ${escaparHtml(factura.ticket_origen_numero || 'N/A')}<br/>
+        <strong>MOTIVO:</strong> ${escaparHtml(factura.motivo_rectificacion || 'Devolución / Anulación de operación')}
+      </div>`
+        : ''
+    }
 
-      <table>
-        <thead>
-          <tr style="border-bottom: 1px solid #000;">
-            <th style="text-align: left;">Concepto</th>
-            <th style="text-align: right;">P.Unit</th>
-            <th style="text-align: right;">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${filasHTML}
-        </tbody>
-      </table>
-
+    ${
+      esNominativa
+        ? `
       <div class="divider"></div>
+      <div style="font-size:10.5px;">
+        <strong>DATOS DEL CLIENTE:</strong><br/>
+        Razón Social: ${escaparHtml(factura.cliente_nombre_razon || '')}<br/>
+        NIF/CIF: ${escaparHtml(factura.cliente_nif || '')}<br/>
+        Dirección: ${escaparHtml(factura.cliente_direccion || '')}<br/>
+        ${factura.ticket_origen_numero ? `Canje Ticket: ${escaparHtml(factura.ticket_origen_numero)}` : ''}
+      </div>`
+        : ''
+    }
 
-      <table class="totales">
+    <div class="divider"></div>
+
+    <table>
+      <colgroup>
+        <col style="width: 52%;" />
+        <col style="width: 23%;" />
+        <col style="width: 25%;" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th class="col-concepto">Concepto</th>
+          <th class="col-precio">P.Unit</th>
+          <th class="col-total">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filasHTML}
+      </tbody>
+    </table>
+
+    <div class="divider"></div>
+
+    <table class="totales">
+      <colgroup>
+        <col style="width: 60%;" />
+        <col style="width: 40%;" />
+      </colgroup>
+      <tbody>
         ${
           Math.abs(Number(factura.descuento_total_importe || 0)) > 0
             ? `
           <tr>
             <td>Subtotal Bruto:</td>
-            <td style="text-align: right;">${Number(factura.subtotal_bruto).toFixed(2)} €</td>
+            <td class="right">${Number(factura.subtotal_bruto).toFixed(2)} &euro;</td>
           </tr>
           <tr>
-            <td>Descuento Aplicado ${factura.descuento_general_porcentaje > 0 ? `(${factura.descuento_general_porcentaje}%)` : ''}:</td>
-            <td style="text-align: right;">-${Math.abs(Number(factura.descuento_total_importe)).toFixed(2)} €</td>
-          </tr>
-        `
+            <td>Descuento ${Number(factura.descuento_general_porcentaje || 0) > 0 ? `(${factura.descuento_general_porcentaje}%)` : ''}:</td>
+            <td class="right">-${Math.abs(Number(factura.descuento_total_importe)).toFixed(2)} &euro;</td>
+          </tr>`
             : ''
-      }
+        }
         ${
           Math.abs(base10Print) > 0 || (Math.abs(base10Print) === 0 && Math.abs(base21Print) === 0)
             ? `
-        <tr>
-          <td>Base Imponible (10%):</td>
-          <td style="text-align: right;">${base10Print.toFixed(2)} €</td>
-        </tr>
-        <tr>
-          <td>Cuota IVA (10%):</td>
-          <td style="text-align: right;">${iva10Print.toFixed(2)} €</td>
-        </tr>`
+          <tr>
+            <td>Base Imponible (10%):</td>
+            <td class="right">${base10Print.toFixed(2)} &euro;</td>
+          </tr>
+          <tr>
+            <td>Cuota IVA (10%):</td>
+            <td class="right">${iva10Print.toFixed(2)} &euro;</td>
+          </tr>`
             : ''
         }
         ${
           Math.abs(base21Print) > 0
             ? `
-        <tr>
-          <td>Base Imponible (21%):</td>
-          <td style="text-align: right;">${base21Print.toFixed(2)} €</td>
-        </tr>
-        <tr>
-          <td>Cuota IVA (21%):</td>
-          <td style="text-align: right;">${iva21Print.toFixed(2)} €</td>
-        </tr>`
+          <tr>
+            <td>Base Imponible (21%):</td>
+            <td class="right">${base21Print.toFixed(2)} &euro;</td>
+          </tr>
+          <tr>
+            <td>Cuota IVA (21%):</td>
+            <td class="right">${iva21Print.toFixed(2)} &euro;</td>
+          </tr>`
             : ''
         }
-        <tr style="font-size: 15px; border-top: 1px solid #000;">
-          <td class="bold">TOTAL (IVA INCLUIDO):</td>
-          <td class="bold" style="text-align: right;">${Number(factura.total_final).toFixed(2)} €</td>
+        <tr class="total-destacado">
+          <td class="bold">TOTAL:</td>
+          <td class="bold right">${Number(factura.total_final).toFixed(2)} &euro;</td>
         </tr>
-      </table>
+      </tbody>
+    </table>
 
-      <div class="divider"></div>
-      <div><strong>Forma de Pago:</strong> ${String(factura.metodo_pago || 'efectivo').toUpperCase()}</div>
+    <div class="divider"></div>
+    <div><strong>Forma de Pago:</strong> ${metodoPago}</div>
+    ${
+      factura.autorizado_por
+        ? `<div style="font-size:9.5px;">Dto/Op. autorizada por: ${escaparHtml(factura.autorizado_por)}</div>`
+        : ''
+    }
+
+    <div class="divider"></div>
+    <div class="center legal-box">
       ${
-        factura.autorizado_por
-          ? `<div style="font-size:10px;">Dto/Op. autorizada por: ${factura.autorizado_por}</div>`
-          : ''
+        esPreTicket
+          ? '<strong>DOCUMENTO INFORMATIVO PREVIO AL COBRO</strong><br/>Pendiente de cobro definitivo.<br/>'
+          : 'Documento emitido conforme al RD 1619/2012 y Ley 11/2021.<br/>'
       }
+      ${huellaCorta ? `Huella SHA-256: ${huellaCorta}<br/>` : ''}
+      <strong>&iexcl;Gracias por su visita!</strong>
+    </div>
+  </div>
+</body>
+</html>`;
 
-      <div class="divider"></div>
-      <div class="center legal-box">
-        Documento emitido conforme al RD 1619/2012 y Ley 11/2021.<br/>
-        Huella SHA-256: ${huellaCorta}<br/>
-        <strong>¡Gracias por su visita!</strong>
-      </div>
-    </body>
-    </html>
-  `;
-
-  const ventana = window.open('', '_blank', 'width=400,height=650');
+  const ventana = window.open('', '_blank', 'width=420,height=680');
   if (ventana) {
-    ventana.document.open();
-    ventana.document.write(html);
-    ventana.document.close();
-    ventana.focus();
-    setTimeout(() => {
-      ventana.print();
-    }, 250);
+    try {
+      ventana.document.open('text/html', 'replace');
+      ventana.document.write(html);
+      ventana.document.close();
+      ventana.focus();
+      ventana.onafterprint = () => {
+        try {
+          ventana.close();
+        } catch (_) {}
+      };
+      setTimeout(() => {
+        ventana.focus();
+        ventana.print();
+      }, 350);
+      return;
+    } catch (e) {
+      console.warn('Fallo al abrir ventana de impresión térmica, recurriendo a iframe:', e);
+    }
   }
+
+  // Fallback transparente mediante iframe si los popups están bloqueados por el navegador
+  try {
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.style.visibility = 'hidden';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document || iframe.contentDocument;
+    if (doc) {
+      doc.open('text/html', 'replace');
+      doc.write(html);
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          try {
+            document.body.removeChild(iframe);
+          } catch (_) {}
+        }, 2000);
+      }, 350);
+    }
+  } catch (err) {
+    console.error('Error al imprimir ticket térmico:', err);
+  }
+}
+
+/**
+ * Genera el ticket en formato texto plano puro (UTF-8 estándar limpio), alineado en columnas fijas,
+ * sin incluir caracteres binarios de control ESC/POS crudos.
+ * Ideal para impresoras térmicas en modo texto directo, buffers de impresión o verificación.
+ */
+export function generarTicketTextoPlano(
+  factura: any,
+  config: ConfiguracionFiscal,
+  anchoCaracteres: number = 42
+): string {
+  const cPadCenter = (texto: string, ancho: number) => {
+    const t = limpiarTextoTermico(texto);
+    if (t.length >= ancho) return t.slice(0, ancho);
+    const espIzq = Math.floor((ancho - t.length) / 2);
+    const espDer = ancho - t.length - espIzq;
+    return ' '.repeat(espIzq) + t + ' '.repeat(espDer);
+  };
+
+  const cPadLR = (izq: string, der: string, ancho: number) => {
+    const tIzq = limpiarTextoTermico(izq);
+    const tDer = limpiarTextoTermico(der);
+    const espacios = Math.max(1, ancho - tIzq.length - tDer.length);
+    return tIzq + ' '.repeat(espacios) + tDer;
+  };
+
+  const separador = '-'.repeat(anchoCaracteres);
+  const separadorDoble = '='.repeat(anchoCaracteres);
+
+  const esRectificativa = factura.serie === 'R' || factura.tipo_documento === 'RECTIFICATIVA';
+  const esNominativa = factura.serie === 'F' || factura.tipo_documento === 'NOMINATIVA';
+  const esPreTicket =
+    factura.serie === 'PROFORMA' ||
+    String(factura.tipo_documento || '').toUpperCase().includes('PRE-TICKET') ||
+    String(factura.tipo_documento || '').toUpperCase().includes('CUENTA MESA');
+
+  const tituloLegal = esRectificativa
+    ? 'FACTURA RECTIFICATIVA SIMPLIFICADA'
+    : esNominativa
+    ? 'FACTURA COMPLETA NOMINATIVA'
+    : esPreTicket
+    ? 'PRE-TICKET / CUENTA MESA'
+    : (factura.tipo_documento || 'FACTURA SIMPLIFICADA');
+
+  const fechaFormateada = new Date(factura.fecha_expedicion || new Date()).toLocaleString('es-ES', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+
+  const lineas: LineaTicketFiscal[] = Array.isArray(factura.lineas) ? factura.lineas : [];
+  const desgloseIvaFactura = calcularDesgloseImpuestosLineas(
+    lineas,
+    Number(factura.descuento_general_porcentaje || 0),
+    factura.total_final !== undefined ? Number(factura.total_final) : undefined
+  );
+  const base10Print = redondearMoneda(Number(factura.base_imponible_10 ?? desgloseIvaFactura.base_imponible_10));
+  const iva10Print = redondearMoneda(Number(factura.iva_10 ?? desgloseIvaFactura.iva_10));
+  const base21Print = redondearMoneda(Number(factura.base_imponible_21 ?? desgloseIvaFactura.base_imponible_21));
+  const iva21Print = redondearMoneda(Number(factura.iva_21 ?? desgloseIvaFactura.iva_21));
+
+  const buf: string[] = [];
+
+  // Cabecera Empresa
+  buf.push(cPadCenter(config.nombre_comercial || 'NEXUS', anchoCaracteres));
+  if (config.razon_social) buf.push(cPadCenter(config.razon_social, anchoCaracteres));
+  if (config.nif_cif) buf.push(cPadCenter(`NIF/CIF: ${config.nif_cif}`, anchoCaracteres));
+  if (config.direccion_fiscal) buf.push(cPadCenter(config.direccion_fiscal, anchoCaracteres));
+  if (config.telefono) buf.push(cPadCenter(`Tel: ${config.telefono}`, anchoCaracteres));
+
+  buf.push(separador);
+  buf.push(cPadCenter(tituloLegal, anchoCaracteres));
+  if (esPreTicket) {
+    buf.push(cPadCenter('(DOCUMENTO NO VALIDO COMO FACTURA)', anchoCaracteres));
+  }
+  buf.push(separador);
+
+  buf.push(cPadLR(`Doc: ${factura.numero_completo || 'T-0000'}`, `Mesa: ${factura.mesa || 'Barra'}`, anchoCaracteres));
+  buf.push(cPadLR(`Fecha: ${fechaFormateada}`, `Vendedor: ${factura.vendedor_nombre || 'Camarero'}`, anchoCaracteres));
+
+  if (esRectificativa && factura.ticket_origen_numero) {
+    buf.push(separador);
+    buf.push(`DOC. RECTIFICADO: ${limpiarTextoTermico(factura.ticket_origen_numero)}`);
+    if (factura.motivo_rectificacion) {
+      buf.push(`MOTIVO: ${limpiarTextoTermico(factura.motivo_rectificacion)}`);
+    }
+  }
+
+  if (esNominativa) {
+    buf.push(separador);
+    buf.push('DATOS CLIENTE:');
+    if (factura.cliente_nombre_razon) buf.push(`R.Social: ${limpiarTextoTermico(factura.cliente_nombre_razon)}`);
+    if (factura.cliente_nif) buf.push(`NIF/CIF: ${limpiarTextoTermico(factura.cliente_nif)}`);
+    if (factura.cliente_direccion) buf.push(`Direccion: ${limpiarTextoTermico(factura.cliente_direccion)}`);
+  }
+
+  buf.push(separador);
+  const colCant = 4;
+  const colTotal = 8;
+  const colConcepto = Math.max(10, anchoCaracteres - colCant - colTotal - 2);
+  buf.push(
+    'Cant'.padEnd(colCant) + ' ' +
+    'Concepto'.padEnd(colConcepto) + ' ' +
+    'Total'.padStart(colTotal)
+  );
+  buf.push(separador);
+
+  for (const l of lineas) {
+    const cantStr = `${Number(l.cantidad || 0)}x`.padEnd(colCant);
+    const totStr = `${Number(l.subtotal_linea || 0).toFixed(2)}E`.padStart(colTotal);
+    const nomStr = limpiarTextoTermico(l.nombre).slice(0, colConcepto).padEnd(colConcepto);
+    buf.push(`${cantStr} ${nomStr} ${totStr}`);
+    if (Number(l.descuento_porcentaje) > 0) {
+      buf.push(' '.repeat(colCant + 1) + `(Dto. -${l.descuento_porcentaje}%)`);
+    }
+  }
+
+  buf.push(separador);
+
+  if (Math.abs(Number(factura.descuento_total_importe || 0)) > 0) {
+    buf.push(cPadLR('Subtotal Bruto:', `${Number(factura.subtotal_bruto).toFixed(2)} EUR`, anchoCaracteres));
+    const dtoPorc = Number(factura.descuento_general_porcentaje || 0) > 0 ? ` (${factura.descuento_general_porcentaje}%)` : '';
+    buf.push(cPadLR(`Descuento${dtoPorc}:`, `-${Math.abs(Number(factura.descuento_total_importe)).toFixed(2)} EUR`, anchoCaracteres));
+  }
+
+  if (Math.abs(base10Print) > 0 || (Math.abs(base10Print) === 0 && Math.abs(base21Print) === 0)) {
+    buf.push(cPadLR('Base Imponible (10%):', `${base10Print.toFixed(2)} EUR`, anchoCaracteres));
+    buf.push(cPadLR('Cuota IVA (10%):', `${iva10Print.toFixed(2)} EUR`, anchoCaracteres));
+  }
+
+  if (Math.abs(base21Print) > 0) {
+    buf.push(cPadLR('Base Imponible (21%):', `${base21Print.toFixed(2)} EUR`, anchoCaracteres));
+    buf.push(cPadLR('Cuota IVA (21%):', `${iva21Print.toFixed(2)} EUR`, anchoCaracteres));
+  }
+
+  buf.push(separadorDoble);
+  buf.push(cPadLR('TOTAL (IVA INCLUIDO):', `${Number(factura.total_final).toFixed(2)} EUR`, anchoCaracteres));
+  buf.push(separadorDoble);
+
+  buf.push(cPadLR('Forma de Pago:', String(factura.metodo_pago || 'EFECTIVO').toUpperCase(), anchoCaracteres));
+  if (factura.autorizado_por) {
+    buf.push(`Autorizado por: ${limpiarTextoTermico(factura.autorizado_por)}`);
+  }
+
+  buf.push(separador);
+  if (esPreTicket) {
+    buf.push(cPadCenter('DOCUMENTO NO VALIDO COMO FACTURA', anchoCaracteres));
+    buf.push(cPadCenter('Pendiente de cobro definitivo', anchoCaracteres));
+  } else {
+    buf.push(cPadCenter('Doc. emitido conf. RD 1619/2012 y Ley 11/2021', anchoCaracteres));
+    if (factura.hash_actual && factura.hash_actual !== 'PENDIENTE_DE_COBRO_DEFINITIVO') {
+      buf.push(cPadCenter(`Huella: ${String(factura.hash_actual).substring(0, 16)}...`, anchoCaracteres));
+    }
+  }
+  buf.push(cPadCenter('¡Gracias por su visita!', anchoCaracteres));
+  buf.push('\n\n\n');
+
+  return buf.join('\n');
 }
 
 /**
@@ -458,13 +828,13 @@ export function exportarTicketsAExcelCSV(tickets: any[], nombreArchivo: string =
     const iTot = Number(t.cuota_iva ?? desglose.cuotaIvaTotal);
 
     return [
-      t.numero_completo,
-      t.serie,
-      t.tipo_documento,
+      limpiarTextoTermico(t.numero_completo),
+      limpiarTextoTermico(t.serie),
+      limpiarTextoTermico(t.tipo_documento),
       new Date(t.fecha_expedicion).toLocaleString('es-ES'),
-      t.mesa || 'Barra',
-      t.vendedor_nombre || '',
-      t.metodo_pago || '',
+      limpiarTextoTermico(t.mesa || 'Barra'),
+      limpiarTextoTermico(t.vendedor_nombre || ''),
+      limpiarTextoTermico(t.metodo_pago || ''),
       Number(t.subtotal_bruto || 0).toFixed(2).replace('.', ','),
       Number(t.descuento_total_importe || 0).toFixed(2).replace('.', ','),
       b10.toFixed(2).replace('.', ','),
@@ -474,11 +844,11 @@ export function exportarTicketsAExcelCSV(tickets: any[], nombreArchivo: string =
       bTot.toFixed(2).replace('.', ','),
       iTot.toFixed(2).replace('.', ','),
       Number(t.total_final || 0).toFixed(2).replace('.', ','),
-      t.estado_fiscal || 'EMITIDO',
-      t.ticket_origen_numero || '',
-      t.cliente_nif || '',
-      `"${(t.cliente_nombre_razon || '').replace(/"/g, '""')}"`,
-      t.hash_actual || ''
+      limpiarTextoTermico(t.estado_fiscal || 'EMITIDO'),
+      limpiarTextoTermico(t.ticket_origen_numero || ''),
+      limpiarTextoTermico(t.cliente_nif || ''),
+      `"${limpiarTextoTermico(t.cliente_nombre_razon || '').replace(/"/g, '""')}"`,
+      limpiarTextoTermico(t.hash_actual || '')
     ];
   });
 
@@ -514,85 +884,92 @@ export function exportarTicketsAPDF(
     .map(
       (t) => `
       <tr>
-        <td><strong>${t.numero_completo}</strong></td>
-        <td>${t.tipo_documento}</td>
+        <td><strong>${escaparHtml(t.numero_completo)}</strong></td>
+        <td>${escaparHtml(t.tipo_documento)}</td>
         <td>${new Date(t.fecha_expedicion).toLocaleString('es-ES')}</td>
-        <td>${t.vendedor_nombre || '-'}</td>
-        <td>${(t.metodo_pago || '').toUpperCase()}</td>
-        <td style="text-align:right;">${Number(t.base_imponible || 0).toFixed(2)} €</td>
-        <td style="text-align:right;">${Number(t.cuota_iva || 0).toFixed(2)} €</td>
-        <td style="text-align:right; font-weight:bold;">${Number(t.total_final || 0).toFixed(2)} €</td>
-        <td>${t.estado_fiscal}</td>
+        <td>${escaparHtml(t.vendedor_nombre || '-')}</td>
+        <td>${escaparHtml((t.metodo_pago || '').toUpperCase())}</td>
+        <td style="text-align:right;">${Number(t.base_imponible || 0).toFixed(2)} &euro;</td>
+        <td style="text-align:right;">${Number(t.cuota_iva || 0).toFixed(2)} &euro;</td>
+        <td style="text-align:right; font-weight:bold;">${Number(t.total_final || 0).toFixed(2)} &euro;</td>
+        <td>${escaparHtml(t.estado_fiscal)}</td>
       </tr>
     `
     )
     .join('');
 
-  const html = `
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="UTF-8" />
-      <title>${tituloInforme}</title>
-      <style>
-        body { font-family: Arial, sans-serif; font-size: 11px; color: #111; padding: 20px; }
-        h1 { font-size: 16px; margin-bottom: 4px; }
-        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
-        th { background: #f4f4f4; font-weight: bold; }
-        .resumen { margin-top: 15px; padding: 10px; background: #f9f9f9; border: 1px solid #ddd; text-align: right; font-size: 13px; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <div>
-          <h1>${tituloInforme}</h1>
-          <div><strong>Razón Social:</strong> ${config.razon_social} | <strong>NIF:</strong> ${config.nif_cif}</div>
-          <div><strong>Dirección:</strong> ${config.direccion_fiscal}</div>
-        </div>
-        <div style="text-align:right;">
-          <div><strong>Fecha de Emisión:</strong> ${new Date().toLocaleString('es-ES')}</div>
-          <div><strong>Total Registros:</strong> ${tickets.length}</div>
-        </div>
-      </div>
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>${escaparHtml(tituloInforme)}</title>
+  <style>
+    @page { margin: 10mm; }
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; padding: 15px; margin: 0; }
+    h1 { font-size: 16px; margin-bottom: 4px; }
+    .header { display: flex; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10px; }
+    th, td { border: 1px solid #ccc; padding: 5px; text-align: left; }
+    th { background: #f4f4f4; font-weight: bold; }
+    .resumen { margin-top: 15px; padding: 10px; background: #f9f9f9; border: 1px solid #ddd; text-align: right; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>${escaparHtml(tituloInforme)}</h1>
+      <div><strong>Razón Social:</strong> ${escaparHtml(config.razon_social)} | <strong>NIF:</strong> ${escaparHtml(config.nif_cif)}</div>
+      <div><strong>Dirección:</strong> ${escaparHtml(config.direccion_fiscal)}</div>
+    </div>
+    <div style="text-align:right;">
+      <div><strong>Fecha de Emisión:</strong> ${new Date().toLocaleString('es-ES')}</div>
+      <div><strong>Total Registros:</strong> ${tickets.length}</div>
+    </div>
+  </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Nº Documento</th>
-            <th>Tipo</th>
-            <th>Fecha / Hora</th>
-            <th>Vendedor</th>
-            <th>Pago</th>
-            <th style="text-align:right;">Base Imp.</th>
-            <th style="text-align:right;">Cuota IVA</th>
-            <th style="text-align:right;">Total</th>
-            <th>Estado</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${filasHTML}
-        </tbody>
-      </table>
+  <table>
+    <thead>
+      <tr>
+        <th>Nº Documento</th>
+        <th>Tipo</th>
+        <th>Fecha / Hora</th>
+        <th>Vendedor</th>
+        <th>Pago</th>
+        <th style="text-align:right;">Base Imp.</th>
+        <th style="text-align:right;">Cuota IVA</th>
+        <th style="text-align:right;">Total</th>
+        <th>Estado</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${filasHTML}
+    </tbody>
+  </table>
 
-      <div class="resumen">
-        <strong>Total Base Imponible:</strong> ${baseGeneral.toFixed(2)} € &nbsp;|&nbsp;
-        <strong>Total Cuota IVA:</strong> ${ivaGeneral.toFixed(2)} € &nbsp;|&nbsp;
-        <strong>TOTAL FACTURADO: ${totalGeneral.toFixed(2)} €</strong>
-      </div>
-    </body>
-    </html>
-  `;
+  <div class="resumen">
+    <strong>Total Base Imponible:</strong> ${baseGeneral.toFixed(2)} &euro; &nbsp;|&nbsp;
+    <strong>Total Cuota IVA:</strong> ${ivaGeneral.toFixed(2)} &euro; &nbsp;|&nbsp;
+    <strong>TOTAL FACTURADO: ${totalGeneral.toFixed(2)} &euro;</strong>
+  </div>
+</body>
+</html>`;
 
   const ventana = window.open('', '_blank', 'width=950,height=700');
   if (ventana) {
-    ventana.document.open();
-    ventana.document.write(html);
-    ventana.document.close();
-    ventana.focus();
-    setTimeout(() => {
-      ventana.print();
-    }, 300);
+    try {
+      ventana.document.open('text/html', 'replace');
+      ventana.document.write(html);
+      ventana.document.close();
+      ventana.focus();
+      ventana.onafterprint = () => {
+        try { ventana.close(); } catch (_) {}
+      };
+      setTimeout(() => {
+        ventana.print();
+      }, 350);
+    } catch (e) {
+      console.warn('Error al imprimir informe PDF:', e);
+    }
   }
 }
