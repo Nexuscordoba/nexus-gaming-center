@@ -4,6 +4,7 @@ import { supabase } from './supabase';
 import HistorialCajas from './HistorialCajas';
 import GuisosAdminPanel from './GuisosAdminPanel';
 import MesasReservasPanel from './MesasReservasPanel';
+import { CornerDownRight } from 'lucide-react';
 import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
@@ -264,11 +265,85 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         const matchNif = String(t.cliente_nif || '').toLowerCase().includes(q);
         const matchNom = String(t.cliente_nombre || t.cliente_nombre_razon || '').toLowerCase().includes(q);
         const matchMesa = String(t.mesa || '').toLowerCase().includes(q);
-        return matchNum || matchNif || matchNom || matchMesa;
+        const matchOrig = String(t.ticket_origen_numero || '').toLowerCase().includes(q);
+        return matchNum || matchNif || matchNom || matchMesa || matchOrig;
       }
       return true;
     });
   }, [ticketsHistorico, filtroSerieTicket, busquedaTicket]);
+
+  // Reorganizar documentos para que las rectificativas (R-) cuelguen siempre justo debajo de su documento padre (T- o F-)
+  const ticketsJerarquicos = useMemo(() => {
+    if (filtroSerieTicket === 'R') {
+      return ticketsFiltrados.map((t: any) => ({ ...t, esRectificativaHija: false }));
+    }
+
+    const rectificativasPorPadre = new Map<string, any[]>();
+
+    ticketsHistorico.forEach((t: any) => {
+      if (t.serie === 'R') {
+        const claveId = t.ticket_origen_id ? String(t.ticket_origen_id) : '';
+        const claveNum = t.ticket_origen_numero ? String(t.ticket_origen_numero).trim().toUpperCase() : '';
+
+        if (claveId) {
+          if (!rectificativasPorPadre.has(claveId)) rectificativasPorPadre.set(claveId, []);
+          rectificativasPorPadre.get(claveId)!.push(t);
+        }
+        if (claveNum && claveNum !== claveId) {
+          if (!rectificativasPorPadre.has(claveNum)) rectificativasPorPadre.set(claveNum, []);
+          rectificativasPorPadre.get(claveNum)!.push(t);
+        }
+      }
+    });
+
+    const resultado: any[] = [];
+    const idsAgregados = new Set<string | number>();
+
+    ticketsFiltrados.forEach((t: any) => {
+      if (t.serie === 'R') {
+        const tienePadreEnLista =
+          (t.ticket_origen_id && ticketsFiltrados.some((p: any) => p.id === t.ticket_origen_id)) ||
+          (t.ticket_origen_numero && ticketsFiltrados.some((p: any) => p.numero_completo === t.ticket_origen_numero));
+        if (tienePadreEnLista) {
+          return;
+        }
+      }
+
+      resultado.push({ ...t, esRectificativaHija: false });
+      idsAgregados.add(t.id);
+
+      const hijosPorId = t.id ? rectificativasPorPadre.get(String(t.id)) || [] : [];
+      const hijosPorNum = t.numero_completo ? rectificativasPorPadre.get(String(t.numero_completo).trim().toUpperCase()) || [] : [];
+      const todosHijos = [...hijosPorId];
+      hijosPorNum.forEach((hn) => {
+        if (!todosHijos.some((th) => th.id === hn.id)) {
+          todosHijos.push(hn);
+        }
+      });
+
+      todosHijos.sort((a, b) => new Date(a.fecha_expedicion).getTime() - new Date(b.fecha_expedicion).getTime());
+
+      todosHijos.forEach((hijo) => {
+        if (!idsAgregados.has(hijo.id)) {
+          resultado.push({
+            ...hijo,
+            esRectificativaHija: true,
+            padreDocumento: t
+          });
+          idsAgregados.add(hijo.id);
+        }
+      });
+    });
+
+    ticketsFiltrados.forEach((t: any) => {
+      if (t.serie === 'R' && !idsAgregados.has(t.id)) {
+        resultado.push({ ...t, esRectificativaHija: false });
+        idsAgregados.add(t.id);
+      }
+    });
+
+    return resultado;
+  }, [ticketsFiltrados, ticketsHistorico, filtroSerieTicket]);
 
   const metricasResumen = useMemo(() => {
     let ventasBrutas = 0;
@@ -851,7 +926,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         p_vendedor: adminVerificado.nombre,
         p_metodo_pago: orig.metodo_pago,
         p_importe_efectivo: orig.metodo_pago === 'efectivo' ? importeNegativo : 0,
-        p_importe_tarjeta: orig.metodo_pago === 'tarjeta' ? importeNegativo : 0,
+        p_importe_tarjeta: orig.metodo_pago !== 'efectivo' ? importeNegativo : 0,
         p_subtotal_bruto: brutoNegativo,
         p_descuento_general_porc: orig.descuento_general_porcentaje || 0,
         p_descuento_total_imp: redondearMoneda(-Math.abs(Number(orig.descuento_total_importe || 0))),
@@ -861,7 +936,10 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         p_lineas: lineasNegativas,
         p_ticket_origen_id: orig.id,
         p_ticket_origen_numero: orig.numero_completo,
-        p_motivo_rectificacion: modalRectificativa.motivo.trim()
+        p_motivo_rectificacion: modalRectificativa.motivo.trim(),
+        p_cliente_nombre: orig.cliente_nombre_razon || orig.cliente_nombre || null,
+        p_cliente_nif: orig.cliente_nif || null,
+        p_cliente_direccion: orig.cliente_direccion || null
       });
 
       if (rpcError) throw rpcError;
@@ -890,9 +968,22 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
           base_imponible: desgloseNegativo.baseImponibleTotal,
           cuota_iva: desgloseNegativo.cuotaIvaTotal,
           hash_anterior,
-          hash_actual
+          hash_actual,
+          ticket_origen_id: orig.id,
+          ticket_origen_numero: orig.numero_completo,
+          cliente_nombre_razon: orig.cliente_nombre_razon || orig.cliente_nombre || null,
+          cliente_nif: orig.cliente_nif || null,
+          cliente_direccion: orig.cliente_direccion || null
         })
         .eq('id', docRect.id);
+
+      // Marcar documento original como rectificado
+      await supabase
+        .from('facturas_tickets')
+        .update({
+          estado_fiscal: 'RECTIFICADO'
+        })
+        .eq('id', orig.id);
 
       // Devolver stock al anular / rectificar factura
       for (const linea of (orig.lineas || [])) {
@@ -934,7 +1025,12 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
       setModalRectificativa(null);
       if (rectCompleta) {
-        imprimirDocumentoFiscalHTML(rectCompleta, cfg);
+        imprimirDocumentoFiscalHTML({
+          ...rectCompleta,
+          cliente_nombre_razon: orig.cliente_nombre_razon || orig.cliente_nombre || rectCompleta.cliente_nombre_razon,
+          cliente_nif: orig.cliente_nif || rectCompleta.cliente_nif,
+          cliente_direccion: orig.cliente_direccion || rectCompleta.cliente_direccion
+        }, cfg);
       }
 
       notificar(`Factura Rectificativa ${docRect.numero_completo} emitida e impresa.`, 'ok');
@@ -2184,42 +2280,80 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {ticketsFiltrados.map((t) => {
+                    {ticketsJerarquicos.map((t: any) => {
                       const d = obtenerDesgloseTicketSeguro(t);
+                      const esHija = Boolean(t.esRectificativaHija);
+
                       return (
-                        <tr key={t.id} className="hover:bg-slate-900/40">
+                        <tr
+                          key={t.id}
+                          className={`transition-colors ${
+                            esHija
+                              ? 'bg-rose-950/20 border-l-4 border-l-rose-500/80 hover:bg-rose-950/30'
+                              : t.serie === 'F'
+                              ? 'bg-indigo-950/15 hover:bg-indigo-950/25'
+                              : 'hover:bg-slate-900/40'
+                          }`}
+                        >
                           <td className="p-3.5 font-black text-white">
-                            {t.numero_completo}
-                            {t.hash_actual && (
-                              <span
-                                title={`VeriFactu SHA-256: ${t.hash_actual}`}
-                                className="block text-[9px] font-mono text-indigo-400"
-                              >
-                                🔗 {String(t.hash_actual).slice(0, 10)}...
-                              </span>
+                            {esHija ? (
+                              <div className="flex items-start gap-2 pl-3">
+                                <CornerDownRight className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+                                <div>
+                                  <span className="font-mono text-rose-300 font-black">{t.numero_completo}</span>
+                                  <span className="block text-[10px] text-rose-400 font-bold">
+                                    ↳ Rectifica a {t.ticket_origen_numero || t.padreDocumento?.numero_completo}
+                                  </span>
+                                  {t.hash_actual && (
+                                    <span
+                                      title={`VeriFactu SHA-256: ${t.hash_actual}`}
+                                      className="block text-[9px] font-mono text-rose-300/60"
+                                    >
+                                      🔗 {String(t.hash_actual).slice(0, 10)}...
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <div>
+                                <span className="font-mono text-white font-black">{t.numero_completo}</span>
+                                {t.hash_actual && (
+                                  <span
+                                    title={`VeriFactu SHA-256: ${t.hash_actual}`}
+                                    className="block text-[9px] font-mono text-indigo-400"
+                                  >
+                                    🔗 {String(t.hash_actual).slice(0, 10)}...
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </td>
                           <td className="p-3.5">
                             <span
-                              className={`px-2 py-0.5 rounded-md font-black text-[10px] ${
+                              className={`px-2 py-0.5 rounded-md font-black text-[10px] border ${
                                 t.serie === 'R'
-                                  ? 'bg-rose-500/20 text-rose-300'
+                                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
                                   : t.serie === 'F'
-                                  ? 'bg-indigo-500/20 text-indigo-300'
-                                  : 'bg-emerald-500/20 text-emerald-300'
+                                  ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                                  : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                               }`}
                             >
                               {t.tipo_factura || (t.serie === 'R' ? 'R4' : t.serie === 'F' ? 'F1' : 'F2')} · {t.tipo_documento}
                             </span>
                           </td>
                           <td className="p-3.5 text-slate-300">
-                            {new Date(t.fecha_expedicion).toLocaleString('es-ES')}
+                            <span>{new Date(t.fecha_expedicion).toLocaleString('es-ES')}</span>
+                            {t.motivo_rectificacion && (
+                              <span className="block text-[10px] text-rose-300/80 italic truncate max-w-xs" title={t.motivo_rectificacion}>
+                                Motivo: {t.motivo_rectificacion}
+                              </span>
+                            )}
                           </td>
                           <td className="p-3.5">
                             <span className="font-bold text-white">Mesa {t.mesa}</span>
-                            {t.cliente_nombre && (
-                              <span className="block text-[10px] text-indigo-300">
-                                {t.cliente_nombre} ({t.cliente_nif})
+                            {(t.cliente_nombre_razon || t.cliente_nombre) && (
+                              <span className="block text-[10px] text-indigo-300 font-semibold">
+                                {t.cliente_nombre_razon || t.cliente_nombre} {t.cliente_nif ? `(${t.cliente_nif})` : ''}
                               </span>
                             )}
                           </td>
@@ -2231,52 +2365,56 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                             {d.base_imponible_21.toFixed(2)}€ / {d.iva_21.toFixed(2)}€
                           </td>
                           <td
-                            className={`p-3.5 text-right font-black text-sm ${
+                            className={`p-3.5 text-right font-black text-sm font-mono ${
                               Number(t.total_final) < 0 ? 'text-rose-400' : 'text-emerald-400'
                             }`}
                           >
                             {Number(t.total_final).toFixed(2)}€
                           </td>
                           <td className="p-3.5 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
+                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
                               <button
                                 onClick={() => imprimirDocumentoFiscalHTML(t, configFiscal)}
-                                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-bold text-[11px]"
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-bold text-[11px] transition-colors cursor-pointer"
                                 title="Reimprimir Ticket / Factura"
                               >
                                 🖨️ Copia
                               </button>
                               {t.serie === 'T' && (
-                                <>
-                                  <button
-                                    onClick={() =>
-                                      setModalFacturaNominativa({
-                                        factura: t,
-                                        razonSocial: '',
-                                        nifCif: '',
-                                        direccion: '',
-                                        procesando: false
-                                      })
-                                    }
-                                    className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-bold text-[11px]"
-                                    title="Canjear por Factura Nominativa con NIF"
-                                  >
-                                    🏢 Nominativa
-                                  </button>
-                                  <button
-                                    onClick={() =>
-                                      setModalRectificativa({
-                                        factura: t,
-                                        motivo: '',
-                                        procesando: false
-                                      })
-                                    }
-                                    className="px-2.5 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-[11px]"
-                                    title="Emitir Factura Rectificativa (Devolución legal)"
-                                  >
-                                    ↩️ Rectificar
-                                  </button>
-                                </>
+                                <button
+                                  onClick={() =>
+                                    setModalFacturaNominativa({
+                                      factura: t,
+                                      razonSocial: '',
+                                      nifCif: '',
+                                      direccion: '',
+                                      procesando: false
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-bold text-[11px] transition-colors cursor-pointer"
+                                  title="Canjear por Factura Nominativa con NIF"
+                                >
+                                  🏢 Nominativa
+                                </button>
+                              )}
+                              {(t.serie === 'T' || t.serie === 'F') && (
+                                <button
+                                  onClick={() =>
+                                    setModalRectificativa({
+                                      factura: t,
+                                      motivo: '',
+                                      procesando: false
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-[11px] transition-colors cursor-pointer"
+                                  title={
+                                    t.serie === 'F'
+                                      ? 'Emitir Factura Rectificativa de esta Factura Nominativa'
+                                      : 'Emitir Factura Rectificativa (Devolución legal)'
+                                  }
+                                >
+                                  ↩️ Rectificar
+                                </button>
                               )}
                             </div>
                           </td>
