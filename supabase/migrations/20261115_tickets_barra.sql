@@ -14,10 +14,6 @@ CREATE TABLE IF NOT EXISTS public.tickets_barra (
   total numeric(10,2) NOT NULL DEFAULT 0.00,
   estado text NOT NULL DEFAULT 'abierto' CHECK (estado IN ('abierto', 'cobrado', 'cancelado')),
   metodo_pago text CHECK (metodo_pago IN ('efectivo', 'tarjeta', 'bizum', 'pendiente', null)),
-  camarero_nombre text DEFAULT 'Barra',
-  factura_fiscal_id text,
-  numero_factura_legal text,
-  notas text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );

@@ -215,21 +215,23 @@ export default function BarraView({
       } else {
         // Crear nuevo ticket correlativo
         const numero = await generarSiguienteNumeroTicketBarra();
-        await crearTicketBarra({
+        const nuevo = await crearTicketBarra({
           numero_ticket: numero,
           cliente_alias: aliasInput.trim() || 'Barra',
           items: itemsComanda,
           total: totalComandaActual,
           camarero_nombre: camareroNombre
         });
-        onAlerta?.(`¡Ticket de Barra ${numero} abierto correctamente!`, 'exito');
+        onAlerta?.(`¡Ticket de Barra ${nuevo.numero_ticket} abierto correctamente!`, 'exito');
       }
 
+      // Solo si tuvo éxito en Supabase limpiamos el formulario y refrescamos
       limpiarBorrador();
       await refrescarTickets();
-    } catch (err) {
-      console.error(err);
-      onAlerta?.('Error al guardar el ticket de barra.', 'error');
+    } catch (err: any) {
+      console.error('❌ Error al guardar el ticket de barra en Supabase:', err);
+      const errMsg = err?.message || 'Error desconocido al guardar en Supabase';
+      onAlerta?.(`❌ Error al guardar en barra: ${errMsg}`, 'error');
     }
   };
 
@@ -310,8 +312,9 @@ export default function BarraView({
         onAlerta?.(`Error al procesar cobro: ${res.error || 'Desconocido'}`, 'error');
       }
     } catch (err: any) {
-      console.error('Error cobrando ticket de barra:', err);
-      onAlerta?.('Error inesperado al cobrar ticket de barra.', 'error');
+      console.error('❌ Error cobrando ticket de barra en Supabase:', err);
+      const errMsg = err?.message || 'Error inesperado al cobrar ticket de barra';
+      onAlerta?.(`❌ Error al procesar cobro: ${errMsg}`, 'error');
     } finally {
       setProcesandoCobro(false);
     }

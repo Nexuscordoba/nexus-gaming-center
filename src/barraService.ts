@@ -74,7 +74,7 @@ export async function generarSiguienteNumeroTicketBarra(): Promise<string> {
       .gte('created_at', hoyInicio.toISOString());
 
     let maxNum = 0;
-    if (!error && data && data.length > 0) {
+    if (!error && Array.isArray(data)) {
       data.forEach((r: any) => {
         const match = String(r.numero_ticket || '').match(/B-(\d+)/i);
         if (match) {
@@ -82,24 +82,26 @@ export async function generarSiguienteNumeroTicketBarra(): Promise<string> {
           if (num > maxNum) maxNum = num;
         }
       });
-    } else {
-      // Intentar calcular sobre caché local
-      const local = obtenerCacheLocal();
-      local.forEach((t) => {
-        const match = String(t.numero_ticket || '').match(/B-(\d+)/i);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (num > maxNum) maxNum = num;
-        }
-      });
     }
+
+    // Comprobar también tickets en caché local
+    const local = obtenerCacheLocal();
+    local.forEach((t) => {
+      const match = String(t.numero_ticket || '').match(/B-(\d+)/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    });
 
     const siguiente = maxNum + 1;
     return `B-${String(siguiente).padStart(2, '0')}`;
   } catch (err) {
-    console.warn('Error calculando siguiente número de ticket barra, usando fallback:', err);
-    const rnd = Math.floor(Math.random() * 90) + 10;
-    return `B-${rnd}`;
+    console.error('Error calculando correlativo de ticket barra, usando timestamp fallback:', err);
+    const d = new Date();
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `B-${mm}${ss}`;
   }
 }
 
@@ -115,12 +117,15 @@ export async function cargarTicketsBarraAbiertos(): Promise<TicketBarra[]> {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.warn('Fallo al consultar tickets_barra en Supabase, utilizando caché local:', error.message);
+      console.error('❌ Error al consultar tickets_barra en Supabase:', {
+        mensaje: error.message,
+        detalles: error.details,
+        codigo: error.code
+      });
       return obtenerCacheLocal().filter((t) => t.estado === 'abierto');
     }
 
     if (data) {
-      // Normalizar datos
       const normalizados: TicketBarra[] = data.map((d: any) => ({
         id: String(d.id),
         numero_ticket: String(d.numero_ticket || 'B-00'),
@@ -137,16 +142,13 @@ export async function cargarTicketsBarraAbiertos(): Promise<TicketBarra[]> {
         updated_at: d.updated_at || d.created_at
       }));
 
-      // Actualizar caché con los abiertos de Supabase
-      const local = obtenerCacheLocal().filter((t) => t.estado !== 'abierto');
-      guardarCacheLocal([...normalizados, ...local]);
-
+      guardarCacheLocal(normalizados);
       return normalizados;
     }
 
-    return obtenerCacheLocal().filter((t) => t.estado === 'abierto');
+    return [];
   } catch (err) {
-    console.warn('Excepción al cargar tickets_barra abiertos:', err);
+    console.error('❌ Excepción al cargar tickets_barra abiertos:', err);
     return obtenerCacheLocal().filter((t) => t.estado === 'abierto');
   }
 }
@@ -155,83 +157,112 @@ export async function cargarTicketsBarraAbiertos(): Promise<TicketBarra[]> {
  * Crea un nuevo ticket de barra abierto
  */
 export async function crearTicketBarra(params: {
-  numero_ticket: string;
+  numero_ticket?: string;
   cliente_alias?: string;
   items: TicketBarraItem[];
   total: number;
   camarero_nombre?: string;
+  metodo_pago?: 'efectivo' | 'tarjeta' | 'bizum' | null;
 }): Promise<TicketBarra> {
-  const nuevoTicket: TicketBarra = {
-    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `b_${Date.now()}`,
-    numero_ticket: params.numero_ticket,
-    cliente_alias: (params.cliente_alias || '').trim() || 'Barra',
-    items: params.items,
-    total: redondearMoneda(params.total),
-    estado: 'abierto',
-    metodo_pago: null,
-    camarero_nombre: params.camarero_nombre || 'Barra',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+  // Asegurar que el número de ticket no sea vacío (campo NOT NULL en DB)
+  let numeroFinal = (params.numero_ticket || '').trim();
+  if (!numeroFinal) {
+    numeroFinal = await generarSiguienteNumeroTicketBarra();
+  }
+  if (!numeroFinal) {
+    const d = new Date();
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    numeroFinal = `B-${mm}${ss}`;
+  }
+
+  const aliasFinal = (params.cliente_alias || '').trim() || 'Barra';
+  const totalFinal = redondearMoneda(params.total);
+  const itemsFinal = Array.isArray(params.items) ? params.items : [];
+  const camareroFinal = (params.camarero_nombre || '').trim() || 'Barra';
+  const estadoFinal = 'abierto';
+  const metodoPagoFinal = params.metodo_pago || null;
+
+  // No enviamos 'id' para que Postgres use siempre su valor por defecto 'gen_random_uuid()'
+  // Y enviamos únicamente las columnas exactas de la tabla:
+  // numero_ticket, cliente_alias, items, total, estado, metodo_pago
+  const insertPayload = {
+    numero_ticket: numeroFinal,
+    cliente_alias: aliasFinal,
+    items: itemsFinal,
+    total: totalFinal,
+    estado: estadoFinal,
+    metodo_pago: metodoPagoFinal
   };
 
-  // 1. Guardar en local de inmediato para respuesta instantánea
-  const cache = obtenerCacheLocal();
+  console.log('🍺 [crearTicketBarra] Insertando en tickets_barra de Supabase:', insertPayload);
+
+  const { data, error } = await supabase
+    .from('tickets_barra')
+    .insert([insertPayload])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('❌ Error de Supabase al insertar en tickets_barra:', {
+      mensaje: error.message,
+      detalles: error.details,
+      pista: error.hint,
+      codigo: error.code,
+      payload: insertPayload
+    });
+    throw new Error(`[Supabase ${error.code || 'ERR'}]: ${error.message}${error.details ? ` (${error.details})` : ''}`);
+  }
+
+  if (!data) {
+    console.error('❌ Supabase no devolvió la fila insertada.');
+    throw new Error('Supabase no devolvió los datos del ticket insertado.');
+  }
+
+  const nuevoTicket: TicketBarra = {
+    id: String(data.id),
+    numero_ticket: data.numero_ticket || numeroFinal,
+    cliente_alias: data.cliente_alias || aliasFinal,
+    items: Array.isArray(data.items) ? data.items : itemsFinal,
+    total: Number(data.total !== undefined ? data.total : totalFinal),
+    estado: data.estado || estadoFinal,
+    metodo_pago: data.metodo_pago || metodoPagoFinal,
+    camarero_nombre: camareroFinal,
+    created_at: data.created_at || new Date().toISOString(),
+    updated_at: data.updated_at || data.created_at || new Date().toISOString()
+  };
+
+  // Guardar en caché local
+  const cache = obtenerCacheLocal().filter((t) => t.id !== nuevoTicket.id);
   guardarCacheLocal([nuevoTicket, ...cache]);
 
-  // 2. Persistir en Supabase
-  try {
-    const { data, error } = await supabase
-      .from('tickets_barra')
-      .insert([
+  // Si contiene artículos cuyo destino es cocina (ej. tapas calientes),
+  // enviamos comanda a cocina para que la preparen, identificando claramente que es de barra
+  const itemsCocina = itemsFinal.filter((i) => i.destino === 'cocina');
+  if (itemsCocina.length > 0) {
+    try {
+      await supabase.from('comandas_cocina').insert([
         {
-          id: nuevoTicket.id,
-          numero_ticket: nuevoTicket.numero_ticket,
-          cliente_alias: nuevoTicket.cliente_alias,
-          items: nuevoTicket.items,
-          total: nuevoTicket.total,
-          estado: 'abierto',
+          ticket_number: nuevoTicket.numero_ticket,
+          mesa: `BARRA (${nuevoTicket.numero_ticket}${nuevoTicket.cliente_alias && nuevoTicket.cliente_alias !== 'Barra' ? ' - ' + nuevoTicket.cliente_alias : ''})`,
+          items: itemsCocina.map((ic) => ({
+            producto_id: ic.producto_id,
+            articulo_inventario_id: ic.articulo_inventario_id,
+            nombre: ic.nombre,
+            precio: ic.precio,
+            cantidad: ic.cantidad,
+            destino: 'cocina',
+            comentarios: ic.notaExtra || '',
+            estado_cocina: 'pendiente'
+          })),
+          pagado: false,
+          tipo_destino: 'cocina',
           camarero_nombre: nuevoTicket.camarero_nombre
         }
-      ])
-      .select()
-      .maybeSingle();
-
-    if (error) {
-      console.warn('No se pudo guardar ticket_barra en Supabase (modo offline/fallback):', error.message);
-    } else if (data) {
-      nuevoTicket.id = String(data.id);
+      ]);
+    } catch (errCocina) {
+      console.warn('Aviso: no se pudo enviar comanda de cocina para ticket de barra:', errCocina);
     }
-
-    // Si contiene artículos cuyo destino es cocina (ej. tapas calientes),
-    // enviamos comanda a cocina para que la preparen, identificando claramente que es de barra
-    const itemsCocina = params.items.filter((i) => i.destino === 'cocina');
-    if (itemsCocina.length > 0) {
-      try {
-        await supabase.from('comandas_cocina').insert([
-          {
-            ticket_number: nuevoTicket.numero_ticket,
-            mesa: `BARRA (${nuevoTicket.numero_ticket}${nuevoTicket.cliente_alias && nuevoTicket.cliente_alias !== 'Barra' ? ' - ' + nuevoTicket.cliente_alias : ''})`,
-            items: itemsCocina.map((ic) => ({
-              producto_id: ic.producto_id,
-              articulo_inventario_id: ic.articulo_inventario_id,
-              nombre: ic.nombre,
-              precio: ic.precio,
-              cantidad: ic.cantidad,
-              destino: 'cocina',
-              comentarios: ic.notaExtra || '',
-              estado_cocina: 'pendiente'
-            })),
-            pagado: false,
-            tipo_destino: 'cocina',
-            camarero_nombre: nuevoTicket.camarero_nombre
-          }
-        ]);
-      } catch (errCocina) {
-        console.warn('Aviso: no se pudo enviar comanda de cocina para ticket de barra:', errCocina);
-      }
-    }
-  } catch (err) {
-    console.warn('Excepción al crear ticket_barra en backend:', err);
   }
 
   return nuevoTicket;
@@ -245,7 +276,32 @@ export async function actualizarTicketBarra(
   updates: Partial<TicketBarra>
 ): Promise<boolean> {
   const timestamp = new Date().toISOString();
-  // Actualizar en caché local
+  // Filtrar estrictamente solo las columnas que existen en la tabla tickets_barra:
+  // numero_ticket, cliente_alias, items, total, estado, metodo_pago, updated_at
+  const payload: any = { updated_at: timestamp };
+  if (updates.numero_ticket !== undefined) payload.numero_ticket = updates.numero_ticket;
+  if (updates.cliente_alias !== undefined) payload.cliente_alias = updates.cliente_alias;
+  if (updates.items !== undefined) payload.items = updates.items;
+  if (updates.total !== undefined) payload.total = redondearMoneda(updates.total);
+  if (updates.estado !== undefined) payload.estado = updates.estado;
+  if (updates.metodo_pago !== undefined) payload.metodo_pago = updates.metodo_pago;
+
+  console.log(`🍺 [actualizarTicketBarra] Actualizando ticket ${id} en Supabase:`, payload);
+
+  const { error } = await supabase.from('tickets_barra').update(payload).eq('id', id);
+  if (error) {
+    console.error('❌ Error al actualizar ticket_barra en Supabase:', {
+      id,
+      payload,
+      mensaje: error.message,
+      detalles: error.details,
+      pista: error.hint,
+      codigo: error.code
+    });
+    throw new Error(`[Supabase ${error.code || 'ERR'}]: ${error.message}${error.details ? ` (${error.details})` : ''}`);
+  }
+
+  // Actualizar en caché local tras confirmación de Supabase
   const cache = obtenerCacheLocal();
   const index = cache.findIndex((t) => t.id === id);
   if (index !== -1) {
@@ -253,22 +309,7 @@ export async function actualizarTicketBarra(
     guardarCacheLocal(cache);
   }
 
-  try {
-    const payload: any = { ...updates, updated_at: timestamp };
-    // Borrar campos que no están en la tabla
-    delete payload.id;
-    delete payload.created_at;
-
-    const { error } = await supabase.from('tickets_barra').update(payload).eq('id', id);
-    if (error) {
-      console.warn('Error al actualizar ticket_barra en Supabase:', error.message);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.warn('Excepción al actualizar ticket_barra:', err);
-    return false;
-  }
+  return true;
 }
 
 /**
@@ -485,9 +526,7 @@ export async function cobrarTicketBarra(params: {
   // 3. Actualizar estado del ticket en tickets_barra
   await actualizarTicketBarra(ticket.id, {
     estado: 'cobrado',
-    metodo_pago: metodo,
-    factura_fiscal_id: docEmitido?.id || null,
-    numero_factura_legal: numeroLegal
+    metodo_pago: metodo
   });
 
   // 4. Si había comandas_cocina asociadas a este ticket de barra, marcarlas como pagadas
