@@ -16,6 +16,7 @@ import {
   type ConfiguracionFiscal,
   redondearMoneda
 } from './fiscalService';
+import CobroModal from './CobroModal';
 import {
   Beer,
   Plus,
@@ -23,8 +24,6 @@ import {
   Trash2,
   Printer,
   CreditCard,
-  Banknote,
-  Smartphone,
   CheckCircle2,
   Clock,
   Search,
@@ -81,8 +80,6 @@ export default function BarraView({
 
   // Modal de cobro
   const [modalCobroTicket, setModalCobroTicket] = useState<TicketBarra | null>(null);
-  const [metodoPagoSeleccionado, setMetodoPagoSeleccionado] = useState<'efectivo' | 'tarjeta' | 'bizum'>('efectivo');
-  const [importeEntregado, setImporteEntregado] = useState<string>('');
   const [procesandoCobro, setProcesandoCobro] = useState(false);
 
   // Estados de impresión / acción
@@ -259,19 +256,15 @@ export default function BarraView({
     };
 
     setModalCobroTicket(ticketTemporal);
-    setMetodoPagoSeleccionado('efectivo');
-    setImporteEntregado(totalComandaActual.toFixed(2));
   };
 
   // Abrir cobro de un ticket abierto existente
   const abrirCobroTicketExistente = (t: TicketBarra) => {
     setModalCobroTicket(t);
-    setMetodoPagoSeleccionado('efectivo');
-    setImporteEntregado(t.total.toFixed(2));
   };
 
   // Confirmar cobro y cierre de ticket
-  const confirmarCobro = async () => {
+  const confirmarCobro = async (metodo: 'efectivo' | 'tarjeta' | 'bizum') => {
     if (!modalCobroTicket || procesandoCobro) return;
 
     setProcesandoCobro(true);
@@ -291,7 +284,7 @@ export default function BarraView({
 
       const res = await cobrarTicketBarra({
         ticket: ticketFinal,
-        metodo: metodoPagoSeleccionado,
+        metodo,
         camareroNombre,
         configFiscal,
         cajaHoyId
@@ -299,7 +292,7 @@ export default function BarraView({
 
       if (res.ok) {
         onAlerta?.(
-          `¡Ticket ${ticketFinal.numero_ticket} cobrado (${ticketFinal.total.toFixed(2)} €) en ${metodoPagoSeleccionado.toUpperCase()}!`,
+          `¡Ticket ${ticketFinal.numero_ticket} cobrado (${ticketFinal.total.toFixed(2)} €) en ${metodo.toUpperCase()}!`,
           'exito'
         );
         // Si estábamos editando este ticket en el borrador, limpiarlo
@@ -353,14 +346,6 @@ export default function BarraView({
     await refrescarTickets();
     onAlerta?.(`Ticket ${t.numero_ticket} cancelado.`, 'aviso');
   };
-
-  // Cálculo de cambio para efectivo
-  const cambioEfectivo = useMemo(() => {
-    if (!modalCobroTicket || metodoPagoSeleccionado !== 'efectivo') return 0;
-    const entregado = parseFloat(importeEntregado) || 0;
-    const cambio = entregado - modalCobroTicket.total;
-    return cambio > 0 ? redondearMoneda(cambio) : 0;
-  }, [modalCobroTicket, metodoPagoSeleccionado, importeEntregado]);
 
   return (
     <div className={`space-y-6 ${modoIncrustado ? '' : 'p-4 max-w-7xl mx-auto'}`}>
@@ -725,155 +710,16 @@ export default function BarraView({
         </div>
       </div>
 
-      {/* MODAL DE COBRO DE TICKET DE BARRA */}
+      {/* MODAL DE COBRO DE TICKET DE BARRA UNIFICADO */}
       {modalCobroTicket && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-          <div className="bg-[#0f111a] border border-white/15 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-white/10 pb-4">
-              <div>
-                <span className="text-[10px] font-black uppercase tracking-wider text-amber-400">
-                  Cobro de Barra · {modalCobroTicket.numero_ticket}
-                </span>
-                <h3 className="text-xl font-black text-white">
-                  {modalCobroTicket.cliente_alias || 'Cliente Barra'}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setModalCobroTicket(null)}
-                className="p-2 rounded-xl text-slate-400 hover:text-white bg-white/5 cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {/* IMPORTE TOTAL A COBRAR */}
-            <div className="bg-black/60 p-4 rounded-2xl border border-white/10 text-center">
-              <span className="text-xs uppercase font-bold text-slate-400 block mb-1">
-                Total a Cobrar
-              </span>
-              <span className="text-4xl font-black text-amber-400">
-                {modalCobroTicket.total.toFixed(2)} €
-              </span>
-            </div>
-
-            {/* SELECTOR DE MÉTODO DE PAGO */}
-            <div className="space-y-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
-                Selecciona Método de Pago:
-              </span>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMetodoPagoSeleccionado('efectivo')}
-                  className={`p-3 rounded-2xl border flex flex-col items-center gap-1.5 transition-all cursor-pointer ${
-                    metodoPagoSeleccionado === 'efectivo'
-                      ? 'bg-amber-500 text-slate-950 border-amber-400 font-black shadow-lg scale-102'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-                  }`}
-                >
-                  <Banknote className="h-5 w-5" />
-                  <span className="text-xs font-bold">Efectivo</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setMetodoPagoSeleccionado('tarjeta')}
-                  className={`p-3 rounded-2xl border flex flex-col items-center gap-1.5 transition-all cursor-pointer ${
-                    metodoPagoSeleccionado === 'tarjeta'
-                      ? 'bg-amber-500 text-slate-950 border-amber-400 font-black shadow-lg scale-102'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-                  }`}
-                >
-                  <CreditCard className="h-5 w-5" />
-                  <span className="text-xs font-bold">Tarjeta</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setMetodoPagoSeleccionado('bizum')}
-                  className={`p-3 rounded-2xl border flex flex-col items-center gap-1.5 transition-all cursor-pointer ${
-                    metodoPagoSeleccionado === 'bizum'
-                      ? 'bg-amber-500 text-slate-950 border-amber-400 font-black shadow-lg scale-102'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-                  }`}
-                >
-                  <Smartphone className="h-5 w-5" />
-                  <span className="text-xs font-bold">Bizum</span>
-                </button>
-              </div>
-            </div>
-
-            {/* CALCULADORA DE CAMBIO SI ES EFECTIVO */}
-            {metodoPagoSeleccionado === 'efectivo' && (
-              <div className="bg-white/5 p-3 rounded-2xl border border-white/5 space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400 font-bold">Importe entregado:</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={importeEntregado}
-                    onChange={(e) => setImporteEntregado(e.target.value)}
-                    className="w-24 bg-black/80 border border-white/20 rounded-xl px-2.5 py-1 text-right font-black text-white text-xs outline-none focus:border-amber-400"
-                  />
-                </div>
-
-                {/* BOTONES RÁPIDOS DE BILLETES */}
-                <div className="flex gap-1.5 justify-end">
-                  {[5, 10, 20, 50].map((billete) => (
-                    <button
-                      key={billete}
-                      type="button"
-                      onClick={() => setImporteEntregado(billete.toString())}
-                      className="px-2 py-0.5 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-bold text-slate-300 cursor-pointer"
-                    >
-                      {billete} €
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setImporteEntregado(modalCobroTicket.total.toFixed(2))}
-                    className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 text-[11px] font-bold cursor-pointer"
-                  >
-                    Exacto
-                  </button>
-                </div>
-
-                {cambioEfectivo > 0 && (
-                  <div className="pt-2 border-t border-white/10 flex items-center justify-between text-xs font-black text-emerald-400">
-                    <span>Cambio a devolver:</span>
-                    <span className="text-sm font-mono font-black">{cambioEfectivo.toFixed(2)} €</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* BOTÓN FINAL DE COBRO E IMPRESIÓN */}
-            <div className="pt-2 space-y-2">
-              <button
-                type="button"
-                onClick={confirmarCobro}
-                disabled={procesandoCobro}
-                className="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm uppercase tracking-wider shadow-[0_0_25px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
-              >
-                {procesandoCobro ? (
-                  <>
-                    <RefreshCw className="h-5 w-5 animate-spin" />
-                    <span>Emitiendo Ticket e Imprimiendo...</span>
-                  </>
-                ) : (
-                  <>
-                    <Printer className="h-5 w-5" />
-                    <span>💳 Cobrar, Imprimir y Cerrar</span>
-                  </>
-                )}
-              </button>
-              <p className="text-[10px] text-center text-slate-500">
-                Se enviará directamente a la impresora térmica y se registrará en la caja diaria.
-              </p>
-            </div>
-          </div>
-        </div>
+        <CobroModal
+          identificador={`TICKET ${modalCobroTicket.numero_ticket}`}
+          subtitulo={modalCobroTicket.cliente_alias || 'Cliente Barra'}
+          total={modalCobroTicket.total}
+          procesando={procesandoCobro}
+          onConfirmarCobro={(metodo) => confirmarCobro(metodo)}
+          onCerrar={() => setModalCobroTicket(null)}
+        />
       )}
     </div>
   );

@@ -4,6 +4,7 @@ import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
 import MesasReservasPanel from './MesasReservasPanel';
 import BarraView from './BarraView';
+import CobroModal from './CobroModal';
 import {
   cargarTicketsBarraAbiertos,
   cobrarTicketBarra,
@@ -220,7 +221,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
   const [mesaSeleccionada, setMesaSeleccionada] = useState<string>('1');
   const [ticketsBarraAbiertos, setTicketsBarraAbiertos] = useState<TicketBarra[]>([]);
   const [ticketCobroRapido, setTicketCobroRapido] = useState<TicketBarra | null>(null);
-  const [metodoCobroRapido, setMetodoCobroRapido] = useState<'efectivo' | 'tarjeta' | 'bizum'>('efectivo');
+  const [modalCobroMesa, setModalCobroMesa] = useState<{
+    mesaNombre: string;
+    subtitulo?: string;
+    total: number;
+    items?: ItemPedido[];
+    esExpressConCarrito?: boolean;
+  } | null>(null);
   const [procesandoCobroRapido, setProcesandoCobroRapido] = useState(false);
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Tapas', 'Menús/Combos', 'Bebidas']);
@@ -2029,7 +2036,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     hash_anterior: string;
     mesa: string;
     vendedor: string;
-    metodo: 'efectivo' | 'tarjeta';
+    metodo: 'efectivo' | 'tarjeta' | 'bizum';
     desglose: any;
     ivaDefecto: number;
     autorizadoPor: string | null;
@@ -2066,6 +2073,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           .from('facturas_tickets')
           .update({
             tipo_factura: 'F2',
+            metodo_pago: metodo,
             base_imponible_10: base10,
             iva_10: iva10,
             base_imponible_21: base21,
@@ -2083,6 +2091,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           await supabase
             .from('facturas_tickets')
             .update({
+              metodo_pago: metodo,
               base_imponible: baseImponible,
               cuota_iva: cuotaIva,
               total_final: desglose.totalFinal,
@@ -2102,7 +2111,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           vendedor_nombre: vendedor,
           metodo_pago: metodo,
           importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
-          importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
+          importe_tarjeta: metodo !== 'efectivo' ? desglose.totalFinal : 0,
           subtotal_bruto: desglose.subtotalBruto,
           descuento_general_porcentaje: desglose.dtoGeneralPorc,
           descuento_total_importe: desglose.descuentoTotalImporte,
@@ -2134,7 +2143,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const cobrarMesaLegal = async (
     mesaNombre: string,
-    metodo: 'efectivo' | 'tarjeta',
+    metodo: 'efectivo' | 'tarjeta' | 'bizum',
     itemsOverride?: ItemPedido[],
     comandasInsertsOffline?: any[]
   ) => {
@@ -2185,9 +2194,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         p_tipo_documento: 'SIMPLIFICADA',
         p_mesa: mesaNombre,
         p_vendedor: camareroActivo.nombre,
-        p_metodo_pago: metodo,
+        p_metodo_pago: metodo === 'efectivo' ? 'efectivo' : 'tarjeta',
         p_importe_efectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
-        p_importe_tarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0,
+        p_importe_tarjeta: metodo !== 'efectivo' ? desglose.totalFinal : 0,
         p_subtotal_bruto: desglose.subtotalBruto,
         p_descuento_general_porc: desglose.dtoGeneralPorc,
         p_descuento_total_imp: desglose.descuentoTotalImporte,
@@ -2214,7 +2223,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .eq('pagado', false);
 
       const nuevoEfectivo = redondearMoneda(Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0));
-      const nuevaTarjeta = redondearMoneda(Number(cajaHoy.total_tarjeta) + (metodo === 'tarjeta' ? desglose.totalFinal : 0));
+      const nuevaTarjeta = redondearMoneda(Number(cajaHoy.total_tarjeta) + (metodo !== 'efectivo' ? desglose.totalFinal : 0));
 
       await supabase
         .from('caja_diaria')
@@ -2244,7 +2253,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
       setCobrandoMesa(null);
       if (facturaCompleta) {
-        imprimirDocumentoFiscalHTML(facturaCompleta, cfg);
+        imprimirDocumentoFiscalHTML({ ...facturaCompleta, metodo_pago: metodo }, cfg);
       }
 
       await descontarInventarioSupabase(itemsACobrar);
@@ -2253,6 +2262,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       if (getNombreMesa(mesaSeleccionada) === mesaNombre) {
         setCuentaMesaActual([]);
       }
+
+      // Liberar instantáneamente la mesa en el plano visual
+      setMesasAbiertas((prev) => prev.filter((m) => !mesaCoincide(m.mesa, mesaNombre)));
 
       setDescuentoGeneralMesa((prev) => {
         const copia = { ...prev };
@@ -2291,7 +2303,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           cuotaIvaTotal: desglose.cuotaIvaTotal,
           totalFinal: desglose.totalFinal,
           importeEfectivo: metodo === 'efectivo' ? desglose.totalFinal : 0,
-          importeTarjeta: metodo === 'tarjeta' ? desglose.totalFinal : 0
+          importeTarjeta: metodo !== 'efectivo' ? desglose.totalFinal : 0
         },
         lineas: desglose.lineasCalculadas
       };
@@ -2303,7 +2315,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       if (getNombreMesa(mesaSeleccionada) === mesaNombre) {
         setCuentaMesaActual([]);
       }
-      setMesasAbiertas((prev) => prev.filter((m) => m.mesa !== mesaNombre));
+      setMesasAbiertas((prev) => prev.filter((m) => !mesaCoincide(m.mesa, mesaNombre)));
       setDescuentoGeneralMesa((prev) => {
         const copia = { ...prev };
         delete copia[mesaNombre];
@@ -2317,7 +2329,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
   };
 
-  const enviarYCobrarExpress = async (metodo: 'efectivo' | 'tarjeta') => {
+  const enviarYCobrarExpress = async (metodo: 'efectivo' | 'tarjeta' | 'bizum') => {
     if (!camareroActivo || enviando || cobrandoMesa !== null) return;
     if (cuentaMesaActual.length === 0 && carritoActual.length === 0) return;
 
@@ -2452,6 +2464,18 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
 
     await cobrarMesaLegal(mesaDestinoFormat, metodo, itemsCombinados, comandasInsertsPendientes);
+  };
+
+  const ejecutarCobroMesaModal = async (metodo: 'efectivo' | 'tarjeta' | 'bizum') => {
+    if (!modalCobroMesa) return;
+    const { mesaNombre, esExpressConCarrito } = modalCobroMesa;
+
+    if (esExpressConCarrito || (mesaCoincide(mesaSeleccionada, mesaNombre) && carritoActual.length > 0)) {
+      await enviarYCobrarExpress(metodo);
+    } else {
+      await cobrarMesaLegal(mesaNombre, metodo, modalCobroMesa.items);
+    }
+    setModalCobroMesa(null);
   };
 
   const confirmarFacturaRectificativa = async (e: React.FormEvent) => {
@@ -3492,81 +3516,33 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         </div>
       )}
 
-      {/* MODAL COBRO RÁPIDO TICKET DE BARRA */}
+      {/* MODAL COBRO UNIFICADO MESA */}
+      {modalCobroMesa && (
+        <CobroModal
+          identificador={`COBRO DE MESA ${modalCobroMesa.mesaNombre.toUpperCase().replace('MESA ', '')}`}
+          subtitulo={modalCobroMesa.subtitulo || `Mesa ${modalCobroMesa.mesaNombre}`}
+          total={modalCobroMesa.total}
+          procesando={cobrandoMesa !== null || enviando}
+          onConfirmarCobro={async (metodo) => {
+            await ejecutarCobroMesaModal(metodo);
+          }}
+          onCerrar={() => setModalCobroMesa(null)}
+        />
+      )}
+
+      {/* MODAL COBRO UNIFICADO TICKET DE BARRA */}
       {ticketCobroRapido && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md px-4">
-          <div className="w-full max-w-md bg-[#0d0f17] border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-amber-400">
-                <Beer className="h-5 w-5" />
-                <h3 className="font-black text-white text-base">
-                  Cobrar Ticket {ticketCobroRapido.numero_ticket}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTicketCobroRapido(null)}
-                className="text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="text-center py-3 bg-black/60 rounded-2xl border border-white/10">
-              <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">{ticketCobroRapido.cliente_alias || 'Cliente Barra'}</p>
-              <p className="text-3xl font-black text-amber-400 mt-1">{Number(ticketCobroRapido.total).toFixed(2)} €</p>
-            </div>
-
-            <div className="space-y-2">
-              <span className="text-xs font-bold text-slate-300">Selecciona método de cobro:</span>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMetodoCobroRapido('efectivo')}
-                  className={`py-3 rounded-2xl border text-xs font-black transition-all cursor-pointer ${
-                    metodoCobroRapido === 'efectivo'
-                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-                  }`}
-                >
-                  💵 Efectivo
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMetodoCobroRapido('tarjeta')}
-                  className={`py-3 rounded-2xl border text-xs font-black transition-all cursor-pointer ${
-                    metodoCobroRapido === 'tarjeta'
-                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-                  }`}
-                >
-                  💳 Tarjeta
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMetodoCobroRapido('bizum')}
-                  className={`py-3 rounded-2xl border text-xs font-black transition-all cursor-pointer ${
-                    metodoCobroRapido === 'bizum'
-                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-                  }`}
-                >
-                  📱 Bizum
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              disabled={procesandoCobroRapido}
-              onClick={() => cobrarTicketBarraDirecto(ticketCobroRapido, metodoCobroRapido)}
-              className="w-full py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              <Printer className="h-4 w-4" />
-              <span>{procesandoCobroRapido ? 'Emitiendo e Imprimiendo...' : 'Confirmar Cobro e Imprimir Ticket'}</span>
-            </button>
-          </div>
-        </div>
+        <CobroModal
+          identificador={`TICKET ${ticketCobroRapido.numero_ticket}`}
+          subtitulo={ticketCobroRapido.cliente_alias || 'Ticket de Barra'}
+          total={Number(ticketCobroRapido.total)}
+          procesando={procesandoCobroRapido}
+          onConfirmarCobro={async (metodo) => {
+            await cobrarTicketBarraDirecto(ticketCobroRapido, metodo);
+            setTicketCobroRapido(null);
+          }}
+          onCerrar={() => setTicketCobroRapido(null)}
+        />
       )}
 
       {/* MODAL COBRO PARCIAL */}
@@ -4157,6 +4133,23 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                     <Printer className="h-4 w-4" />
                     <span className="hidden sm:inline">Pre-Ticket</span>
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModalCobroMesa({
+                        mesaNombre: getNombreMesa(mesaSeleccionada),
+                        subtitulo: `Mesa ${getNombreMesa(mesaSeleccionada)} · ${cuentaMesaActual.length + carritoActual.length} artículos`,
+                        total: desgloseMesaSeleccionada.totalFinal,
+                        items: cuentaMesaActual,
+                        esExpressConCarrito: carritoActual.length > 0
+                      });
+                    }}
+                    disabled={cobrandoMesa !== null || (cuentaMesaActual.length === 0 && carritoActual.length === 0)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-500 hover:from-amber-400 hover:to-emerald-400 text-slate-950 font-bold text-xs shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <CreditCard className="h-4 w-4" />
+                    <span className="hidden sm:inline">Cobrar Mesa</span>
+                  </button>
                 </div>
               </div>
 
@@ -4654,38 +4647,33 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
               )}
             </div>
 
-            {/* COBRO EXPRESS "1-TAP" DIRECTAMENTE DEBAJO DEL BLOQUE RESUMEN MESA */}
-            <div className="p-4 rounded-3xl bg-[#0d0f17] border border-emerald-500/30 space-y-2.5 shadow-xl">
-              <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-emerald-400">
-                <span>Cobro Express 1-Tap ({getNombreMesa(mesaSeleccionada)})</span>
-                <span className="font-mono text-white">{desgloseMesaSeleccionada.totalFinal.toFixed(2)} €</span>
+            {/* COBRO UNIFICADO DE MESA */}
+            <div className="p-4 rounded-3xl bg-[#0d0f17] border border-amber-500/30 space-y-2.5 shadow-xl">
+              <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-amber-400">
+                <span>Cobro de Mesa ({getNombreMesa(mesaSeleccionada)})</span>
+                <span className="font-mono text-white font-bold text-sm">{desgloseMesaSeleccionada.totalFinal.toFixed(2)} €</span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  disabled={
-                    enviando ||
-                    cobrandoMesa !== null ||
-                    (cuentaMesaActual.length === 0 && carritoActual.length === 0)
-                  }
-                  onClick={() => enviarYCobrarExpress('efectivo')}
-                  className="py-3.5 px-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <span>⚡ Enviar y Cobrar Efectivo</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    enviando ||
-                    cobrandoMesa !== null ||
-                    (cuentaMesaActual.length === 0 && carritoActual.length === 0)
-                  }
-                  onClick={() => enviarYCobrarExpress('tarjeta')}
-                  className="py-3.5 px-3 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <span>💳 Enviar y Cobrar Tarjeta</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                disabled={
+                  enviando ||
+                  cobrandoMesa !== null ||
+                  (cuentaMesaActual.length === 0 && carritoActual.length === 0)
+                }
+                onClick={() => {
+                  setModalCobroMesa({
+                    mesaNombre: getNombreMesa(mesaSeleccionada),
+                    subtitulo: `Mesa ${getNombreMesa(mesaSeleccionada)} · ${cuentaMesaActual.length + carritoActual.length} artículos`,
+                    total: desgloseMesaSeleccionada.totalFinal,
+                    items: cuentaMesaActual,
+                    esExpressConCarrito: carritoActual.length > 0
+                  });
+                }}
+                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-amber-500 via-emerald-500 to-amber-500 hover:from-amber-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wide flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <CreditCard className="h-4 w-4" />
+                <span>🖨️ 💳 Cobrar Mesa ({desgloseMesaSeleccionada.totalFinal.toFixed(2)} €)</span>
+              </button>
             </div>
 
             {/* PANEL LATERAL DE CUENTAS DE BARRA ABIERTAS */}
@@ -4755,7 +4743,6 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                           type="button"
                           onClick={() => {
                             setTicketCobroRapido(t);
-                            setMetodoCobroRapido('efectivo');
                           }}
                           className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-black transition-all cursor-pointer shadow-sm"
                           title="Cobrar y cerrar ticket de barra"
@@ -4982,24 +4969,25 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                       <button
                         type="button"
                         disabled={cobrandoMesa !== null}
-                        onClick={() => cobrarMesaLegal(m.mesa, 'efectivo')}
-                        className="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={() => {
+                          setModalCobroMesa({
+                            mesaNombre: m.mesa,
+                            subtitulo: `${m.mesa} · ${m.items.length} artículos`,
+                            total: desglose.totalFinal,
+                            items: m.items,
+                            esExpressConCarrito: false
+                          });
+                        }}
+                        className="sm:col-span-2 py-3 rounded-xl bg-gradient-to-r from-amber-500 via-emerald-500 to-amber-500 hover:from-amber-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-lg active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <DollarSign className="h-4 w-4" /> {estaCobrandoEstaMesa ? 'Cobrando...' : 'Efectivo'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={cobrandoMesa !== null}
-                        onClick={() => cobrarMesaLegal(m.mesa, 'tarjeta')}
-                        className="py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <CreditCard className="h-4 w-4" /> {estaCobrandoEstaMesa ? 'Cobrando...' : 'Tarjeta'}
+                        <CreditCard className="h-4 w-4" />
+                        <span>{estaCobrandoEstaMesa ? 'Cobrando...' : `Cobrar Mesa (${desglose.totalFinal.toFixed(2)} €)`}</span>
                       </button>
                       <button
                         type="button"
                         disabled={cobrandoMesa !== null}
                         onClick={() => initCobroParcial(m)}
-                        className="py-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-slate-950 font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="py-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-black text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Split className="h-4 w-4" /> Dividir
                       </button>
