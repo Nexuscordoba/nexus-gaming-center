@@ -303,7 +303,7 @@ export default function StaffPortal() {
       const { data, error } = await supabase
         .from('empleados')
         .select('*')
-        .or(`pin_acceso.eq.${pin},codigo_pin.eq.${pin}`)
+        .eq('pin_acceso', pin)
         .maybeSingle();
 
       if (error) throw error;

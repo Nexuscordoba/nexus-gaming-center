@@ -45,7 +45,7 @@ export const QuickClockInModal: React.FC<QuickClockInModalProps> = ({
       const { data, error } = await supabase
         .from('empleados')
         .select('*')
-        .or(`pin_acceso.eq.${pinAProbar},codigo_pin.eq.${pinAProbar}`)
+        .eq('pin_acceso', pinAProbar)
         .maybeSingle();
 
       if (error) throw error;

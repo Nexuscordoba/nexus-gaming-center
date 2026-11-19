@@ -572,7 +572,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     setEmpTelefono(emp.telefono || '');
     setEmpEmail(emp.email || '');
     setEmpFechaAlta(emp.fecha_alta ? emp.fecha_alta.split('T')[0] : new Date().toISOString().split('T')[0]);
-    setEmpPin(emp.pin_acceso || emp.codigo_pin || '');
+    setEmpPin(emp.pin_acceso || '');
     setEmpRol(emp.rol || 'camarero');
     setEmpHorarioAsignado(emp.horario_asignado || '08:00 - 16:00');
     setEmpDiasTrabajo(emp.dias_trabajo || 'Lunes a Viernes');
@@ -596,7 +596,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       (emp) =>
         emp.activo &&
         (!editandoEmpleado || emp.id !== editandoEmpleado.id) &&
-        (emp.pin_acceso === pinLimpio || emp.codigo_pin === pinLimpio)
+        emp.pin_acceso === pinLimpio
     );
     if (pinDuplicado) {
       notificar(`El PIN ${pinLimpio} ya está asignado a ${pinDuplicado.nombre}. Elige otro PIN.`, 'error');
@@ -605,47 +605,83 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
     setGuardandoEmpleado(true);
     try {
-      const payload: any = {
+      // Columnas reales confirmadas en public.empleados:
+      // id, nombre, apellidos, dni_nie, pin_acceso, rol, activo, creado_el
+      const payloadBase: any = {
         nombre: empNombre.trim(),
         apellidos: empApellidos.trim(),
         dni_nie: empDniNie.trim().toUpperCase(),
-        telefono: empTelefono.trim(),
-        email: empEmail.trim().toLowerCase(),
-        fecha_alta: empFechaAlta,
         pin_acceso: pinLimpio,
-        rol: empRol,
-        horario_asignado: empHorarioAsignado.trim(),
-        dias_trabajo: empDiasTrabajo.trim(),
-        horas_semanales: Number(empHorasSemanales || 40)
+        rol: empRol
       };
 
-      if (editandoEmpleado) {
-        // Modo Edición
-        setEmpleados((prev) =>
-          prev.map((emp) => (emp.id === editandoEmpleado.id ? { ...emp, ...payload } : emp))
-        );
+      let empleadoIdGuardado: string | null = editandoEmpleado?.id || null;
 
-        const { error } = await supabase
+      if (editandoEmpleado) {
+        const { data: updatedRows, error } = await supabase
           .from('empleados')
-          .update(payload)
-          .eq('id', editandoEmpleado.id);
+          .update(payloadBase)
+          .eq('id', editandoEmpleado.id)
+          .select();
 
         if (error) throw error;
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error('No se pudo actualizar el empleado en Supabase (revisa política RLS de UPDATE en public.empleados).');
+        }
+        setEmpleados((prev) =>
+          prev.map((emp) => (emp.id === editandoEmpleado.id ? updatedRows[0] : emp))
+        );
         notificar(`Empleado ${empNombre} actualizado con éxito.`, 'ok');
       } else {
-        // Modo Alta Nueva
-        payload.activo = true;
-        const { data: nuevo, error } = await supabase
+        payloadBase.activo = true;
+        const { data: insertedRows, error } = await supabase
           .from('empleados')
-          .insert([payload])
-          .select()
-          .maybeSingle();
+          .insert([payloadBase])
+          .select();
 
         if (error) throw error;
-        if (nuevo) {
-          setEmpleados((prev) => [...prev, nuevo]);
+        if (!insertedRows || insertedRows.length === 0) {
+          throw new Error('No se pudo insertar el empleado en Supabase (revisa política RLS de INSERT en public.empleados).');
         }
+        empleadoIdGuardado = insertedRows[0].id;
+        setEmpleados((prev) => [...prev, insertedRows[0]]);
         notificar(`Empleado ${empNombre} registrado correctamente.`, 'ok');
+      }
+
+      // Intentar guardar campos extendidos si la migración ya se ejecutó (no bloqueante)
+      if (empleadoIdGuardado) {
+        const payloadExtendido: any = {};
+        if (empTelefono.trim()) payloadExtendido.telefono = empTelefono.trim();
+        if (empEmail.trim()) payloadExtendido.email = empEmail.trim().toLowerCase();
+        if (empFechaAlta) payloadExtendido.fecha_alta = empFechaAlta;
+        if (empHorarioAsignado.trim()) payloadExtendido.horario_asignado = empHorarioAsignado.trim();
+        if (empDiasTrabajo.trim()) payloadExtendido.dias_trabajo = empDiasTrabajo.trim();
+        if (empHorasSemanales) payloadExtendido.horas_semanales = Number(empHorasSemanales);
+
+        if (Object.keys(payloadExtendido).length > 0) {
+          await supabase.from('empleados').update(payloadExtendido).eq('id', empleadoIdGuardado).then(() => {});
+        }
+
+        // Sincronizar horario asignado en tabla real turnos_semanales
+        if (empHorarioAsignado.includes('-')) {
+          const [inicioRaw, finRaw] = empHorarioAsignado.split('-').map((s) => s.trim());
+          const horaInicio = /^\d{2}:\d{2}$/.test(inicioRaw) ? `${inicioRaw}:00` : '08:00:00';
+          const horaFin = /^\d{2}:\d{2}$/.test(finRaw) ? `${finRaw}:00` : '16:00:00';
+          await supabase
+            .from('turnos_semanales')
+            .upsert(
+              {
+                empleado_id: empleadoIdGuardado,
+                dia_semana: empDiasTrabajo.trim() || 'Lunes a Viernes',
+                hora_inicio: horaInicio,
+                hora_fin: horaFin,
+                puesto: empRol,
+                activo: true
+              },
+              { onConflict: 'empleado_id' }
+            )
+            .then(() => {});
+        }
       }
 
       limpiarFormEmpleado();
@@ -660,36 +696,34 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const alternarEstadoEmpleado = async (emp: any) => {
     try {
       const nuevoEstado = !emp.activo;
-      // Actualización optimista inmediata en interfaz para respuesta instantánea
-      setEmpleados((prev) =>
-        prev.map((e) => (e.id === emp.id ? { ...e, activo: nuevoEstado } : e))
-      );
 
-      // Persistir en Supabase
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('empleados')
         .update({ activo: nuevoEstado })
-        .eq('id', emp.id);
+        .eq('id', emp.id)
+        .select();
 
-      if (error) {
-        console.warn('Advertencia al persistir en empleados:', error.message);
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        throw new Error(
+          'Supabase no devolvió la fila actualizada. Verifica la política RLS de UPDATE en public.empleados.'
+        );
       }
 
-      // Guardar caché en almacenamiento local para offline / fallback
-      try {
-        const actualizados = empleados.map((e) =>
-          e.id === emp.id ? { ...e, activo: nuevoEstado } : e
-        );
-        localStorage.setItem('nexus_empleados_cache', JSON.stringify(actualizados));
-      } catch (_) {}
+      const filaActualizada = data[0];
+
+      // Solo actualizamos el estado visual de la tarjeta cuando la BD confirma el cambio
+      setEmpleados((prev) =>
+        prev.map((e) => (e.id === emp.id ? { ...e, ...filaActualizada } : e))
+      );
 
       notificar(
-        `Estado de ${emp.nombre} actualizado a ${nuevoEstado ? 'Activo' : 'Inactivo'}.`,
-        nuevoEstado ? 'ok' : 'info'
+        `Estado de ${emp.nombre} actualizado a ${filaActualizada.activo ? 'Activo' : 'Inactivo'}.`,
+        filaActualizada.activo ? 'ok' : 'info'
       );
-      await cargarEmpleados();
     } catch (err: any) {
-      notificar('Error al actualizar estado del empleado: ' + err.message, 'error');
+      notificar('No se pudo cambiar el estado en BD: ' + err.message, 'error');
     }
   };
 
@@ -4710,7 +4744,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                                 {emp.nombre} {emp.apellidos || ''}
                               </p>
                               <p className="text-[11px] text-indigo-400 uppercase font-black tracking-wider mt-0.5">
-                                {emp.rol} · PIN: {emp.pin_acceso || emp.codigo_pin}
+                                {emp.rol} · PIN: {emp.pin_acceso}
                               </p>
                             </div>
                             <span

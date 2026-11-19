@@ -117,6 +117,22 @@ CREATE POLICY "Permitir todo en empleados" ON public.empleados
   USING (true)
   WITH CHECK (true);
 
+ALTER TABLE public.turnos_semanales ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Permitir todo en turnos_semanales" ON public.turnos_semanales;
+CREATE POLICY "Permitir todo en turnos_semanales" ON public.turnos_semanales
+  FOR ALL
+  TO anon, authenticated
+  USING (true)
+  WITH CHECK (true);
+
+ALTER TABLE public.empleado_documentos ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Permitir todo en empleado_documentos" ON public.empleado_documentos;
+CREATE POLICY "Permitir todo en empleado_documentos" ON public.empleado_documentos
+  FOR ALL
+  TO anon, authenticated
+  USING (true)
+  WITH CHECK (true);
+
 -- ============================================================================
 -- 4. ACTUALIZACIÓN Y AUDITORÍA DE TABLA: fichajes
 -- ============================================================================
