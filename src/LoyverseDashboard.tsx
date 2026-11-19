@@ -138,6 +138,38 @@ const normalizarCategoriaMovimiento = (cat: string, tipo: 'INGRESO' | 'GASTO'): 
   return 'MARKETING_VARIOS';
 };
 
+const METODOS_PAGO_MOV = [
+  { value: 'TRANSFERENCIA', label: 'Transferencia Bancaria' },
+  { value: 'TARJETA', label: 'Tarjeta Bancaria' },
+  { value: 'EFECTIVO', label: 'Efectivo' },
+  { value: 'DOMICILIACION', label: 'Domiciliación Recibo' },
+  { value: 'BIZUM', label: 'Bizum' },
+  { value: 'PAGARE_CHEQUE', label: 'Pagaré / Cheque' }
+] as const;
+
+const ETIQUETAS_METODO_PAGO_MOV: Record<string, string> = {
+  EFECTIVO: 'Efectivo',
+  TARJETA: 'Tarjeta Bancaria',
+  TRANSFERENCIA: 'Transferencia Bancaria',
+  DOMICILIACION: 'Domiciliación Recibo',
+  BIZUM: 'Bizum',
+  PAGARE_CHEQUE: 'Pagaré / Cheque'
+};
+
+const normalizarMetodoPagoMovimiento = (metodo: string): string => {
+  const codigosValidos = new Set(Object.keys(ETIQUETAS_METODO_PAGO_MOV));
+  const upper = String(metodo || '').trim().toUpperCase();
+  if (codigosValidos.has(upper)) return upper;
+
+  const lower = String(metodo || '').toLowerCase();
+  if (lower.includes('efectivo') || lower.includes('caja')) return 'EFECTIVO';
+  if (lower.includes('tarjeta') || lower.includes('tpv') || lower.includes('visa')) return 'TARJETA';
+  if (lower.includes('domicili')) return 'DOMICILIACION';
+  if (lower.includes('bizum')) return 'BIZUM';
+  if (lower.includes('pagar') || lower.includes('cheque')) return 'PAGARE_CHEQUE';
+  return 'TRANSFERENCIA';
+};
+
 export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: BackofficeProps) {
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
   const [pinAcceso, setPinAcceso] = useState('');
@@ -309,7 +341,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const [movBase, setMovBase] = useState<string>('');
   const [movCuotaIva, setMovCuotaIva] = useState<string>('');
   const [movTotal, setMovTotal] = useState<string>('');
-  const [movMetodoPago, setMovMetodoPago] = useState<string>('transferencia');
+  const [movMetodoPago, setMovMetodoPago] = useState<string>('TRANSFERENCIA');
   const [movPagado, setMovPagado] = useState<boolean>(true);
   const [movFechaConciliacion, setMovFechaConciliacion] = useState<string>('');
   const [movArchivo, setMovArchivo] = useState<File | null>(null);
@@ -1053,7 +1085,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         numero_factura: movNumeroFactura.trim() || null,
         base_imponible: baseVal,
         tipo_iva: movTipoIva,
-        metodo_pago: movMetodoPago,
+        metodo_pago: normalizarMetodoPagoMovimiento(movMetodoPago),
         pagado: movPagado,
         fecha_conciliacion: fechaConciliacionLimpia,
         conciliado: Boolean(fechaConciliacionLimpia),
@@ -1135,7 +1167,10 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               numero_factura: numFacturaZ,
               base_imponible: baseImponible,
               tipo_iva: 10,
-              metodo_pago: 'mixto',
+              metodo_pago:
+                Number(c.ventas_tarjeta_sistema || 0) >= Number(c.ventas_efectivo_sistema || 0)
+                  ? 'TARJETA'
+                  : 'EFECTIVO',
               pagado: true,
               fecha_conciliacion: null,
               conciliado: false,
@@ -1255,7 +1290,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       Number(m.tipo_iva || 0).toFixed(0) + '%',
       Number(m.cuota_iva || 0).toFixed(2),
       Number(m.total || 0).toFixed(2),
-      m.metodo_pago || '',
+      ETIQUETAS_METODO_PAGO_MOV[m.metodo_pago] || m.metodo_pago || '',
       m.pagado ? 'PAGADO' : 'PENDIENTE',
       m.conciliado ? 'SI' : 'NO',
       m.fecha_conciliacion || ''
@@ -4346,11 +4381,11 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                       onChange={(e) => setMovMetodoPago(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
                     >
-                      <option value="transferencia">Transferencia Bancaria</option>
-                      <option value="tarjeta">Tarjeta Bancaria</option>
-                      <option value="efectivo">Efectivo</option>
-                      <option value="domiciliacion">Domiciliación Recibo</option>
-                      <option value="bizum">Bizum</option>
+                      {METODOS_PAGO_MOV.map((mp) => (
+                        <option key={mp.value} value={mp.value}>
+                          {mp.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <div>
