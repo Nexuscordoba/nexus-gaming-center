@@ -324,6 +324,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const [movimientosGenerales, setMovimientosGenerales] = useState<any[]>([]);
   const [cargandoMovimientos, setCargandoMovimientos] = useState<boolean>(false);
   const [mesGastos, setMesGastos] = useState<string>('TODOS');
+  const [mesSeleccionadoMov, setMesSeleccionadoMov] = useState<string>(() => new Date().toISOString().slice(0, 7));
   const [filtroTipoMov, setFiltroTipoMov] = useState<'TODOS' | 'INGRESO' | 'GASTO'>('TODOS');
   const [filtroCategoriaMov, setFiltroCategoriaMov] = useState<string>('TODAS');
   const [filtroEstadoMov, setFiltroEstadoMov] = useState<'TODOS' | 'pagado' | 'pendiente'>('TODOS');
@@ -624,6 +625,14 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       previsionTrimestralIva
     };
   }, [movimientosGenerales]);
+
+  const etiquetaPeriodoMov = useMemo(() => {
+    if (mesGastos === 'TODOS' || !mesGastos.includes('-')) return null;
+    const [anioStr, mesStr] = mesGastos.split('-');
+    const fecha = new Date(Number(anioStr), Number(mesStr) - 1, 1);
+    const texto = fecha.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
+  }, [mesGastos]);
 
   const cargarEmpleados = async () => {
     try {
@@ -1130,6 +1139,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
       // Si el usuario tiene un mes distinto seleccionado, cambiar automáticamente al mes del apunte para mostrarlo
       if (mesGastos !== 'TODOS' && mesGastos !== mesDelMovimiento) {
+        setMesSeleccionadoMov(mesDelMovimiento);
         setMesGastos(mesDelMovimiento);
         await cargarMovimientosGenerales(mesDelMovimiento);
         notificar(
@@ -4104,16 +4114,36 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                   >
                     Todo el histórico
                   </button>
-                  <div className="flex items-center gap-1.5 px-2">
-                    <Calendar className="h-4 w-4 text-cyan-400" />
-                    <input
-                      type="month"
-                      value={mesGastos === 'TODOS' ? '' : mesGastos}
-                      onChange={(e) => setMesGastos(e.target.value || 'TODOS')}
-                      className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
-                      title="Filtrar por un mes concreto"
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMesGastos(mesSeleccionadoMov)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+                      mesGastos !== 'TODOS'
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <Calendar className="h-3.5 w-3.5" />
+                    <span>Por mes</span>
+                  </button>
+                  {mesGastos !== 'TODOS' && (
+                    <div className="flex items-center px-2 border-l border-slate-700">
+                      <input
+                        type="month"
+                        value={mesSeleccionadoMov}
+                        min="2020-01"
+                        max="2100-12"
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            setMesSeleccionadoMov(e.target.value);
+                            setMesGastos(e.target.value);
+                          }
+                        }}
+                        className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
+                        title="Seleccionar mes concreto"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <button
@@ -4144,7 +4174,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               {/* KPI 1: Ingresos Totales */}
               <div className="bg-[#0f172a] border border-emerald-500/30 rounded-3xl p-5 shadow-lg relative overflow-hidden">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase text-emerald-400 tracking-wider">Ingresos del Mes</span>
+                  <span className="text-[10px] font-black uppercase text-emerald-400 tracking-wider">
+                    {mesGastos === 'TODOS' ? 'Ingresos Acumulados' : `Ingresos de ${etiquetaPeriodoMov}`}
+                  </span>
                   <div className="h-8 w-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
                     <TrendingUp className="h-4 w-4" />
                   </div>
@@ -4160,7 +4192,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               {/* KPI 2: Gastos Totales */}
               <div className="bg-[#0f172a] border border-rose-500/30 rounded-3xl p-5 shadow-lg relative overflow-hidden">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase text-rose-400 tracking-wider">Gastos del Mes</span>
+                  <span className="text-[10px] font-black uppercase text-rose-400 tracking-wider">
+                    {mesGastos === 'TODOS' ? 'Gastos Acumulados' : `Gastos de ${etiquetaPeriodoMov}`}
+                  </span>
                   <div className="h-8 w-8 rounded-xl bg-rose-500/10 text-rose-400 flex items-center justify-center">
                     <TrendingDown className="h-4 w-4" />
                   </div>
@@ -4178,7 +4212,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                 resumenGastos.beneficioOperativoNeto >= 0 ? 'border-cyan-500/30' : 'border-amber-500/30'
               }`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase text-cyan-400 tracking-wider">Beneficio Operativo Neto</span>
+                  <span className="text-[10px] font-black uppercase text-cyan-400 tracking-wider">
+                    {mesGastos === 'TODOS' ? 'Beneficio Operativo Acumulado' : 'Beneficio Operativo del Mes'}
+                  </span>
                   <div className="h-8 w-8 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
                     <DollarSign className="h-4 w-4" />
                   </div>
@@ -4196,7 +4232,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               {/* KPI 4: Previsión Trimestral de IVA */}
               <div className="bg-[#0f172a] border border-indigo-500/30 rounded-3xl p-5 shadow-lg relative overflow-hidden">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase text-indigo-400 tracking-wider">Previsión IVA Trimestre</span>
+                  <span className="text-[10px] font-black uppercase text-indigo-400 tracking-wider">
+                    {mesGastos === 'TODOS' ? 'Previsión IVA Acumulado' : `Previsión IVA (${etiquetaPeriodoMov})`}
+                  </span>
                   <div className="h-8 w-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
                     <FileText className="h-4 w-4" />
                   </div>
