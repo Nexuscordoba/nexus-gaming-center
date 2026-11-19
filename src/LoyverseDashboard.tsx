@@ -243,6 +243,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const [filtroTipoMov, setFiltroTipoMov] = useState<'TODOS' | 'INGRESO' | 'GASTO'>('TODOS');
   const [filtroCategoriaMov, setFiltroCategoriaMov] = useState<string>('TODAS');
   const [filtroEstadoMov, setFiltroEstadoMov] = useState<'TODOS' | 'pagado' | 'pendiente'>('TODOS');
+  const [filtroConciliacionMov, setFiltroConciliacionMov] = useState<'TODOS' | 'conciliados' | 'pendientes'>('TODOS');
   const [busquedaMov, setBusquedaMov] = useState<string>('');
 
   const [movTipo, setMovTipo] = useState<'GASTO' | 'INGRESO'>('GASTO');
@@ -258,6 +259,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const [movTotal, setMovTotal] = useState<string>('');
   const [movMetodoPago, setMovMetodoPago] = useState<string>('transferencia');
   const [movPagado, setMovPagado] = useState<boolean>(true);
+  const [movFechaConciliacion, setMovFechaConciliacion] = useState<string>('');
   const [movArchivo, setMovArchivo] = useState<File | null>(null);
   const [guardandoMovimiento, setGuardandoMovimiento] = useState<boolean>(false);
   const [sincronizandoCierres, setSincronizandoCierres] = useState<boolean>(false);
@@ -986,8 +988,10 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
       const totalVal = parseFloat(movTotal) || 0;
       const baseVal = parseFloat(movBase) || redondearMoneda(totalVal / (1 + movTipoIva / 100));
-      const cuotaVal = parseFloat(movCuotaIva) || redondearMoneda(totalVal - baseVal);
+      const fechaConciliacionLimpia = movFechaConciliacion.trim() ? movFechaConciliacion.trim() : null;
 
+      // Nota: cuota_iva y total son columnas GENERATED ALWAYS AS ... STORED en PostgreSQL;
+      // se omiten del payload para que PostgreSQL las calcule automáticamente.
       const payload = {
         fecha: movFecha,
         tipo: movTipo,
@@ -997,10 +1001,10 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         numero_factura: movNumeroFactura.trim() || null,
         base_imponible: baseVal,
         tipo_iva: movTipoIva,
-        cuota_iva: cuotaVal,
-        total: totalVal,
         metodo_pago: movMetodoPago,
         pagado: movPagado,
+        fecha_conciliacion: fechaConciliacionLimpia,
+        conciliado: Boolean(fechaConciliacionLimpia),
         adjunto_url: adjuntoUrl
       };
 
@@ -1014,6 +1018,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       setMovBase('');
       setMovCuotaIva('');
       setMovTotal('');
+      setMovFechaConciliacion('');
       setMovArchivo(null);
       await cargarMovimientosGenerales();
     } catch (err: any) {
@@ -1065,7 +1070,6 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
           );
           if (totalVentas > 0) {
             const baseImponible = redondearMoneda(totalVentas / 1.1);
-            const cuotaIva = redondearMoneda(totalVentas - baseImponible);
             const fechaCierreStr = c.fecha_cierre
               ? c.fecha_cierre.split('T')[0]
               : new Date().toISOString().split('T')[0];
@@ -1079,10 +1083,10 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               numero_factura: numFacturaZ,
               base_imponible: baseImponible,
               tipo_iva: 10,
-              cuota_iva: cuotaIva,
-              total: totalVentas,
               metodo_pago: 'mixto',
               pagado: true,
+              fecha_conciliacion: null,
+              conciliado: false,
               adjunto_url: null
             });
           }
@@ -1117,6 +1121,43 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     }
   };
 
+  const actualizarConciliacionMovimiento = async (movId: string, nuevaFecha: string | null) => {
+    try {
+      const fechaLimpia = nuevaFecha && nuevaFecha.trim() ? nuevaFecha.trim() : null;
+      const conciliado = Boolean(fechaLimpia);
+
+      const { data, error } = await supabase
+        .from('movimientos_generales')
+        .update({
+          fecha_conciliacion: fechaLimpia,
+          conciliado
+        })
+        .eq('id', movId)
+        .select();
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        setMovimientosGenerales((prev) => prev.map((m) => (m.id === movId ? data[0] : m)));
+      } else {
+        setMovimientosGenerales((prev) =>
+          prev.map((m) =>
+            m.id === movId ? { ...m, fecha_conciliacion: fechaLimpia, conciliado } : m
+          )
+        );
+      }
+
+      notificar(
+        conciliado
+          ? `Movimiento conciliado con fecha ${fechaLimpia}.`
+          : 'Conciliación bancaria desmarcada.',
+        'ok'
+      );
+    } catch (err: any) {
+      notificar('Error al actualizar conciliación bancaria: ' + err.message, 'error');
+    }
+  };
+
   const eliminarMovimientoGeneral = async (movId: string) => {
     if (!window.confirm('¿Seguro que deseas eliminar este apunte contable?')) return;
     try {
@@ -1146,7 +1187,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       'Cuota IVA (€)',
       'Total Documento (€)',
       'Método de Pago',
-      'Estado de Pago'
+      'Estado de Pago',
+      'Conciliado',
+      'Fecha Conciliación'
     ];
 
     const filas = movimientosGenerales.map((m) => [
@@ -1161,7 +1204,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       Number(m.cuota_iva || 0).toFixed(2),
       Number(m.total || 0).toFixed(2),
       m.metodo_pago || '',
-      m.pagado ? 'PAGADO' : 'PENDIENTE'
+      m.pagado ? 'PAGADO' : 'PENDIENTE',
+      m.conciliado ? 'SI' : 'NO',
+      m.fecha_conciliacion || ''
     ]);
 
     const csvContent = '\uFEFF' + [headers.join(';'), ...filas.map((f) => f.join(';'))].join('\n');
@@ -4257,6 +4302,21 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
                 <div>
                   <label className="text-[10px] font-black uppercase text-slate-400 flex items-center justify-between">
+                    <span>Fecha Conciliación Bancaria (Opcional)</span>
+                    <span className="text-[9px] text-slate-500 font-normal">
+                      {movFechaConciliacion ? 'Se marcará conciliado' : 'Sin conciliar'}
+                    </span>
+                  </label>
+                  <input
+                    type="date"
+                    value={movFechaConciliacion}
+                    onChange={(e) => setMovFechaConciliacion(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400 flex items-center justify-between">
                     <span>Adjunto Factura / Ticket (PDF o Imagen)</span>
                     <span className="text-[9px] text-slate-500 font-normal">Bucket: facturas_gastos</span>
                   </label>
@@ -4330,6 +4390,16 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                       <option value="pagado">Pagados</option>
                       <option value="pendiente">Pendientes</option>
                     </select>
+
+                    <select
+                      value={filtroConciliacionMov}
+                      onChange={(e) => setFiltroConciliacionMov(e.target.value as any)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-bold text-cyan-300"
+                    >
+                      <option value="TODOS">Banco: Todos</option>
+                      <option value="pendientes">Pendientes de conciliar</option>
+                      <option value="conciliados">Conciliados</option>
+                    </select>
                   </div>
                 </div>
 
@@ -4345,6 +4415,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                         <th className="p-3 text-center">IVA</th>
                         <th className="p-3 text-right">Total</th>
                         <th className="p-3 text-center">Estado</th>
+                        <th className="p-3 text-center">Banco / Conciliación</th>
                         <th className="p-3 text-center">Adjunto</th>
                         <th className="p-3 text-center">Acción</th>
                       </tr>
@@ -4352,13 +4423,13 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                     <tbody className="divide-y divide-slate-800/60 font-medium">
                       {cargandoMovimientos ? (
                         <tr>
-                          <td colSpan={10} className="p-8 text-center text-slate-500">
+                          <td colSpan={11} className="p-8 text-center text-slate-500">
                             Cargando movimientos contables...
                           </td>
                         </tr>
                       ) : movimientosGenerales.length === 0 ? (
                         <tr>
-                          <td colSpan={10} className="p-8 text-center text-slate-500">
+                          <td colSpan={11} className="p-8 text-center text-slate-500">
                             No hay movimientos registrados en este periodo. Puedes añadir uno manual o sincronizar los cierres de caja.
                           </td>
                         </tr>
@@ -4369,6 +4440,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                             if (filtroCategoriaMov !== 'TODAS' && m.categoria !== filtroCategoriaMov) return false;
                             if (filtroEstadoMov === 'pagado' && !m.pagado) return false;
                             if (filtroEstadoMov === 'pendiente' && m.pagado) return false;
+                            if (filtroConciliacionMov === 'conciliados' && !m.conciliado) return false;
+                            if (filtroConciliacionMov === 'pendientes' && m.conciliado) return false;
                             if (busquedaMov.trim()) {
                               const q = busquedaMov.toLowerCase();
                               const coincide =
@@ -4430,6 +4503,43 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                                 >
                                   {m.pagado ? 'Pagado' : 'Pendiente'}
                                 </button>
+                              </td>
+                              <td className="p-3 text-center whitespace-nowrap">
+                                {m.conciliado && m.fecha_conciliacion ? (
+                                  <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[10px] font-mono font-bold">
+                                    <span>🏦 {m.fecha_conciliacion}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => actualizarConciliacionMovimiento(m.id, null)}
+                                      className="text-slate-400 hover:text-rose-400 ml-0.5 cursor-pointer"
+                                      title="Desmarcar conciliación"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="inline-flex items-center gap-1">
+                                    <input
+                                      type="date"
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) actualizarConciliacionMovimiento(m.id, e.target.value);
+                                      }}
+                                      className="bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-0.5 text-[10px] text-slate-300 w-28 cursor-pointer"
+                                      title="Asignar fecha de conciliación bancaria"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        actualizarConciliacionMovimiento(m.id, new Date().toISOString().split('T')[0])
+                                      }
+                                      className="px-1.5 py-0.5 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold cursor-pointer"
+                                      title="Conciliar con fecha de hoy"
+                                    >
+                                      Hoy
+                                    </button>
+                                  </div>
+                                )}
                               </td>
                               <td className="p-3 text-center">
                                 {m.adjunto_url ? (

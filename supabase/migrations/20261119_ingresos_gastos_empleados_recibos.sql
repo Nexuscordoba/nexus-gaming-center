@@ -22,9 +22,15 @@ CREATE TABLE IF NOT EXISTS public.movimientos_generales (
   total numeric(10, 2) NOT NULL DEFAULT 0.00,
   metodo_pago text DEFAULT 'transferencia',
   pagado boolean NOT NULL DEFAULT true,
+  fecha_conciliacion date,
+  conciliado boolean NOT NULL DEFAULT false,
   adjunto_url text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.movimientos_generales
+  ADD COLUMN IF NOT EXISTS fecha_conciliacion date,
+  ADD COLUMN IF NOT EXISTS conciliado boolean NOT NULL DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS idx_movimientos_generales_fecha ON public.movimientos_generales (fecha);
 CREATE INDEX IF NOT EXISTS idx_movimientos_generales_tipo ON public.movimientos_generales (tipo);
