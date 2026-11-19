@@ -86,6 +86,58 @@ const factorConversionUnidades = (unidadUso: UnidadMedida, unidadBase: UnidadMed
   return obtenerFactorConversion(unidadBase, unidadUso);
 };
 
+const CATEGORIAS_INGRESO_MOV = [
+  { value: 'VENTAS_TPV', label: 'Ventas TPV / Cafetería' },
+  { value: 'EVENTOS_EXTRAS', label: 'Eventos / Escape Rooms / Extras' },
+  { value: 'APORTACIONES_CAPITAL', label: 'Aportaciones / Capital' },
+  { value: 'PATROCINIOS_OTROS', label: 'Patrocinios / Otros Ingresos' }
+] as const;
+
+const CATEGORIAS_GASTO_MOV = [
+  { value: 'MATERIA_PRIMA', label: 'Materia Prima / Mercancía / Bebidas' },
+  { value: 'SUMINISTROS', label: 'Suministros (Luz, Agua, Red)' },
+  { value: 'CANON_ALQUILER', label: 'Canon / Alquiler Local' },
+  { value: 'PERSONAL', label: 'Nóminas / Personal' },
+  { value: 'EQUIPAMIENTO', label: 'Equipamiento / Reparaciones' },
+  { value: 'MARKETING_VARIOS', label: 'Marketing / Software / Varios' }
+] as const;
+
+const ETIQUETAS_CATEGORIA_MOV: Record<string, string> = {
+  VENTAS_TPV: 'Ventas TPV / Cafetería',
+  EVENTOS_EXTRAS: 'Eventos / Extras',
+  APORTACIONES_CAPITAL: 'Aportaciones / Capital',
+  PATROCINIOS_OTROS: 'Patrocinios / Otros',
+  MATERIA_PRIMA: 'Materia Prima / Mercancía',
+  SUMINISTROS: 'Suministros (Luz, Agua, Red)',
+  CANON_ALQUILER: 'Canon / Alquiler Local',
+  PERSONAL: 'Nóminas / Personal',
+  EQUIPAMIENTO: 'Equipamiento / Reparaciones',
+  MARKETING_VARIOS: 'Marketing / Varios'
+};
+
+const normalizarCategoriaMovimiento = (cat: string, tipo: 'INGRESO' | 'GASTO'): string => {
+  const codigosValidos = new Set(Object.keys(ETIQUETAS_CATEGORIA_MOV));
+  if (codigosValidos.has(cat)) return cat;
+
+  const lower = String(cat || '').toLowerCase();
+  if (tipo === 'INGRESO') {
+    if (lower.includes('venta') || lower.includes('tpv')) return 'VENTAS_TPV';
+    if (lower.includes('evento') || lower.includes('escape') || lower.includes('guiso') || lower.includes('extra')) {
+      return 'EVENTOS_EXTRAS';
+    }
+    if (lower.includes('aporta') || lower.includes('capital')) return 'APORTACIONES_CAPITAL';
+    return 'PATROCINIOS_OTROS';
+  }
+  if (lower.includes('materia') || lower.includes('mercanc') || lower.includes('bebida') || lower.includes('aliment')) {
+    return 'MATERIA_PRIMA';
+  }
+  if (lower.includes('suministro') || lower.includes('luz') || lower.includes('agua')) return 'SUMINISTROS';
+  if (lower.includes('alquiler') || lower.includes('canon')) return 'CANON_ALQUILER';
+  if (lower.includes('personal') || lower.includes('nómina') || lower.includes('nomina')) return 'PERSONAL';
+  if (lower.includes('equip') || lower.includes('reparac') || lower.includes('mantenimiento')) return 'EQUIPAMIENTO';
+  return 'MARKETING_VARIOS';
+};
+
 export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: BackofficeProps) {
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
   const [pinAcceso, setPinAcceso] = useState('');
@@ -248,7 +300,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
   const [movTipo, setMovTipo] = useState<'GASTO' | 'INGRESO'>('GASTO');
   const [movFecha, setMovFecha] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [movCategoria, setMovCategoria] = useState<string>('Mercancía / Alimentación');
+  const [movCategoria, setMovCategoria] = useState<string>('MATERIA_PRIMA');
   const [movTercero, setMovTercero] = useState<string>('');
   const [movConcepto, setMovConcepto] = useState<string>('');
   const [movNumeroFactura, setMovNumeroFactura] = useState<string>('');
@@ -995,7 +1047,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       const payload = {
         fecha: movFecha,
         tipo: movTipo,
-        categoria: movCategoria,
+        categoria: normalizarCategoriaMovimiento(movCategoria, movTipo),
         tercero: movTercero.trim(),
         concepto: movConcepto.trim(),
         numero_factura: movNumeroFactura.trim() || null,
@@ -1055,7 +1107,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         .from('movimientos_generales')
         .select('numero_factura')
         .eq('tipo', 'INGRESO')
-        .eq('categoria', 'Ventas TPV');
+        .eq('categoria', 'VENTAS_TPV');
 
       const setFacturasExistentes = new Set((existentes || []).map((e) => e.numero_factura));
 
@@ -1077,7 +1129,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
             nuevosParaInsertar.push({
               fecha: fechaCierreStr,
               tipo: 'INGRESO',
-              categoria: 'Ventas TPV',
+              categoria: 'VENTAS_TPV',
               tercero: 'Clientes Cafetería (Cierre Caja TPV)',
               concepto: `Cierre Diario Z (${fechaCierreStr}) - Turno ${c.usuario_nombre || 'TPV'}`,
               numero_factura: numFacturaZ,
@@ -1198,7 +1250,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       `"${(m.numero_factura || '').replace(/"/g, '""')}"`,
       `"${(m.tercero || '').replace(/"/g, '""')}"`,
       `"${(m.concepto || '').replace(/"/g, '""')}"`,
-      `"${(m.categoria || '').replace(/"/g, '""')}"`,
+      `"${(ETIQUETAS_CATEGORIA_MOV[m.categoria] || m.categoria || '').replace(/"/g, '""')}"`,
       Number(m.base_imponible || 0).toFixed(2),
       Number(m.tipo_iva || 0).toFixed(0) + '%',
       Number(m.cuota_iva || 0).toFixed(2),
@@ -4085,7 +4137,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                   <div className="flex rounded-xl bg-slate-900 p-1 border border-slate-700">
                     <button
                       type="button"
-                      onClick={() => { setMovTipo('GASTO'); setMovTipoIva(21); setMovCategoria('Mercancía / Alimentación'); }}
+                      onClick={() => { setMovTipo('GASTO'); setMovTipoIva(21); setMovCategoria('MATERIA_PRIMA'); }}
                       className={`px-3 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
                         movTipo === 'GASTO' ? 'bg-rose-500 text-white' : 'text-slate-400 hover:text-white'
                       }`}
@@ -4094,7 +4146,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setMovTipo('INGRESO'); setMovTipoIva(10); setMovCategoria('Ventas TPV'); }}
+                      onClick={() => { setMovTipo('INGRESO'); setMovTipoIva(10); setMovCategoria('VENTAS_TPV'); }}
                       className={`px-3 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
                         movTipo === 'INGRESO' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'
                       }`}
@@ -4124,23 +4176,37 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                     >
                       {movTipo === 'GASTO' ? (
                         <>
-                          <option value="Mercancía / Alimentación">Mercancía / Alimentación</option>
-                          <option value="Bebidas / Cafetería">Bebidas / Cafetería</option>
-                          <option value="Suministros (Luz, Agua, Red)">Suministros (Luz, Agua, Red)</option>
-                          <option value="Alquiler Local">Alquiler Local</option>
-                          <option value="Nóminas / Personal">Nóminas / Personal</option>
-                          <option value="Reparaciones y Mantenimiento">Reparaciones y Mantenimiento</option>
-                          <option value="Publicidad y Marketing">Publicidad y Marketing</option>
-                          <option value="Software y Suscripciones">Software y Suscripciones</option>
-                          <option value="Tasas e Impuestos">Tasas e Impuestos</option>
-                          <option value="Otros Gastos">Otros Gastos</option>
+                          <optgroup label="Categorías de Gastos">
+                            {CATEGORIAS_GASTO_MOV.map((c) => (
+                              <option key={c.value} value={c.value}>
+                                {c.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="Categorías de Ingresos">
+                            {CATEGORIAS_INGRESO_MOV.map((c) => (
+                              <option key={c.value} value={c.value}>
+                                {c.label}
+                              </option>
+                            ))}
+                          </optgroup>
                         </>
                       ) : (
                         <>
-                          <option value="Ventas TPV">Ventas TPV</option>
-                          <option value="Eventos / Escape Rooms">Eventos / Escape Rooms</option>
-                          <option value="Guisos Bajo Demanda">Guisos Bajo Demanda</option>
-                          <option value="Patrocinios / Otros">Patrocinios / Otros</option>
+                          <optgroup label="Categorías de Ingresos">
+                            {CATEGORIAS_INGRESO_MOV.map((c) => (
+                              <option key={c.value} value={c.value}>
+                                {c.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="Categorías de Gastos">
+                            {CATEGORIAS_GASTO_MOV.map((c) => (
+                              <option key={c.value} value={c.value}>
+                                {c.label}
+                              </option>
+                            ))}
+                          </optgroup>
                         </>
                       )}
                     </select>
@@ -4376,7 +4442,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                         .filter(Boolean)
                         .map((cat) => (
                           <option key={cat} value={cat}>
-                            {cat}
+                            {ETIQUETAS_CATEGORIA_MOV[cat] || cat}
                           </option>
                         ))}
                     </select>
@@ -4475,7 +4541,9 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                               <td className="p-3">
                                 <span className="font-bold text-white block truncate max-w-xs">{m.tercero}</span>
                                 <span className="text-[10px] text-slate-400 block truncate max-w-xs">{m.concepto}</span>
-                                <span className="text-[9px] text-indigo-400 block uppercase font-semibold">{m.categoria}</span>
+                                <span className="text-[9px] text-indigo-400 block uppercase font-semibold">
+                                  {ETIQUETAS_CATEGORIA_MOV[m.categoria] || m.categoria}
+                                </span>
                               </td>
                               <td className="p-3 text-right font-mono text-slate-300">
                                 {Number(m.base_imponible || 0).toFixed(2)} €
