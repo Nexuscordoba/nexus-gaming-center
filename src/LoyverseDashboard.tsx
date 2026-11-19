@@ -4,7 +4,25 @@ import { supabase } from './supabase';
 import HistorialCajas from './HistorialCajas';
 import GuisosAdminPanel from './GuisosAdminPanel';
 import MesasReservasPanel from './MesasReservasPanel';
-import { CornerDownRight } from 'lucide-react';
+import {
+  CornerDownRight,
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
+  Plus,
+  Edit,
+  Trash2,
+  Clock,
+  Printer,
+  Download,
+  Calendar,
+  FileText,
+  ExternalLink,
+  RefreshCw,
+  X,
+  FileSpreadsheet
+} from 'lucide-react';
+import { imprimirInformeInspeccionLaboral } from './InspectionReportPrint';
 import {
   obtenerConfiguracionFiscal,
   calcularHashVeriFactu,
@@ -22,7 +40,7 @@ import {
 
 interface BackofficeProps {
   onBack?: () => void;
-  initialTab?: 'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion';
+  initialTab?: 'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion' | 'gastos';
 }
 
 interface IngredienteEscandalloUI {
@@ -74,7 +92,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const [errorPin, setErrorPin] = useState('');
 
   const [tabActiva, setTabActiva] = useState<
-    'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion'
+    'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion' | 'gastos'
   >(initialTab);
 
   useEffect(() => {
@@ -172,8 +190,77 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
   const [empleados, setEmpleados] = useState<any[]>([]);
   const [empNombre, setEmpNombre] = useState<string>('');
+  const [empApellidos, setEmpApellidos] = useState<string>('');
+  const [empDniNie, setEmpDniNie] = useState<string>('');
+  const [empTelefono, setEmpTelefono] = useState<string>('');
+  const [empEmail, setEmpEmail] = useState<string>('');
+  const [empFechaAlta, setEmpFechaAlta] = useState<string>(new Date().toISOString().split('T')[0]);
   const [empPin, setEmpPin] = useState<string>('');
-  const [empRol, setEmpRol] = useState<'camarero' | 'encargado' | 'admin'>('camarero');
+  const [empRol, setEmpRol] = useState<'camarero' | 'cocinero' | 'encargado' | 'admin'>('camarero');
+  const [empHorarioAsignado, setEmpHorarioAsignado] = useState<string>('08:00 - 16:00');
+  const [empDiasTrabajo, setEmpDiasTrabajo] = useState<string>('Lunes a Viernes');
+  const [empHorasSemanales, setEmpHorasSemanales] = useState<number>(40);
+  const [editandoEmpleado, setEditandoEmpleado] = useState<any | null>(null);
+
+  const [subtabEmpleados, setSubtabEmpleados] = useState<'plantilla' | 'fichajes'>('plantilla');
+  const [fichajesHistorico, setFichajesHistorico] = useState<any[]>([]);
+  const [cargandoFichajes, setCargandoFichajes] = useState<boolean>(false);
+  const [filtroFichajeEmpleado, setFiltroFichajeEmpleado] = useState<string>('TODOS');
+  const [filtroFichajeDesde, setFiltroFichajeDesde] = useState<string>(
+    () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
+  );
+  const [filtroFichajeHasta, setFiltroFichajeHasta] = useState<string>(
+    () => new Date().toISOString().split('T')[0]
+  );
+
+  const [modalFichajeManual, setModalFichajeManual] = useState<boolean>(false);
+  const [manualEmpId, setManualEmpId] = useState<string>('');
+  const [manualFecha, setManualFecha] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [manualHora, setManualHora] = useState<string>('09:00');
+  const [manualTipo, setManualTipo] = useState<'entrada' | 'inicio_descanso' | 'fin_descanso' | 'salida'>('entrada');
+  const [manualMotivo, setManualMotivo] = useState<string>('');
+  const [guardandoFichajeManual, setGuardandoFichajeManual] = useState<boolean>(false);
+
+  const [modalEditarFichaje, setModalEditarFichaje] = useState<{
+    fichaje: any;
+    fecha: string;
+    hora: string;
+    tipo: string;
+    motivo: string;
+    procesando: boolean;
+  } | null>(null);
+
+  const [modalEliminarFichaje, setModalEliminarFichaje] = useState<{
+    fichaje: any;
+    motivo: string;
+    procesando: boolean;
+  } | null>(null);
+
+  // Estados Módulo Ingresos y Gastos Generales
+  const [movimientosGenerales, setMovimientosGenerales] = useState<any[]>([]);
+  const [cargandoMovimientos, setCargandoMovimientos] = useState<boolean>(false);
+  const [mesGastos, setMesGastos] = useState<string>(() => new Date().toISOString().slice(0, 7));
+  const [filtroTipoMov, setFiltroTipoMov] = useState<'TODOS' | 'INGRESO' | 'GASTO'>('TODOS');
+  const [filtroCategoriaMov, setFiltroCategoriaMov] = useState<string>('TODAS');
+  const [filtroEstadoMov, setFiltroEstadoMov] = useState<'TODOS' | 'pagado' | 'pendiente'>('TODOS');
+  const [busquedaMov, setBusquedaMov] = useState<string>('');
+
+  const [movTipo, setMovTipo] = useState<'GASTO' | 'INGRESO'>('GASTO');
+  const [movFecha, setMovFecha] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [movCategoria, setMovCategoria] = useState<string>('Mercancía / Alimentación');
+  const [movTercero, setMovTercero] = useState<string>('');
+  const [movConcepto, setMovConcepto] = useState<string>('');
+  const [movNumeroFactura, setMovNumeroFactura] = useState<string>('');
+  const [movModoCalculo, setMovModoCalculo] = useState<'directo' | 'inverso'>('directo');
+  const [movTipoIva, setMovTipoIva] = useState<number>(21);
+  const [movBase, setMovBase] = useState<string>('');
+  const [movCuotaIva, setMovCuotaIva] = useState<string>('');
+  const [movTotal, setMovTotal] = useState<string>('');
+  const [movMetodoPago, setMovMetodoPago] = useState<string>('transferencia');
+  const [movPagado, setMovPagado] = useState<boolean>(true);
+  const [movArchivo, setMovArchivo] = useState<File | null>(null);
+  const [guardandoMovimiento, setGuardandoMovimiento] = useState<boolean>(false);
+  const [sincronizandoCierres, setSincronizandoCierres] = useState<boolean>(false);
 
   const [modalElaboracion, setModalElaboracion] = useState<{
     articuloDestinoId: string;
@@ -205,6 +292,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     razonSocial: string;
     nifCif: string;
     direccion: string;
+    email?: string;
     procesando: boolean;
   } | null>(null);
 
@@ -411,6 +499,46 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     };
   }, [ticketsHistorico, articulosMaestro]);
 
+  const resumenGastos = useMemo(() => {
+    let baseIngresos = 0;
+    let cuotaIvaIngresos = 0;
+    let totalIngresos = 0;
+
+    let baseGastos = 0;
+    let cuotaIvaGastos = 0;
+    let totalGastos = 0;
+
+    for (const mov of movimientosGenerales) {
+      const b = Number(mov.base_imponible || 0);
+      const iva = Number(mov.cuota_iva || 0);
+      const tot = Number(mov.total || 0);
+
+      if (mov.tipo === 'INGRESO') {
+        baseIngresos = redondearMoneda(baseIngresos + b);
+        cuotaIvaIngresos = redondearMoneda(cuotaIvaIngresos + iva);
+        totalIngresos = redondearMoneda(totalIngresos + tot);
+      } else {
+        baseGastos = redondearMoneda(baseGastos + b);
+        cuotaIvaGastos = redondearMoneda(cuotaIvaGastos + iva);
+        totalGastos = redondearMoneda(totalGastos + tot);
+      }
+    }
+
+    const beneficioOperativoNeto = redondearMoneda(baseIngresos - baseGastos);
+    const previsionTrimestralIva = redondearMoneda(cuotaIvaIngresos - cuotaIvaGastos);
+
+    return {
+      baseIngresos,
+      cuotaIvaIngresos,
+      totalIngresos,
+      baseGastos,
+      cuotaIvaGastos,
+      totalGastos,
+      beneficioOperativoNeto,
+      previsionTrimestralIva
+    };
+  }, [movimientosGenerales]);
+
   const cargarEmpleados = async () => {
     try {
       const { data, error } = await supabase.from('empleados').select('*').order('nombre', { ascending: true });
@@ -421,46 +549,109 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     }
   };
 
-  const cargarProveedores = async () => {
-    try {
-      const { data } = await supabase.from('proveedores').select('*').order('nombre', { ascending: true });
-      if (data && data.length > 0) {
-        setListaProveedores(data);
-      } else {
-        // Si la tabla no existe o está vacía, extraemos los proveedores únicos de los movimientos de compra
-        const { data: movs } = await supabase.from('movimientos_stock').select('proveedor').not('proveedor', 'is', null);
-        if (movs) {
-          const unicos = Array.from(new Set(movs.map(m => m.proveedor))).filter(Boolean).map(p => ({ id: p, nombre: p }));
-          setListaProveedores(unicos);
-        }
-      }
-    } catch (err) {
-      console.error('Error al cargar proveedores:', err);
-    }
+  const limpiarFormEmpleado = () => {
+    setEmpNombre('');
+    setEmpApellidos('');
+    setEmpDniNie('');
+    setEmpTelefono('');
+    setEmpEmail('');
+    setEmpFechaAlta(new Date().toISOString().split('T')[0]);
+    setEmpPin('');
+    setEmpRol('camarero');
+    setEmpHorarioAsignado('08:00 - 16:00');
+    setEmpDiasTrabajo('Lunes a Viernes');
+    setEmpHorasSemanales(40);
+    setEditandoEmpleado(null);
+  };
+
+  const iniciarEdicionEmpleado = (emp: any) => {
+    setEditandoEmpleado(emp);
+    setEmpNombre(emp.nombre || '');
+    setEmpApellidos(emp.apellidos || '');
+    setEmpDniNie(emp.dni_nie || '');
+    setEmpTelefono(emp.telefono || '');
+    setEmpEmail(emp.email || '');
+    setEmpFechaAlta(emp.fecha_alta ? emp.fecha_alta.split('T')[0] : new Date().toISOString().split('T')[0]);
+    setEmpPin(emp.pin_acceso || emp.codigo_pin || '');
+    setEmpRol(emp.rol || 'camarero');
+    setEmpHorarioAsignado(emp.horario_asignado || '08:00 - 16:00');
+    setEmpDiasTrabajo(emp.dias_trabajo || 'Lunes a Viernes');
+    setEmpHorasSemanales(emp.horas_semanales || 40);
+    setSubtabEmpleados('plantilla');
   };
 
   const guardarEmpleado = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!empNombre.trim() || !empPin.trim() || guardandoEmpleado) return;
+
+    // Validación de PIN de 4 dígitos
+    const pinLimpio = empPin.trim();
+    if (!/^\d{4}$/.test(pinLimpio)) {
+      notificar('El PIN debe componerse exactamente de 4 dígitos numéricos.', 'error');
+      return;
+    }
+
+    // Comprobar colisión de PIN con otros empleados activos
+    const pinDuplicado = empleados.find(
+      (emp) =>
+        emp.activo &&
+        (!editandoEmpleado || emp.id !== editandoEmpleado.id) &&
+        (emp.pin_acceso === pinLimpio || emp.codigo_pin === pinLimpio)
+    );
+    if (pinDuplicado) {
+      notificar(`El PIN ${pinLimpio} ya está asignado a ${pinDuplicado.nombre}. Elige otro PIN.`, 'error');
+      return;
+    }
+
     setGuardandoEmpleado(true);
     try {
-      const payload = {
+      const payload: any = {
         nombre: empNombre.trim(),
-        apellidos: '',
-        pin_acceso: empPin.trim(),
+        apellidos: empApellidos.trim(),
+        dni_nie: empDniNie.trim().toUpperCase(),
+        telefono: empTelefono.trim(),
+        email: empEmail.trim().toLowerCase(),
+        fecha_alta: empFechaAlta,
+        pin_acceso: pinLimpio,
         rol: empRol,
-        activo: true
+        horario_asignado: empHorarioAsignado.trim(),
+        dias_trabajo: empDiasTrabajo.trim(),
+        horas_semanales: Number(empHorasSemanales || 40)
       };
 
-      const { error } = await supabase.from('empleados').insert([payload]);
-      if (error) throw error;
-      notificar('Empleado registrado correctamente.');
-      setEmpNombre('');
-      setEmpPin('');
-      setEmpRol('camarero');
+      if (editandoEmpleado) {
+        // Modo Edición
+        setEmpleados((prev) =>
+          prev.map((emp) => (emp.id === editandoEmpleado.id ? { ...emp, ...payload } : emp))
+        );
+
+        const { error } = await supabase
+          .from('empleados')
+          .update(payload)
+          .eq('id', editandoEmpleado.id);
+
+        if (error) throw error;
+        notificar(`Empleado ${empNombre} actualizado con éxito.`, 'ok');
+      } else {
+        // Modo Alta Nueva
+        payload.activo = true;
+        const { data: nuevo, error } = await supabase
+          .from('empleados')
+          .insert([payload])
+          .select()
+          .maybeSingle();
+
+        if (error) throw error;
+        if (nuevo) {
+          setEmpleados((prev) => [...prev, nuevo]);
+        }
+        notificar(`Empleado ${empNombre} registrado correctamente.`, 'ok');
+      }
+
+      limpiarFormEmpleado();
       await cargarEmpleados();
     } catch (err: any) {
-      notificar('Error: ' + err.message, 'error');
+      notificar('Error al guardar empleado: ' + err.message, 'error');
     } finally {
       setGuardandoEmpleado(false);
     }
@@ -469,19 +660,514 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const alternarEstadoEmpleado = async (emp: any) => {
     try {
       const nuevoEstado = !emp.activo;
-      const { error } = await supabase.from('empleados').update({ activo: nuevoEstado }).eq('id', emp.id);
-      if (error) throw error;
-      notificar(`Estado de ${emp.nombre} actualizado a ${nuevoEstado ? 'Activo' : 'Inactivo'}.`);
+      // Actualización optimista inmediata en interfaz para respuesta instantánea
+      setEmpleados((prev) =>
+        prev.map((e) => (e.id === emp.id ? { ...e, activo: nuevoEstado } : e))
+      );
+
+      // Persistir en Supabase
+      const { error } = await supabase
+        .from('empleados')
+        .update({ activo: nuevoEstado })
+        .eq('id', emp.id);
+
+      if (error) {
+        console.warn('Advertencia al persistir en empleados:', error.message);
+      }
+
+      // Guardar caché en almacenamiento local para offline / fallback
+      try {
+        const actualizados = empleados.map((e) =>
+          e.id === emp.id ? { ...e, activo: nuevoEstado } : e
+        );
+        localStorage.setItem('nexus_empleados_cache', JSON.stringify(actualizados));
+      } catch (_) {}
+
+      notificar(
+        `Estado de ${emp.nombre} actualizado a ${nuevoEstado ? 'Activo' : 'Inactivo'}.`,
+        nuevoEstado ? 'ok' : 'info'
+      );
       await cargarEmpleados();
     } catch (err: any) {
       notificar('Error al actualizar estado del empleado: ' + err.message, 'error');
     }
   };
 
+  const cargarFichajes = async () => {
+    setCargandoFichajes(true);
+    try {
+      let query = supabase
+        .from('fichajes')
+        .select('*, empleados(nombre, apellidos, dni_nie, rol)')
+        .order('timestamp_fichaje', { ascending: false });
+
+      if (filtroFichajeEmpleado !== 'TODOS') {
+        query = query.eq('empleado_id', filtroFichajeEmpleado);
+      }
+      if (filtroFichajeDesde) {
+        query = query.gte('timestamp_fichaje', `${filtroFichajeDesde}T00:00:00`);
+      }
+      if (filtroFichajeHasta) {
+        query = query.lte('timestamp_fichaje', `${filtroFichajeHasta}T23:59:59`);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setFichajesHistorico((data || []).filter((f) => !f.eliminado));
+    } catch (err: any) {
+      console.error('Error al cargar fichajes:', err);
+    } finally {
+      setCargandoFichajes(false);
+    }
+  };
+
+  const guardarFichajeManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualEmpId || !manualFecha || !manualHora || !manualMotivo.trim() || guardandoFichajeManual) return;
+    setGuardandoFichajeManual(true);
+    try {
+      const timestamp = new Date(`${manualFecha}T${manualHora}:00`).toISOString();
+      const payload = {
+        empleado_id: manualEmpId,
+        tipo: manualTipo,
+        timestamp_fichaje: timestamp,
+        notas: `[MANUAL por ${adminVerificado?.nombre || 'Admin'}] ${manualMotivo.trim()}`,
+        modificado_por: adminVerificado?.nombre || 'Admin',
+        modificado_el: new Date().toISOString(),
+        motivo_modificacion: `Alta manual por olvido: ${manualMotivo.trim()}`
+      };
+
+      const { error } = await supabase.from('fichajes').insert([payload]);
+      if (error) throw error;
+
+      notificar('Fichaje manual registrado correctamente con auditoría.', 'ok');
+      setModalFichajeManual(false);
+      setManualMotivo('');
+      await cargarFichajes();
+    } catch (err: any) {
+      notificar('Error al guardar fichaje manual: ' + err.message, 'error');
+    } finally {
+      setGuardandoFichajeManual(false);
+    }
+  };
+
+  const confirmarEditarFichaje = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalEditarFichaje || !modalEditarFichaje.motivo.trim() || modalEditarFichaje.procesando) return;
+    setModalEditarFichaje({ ...modalEditarFichaje, procesando: true });
+    try {
+      const timestamp = new Date(`${modalEditarFichaje.fecha}T${modalEditarFichaje.hora}:00`).toISOString();
+      const { error } = await supabase
+        .from('fichajes')
+        .update({
+          tipo: modalEditarFichaje.tipo,
+          timestamp_fichaje: timestamp,
+          modificado_por: adminVerificado?.nombre || 'Admin',
+          modificado_el: new Date().toISOString(),
+          motivo_modificacion: modalEditarFichaje.motivo.trim()
+        })
+        .eq('id', modalEditarFichaje.fichaje.id);
+
+      if (error) throw error;
+
+      notificar('Fichaje modificado correctamente con traza de auditoría.', 'ok');
+      setModalEditarFichaje(null);
+      await cargarFichajes();
+    } catch (err: any) {
+      notificar('Error al editar fichaje: ' + err.message, 'error');
+      setModalEditarFichaje((prev) => (prev ? { ...prev, procesando: false } : null));
+    }
+  };
+
+  const confirmarEliminarFichaje = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modalEliminarFichaje || !modalEliminarFichaje.motivo.trim() || modalEliminarFichaje.procesando) return;
+    setModalEliminarFichaje({ ...modalEliminarFichaje, procesando: true });
+    try {
+      // Soft-delete con traza de auditoría
+      const { error } = await supabase
+        .from('fichajes')
+        .update({
+          eliminado: true,
+          modificado_por: adminVerificado?.nombre || 'Admin',
+          modificado_el: new Date().toISOString(),
+          motivo_modificacion: `ELIMINADO: ${modalEliminarFichaje.motivo.trim()}`
+        })
+        .eq('id', modalEliminarFichaje.fichaje.id);
+
+      if (error) {
+        // Fallback si la columna eliminado no estuviese creada en la base de datos
+        await supabase.from('fichajes').delete().eq('id', modalEliminarFichaje.fichaje.id);
+      }
+
+      notificar('Fichaje eliminado correctamente con registro de auditoría.', 'ok');
+      setModalEliminarFichaje(null);
+      await cargarFichajes();
+    } catch (err: any) {
+      notificar('Error al eliminar fichaje: ' + err.message, 'error');
+      setModalEliminarFichaje((prev) => (prev ? { ...prev, procesando: false } : null));
+    }
+  };
+
+  const exportarFichajesCsv = () => {
+    if (fichajesHistorico.length === 0) {
+      notificar('No hay fichajes en el periodo para exportar.', 'info');
+      return;
+    }
+
+    const headers = ['Fecha', 'Hora', 'Empleado', 'DNI/NIE', 'Rol', 'Tipo Registro', 'Observaciones / Notas', 'Modificado Por', 'Motivo Modificación'];
+    const filas = fichajesHistorico.map((f) => {
+      const d = new Date(f.timestamp_fichaje);
+      return [
+        d.toLocaleDateString('es-ES'),
+        d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        `"${f.empleados?.nombre || ''} ${f.empleados?.apellidos || ''}"`,
+        `"${f.empleados?.dni_nie || ''}"`,
+        f.empleados?.rol || '',
+        f.tipo,
+        `"${(f.notas || '').replace(/"/g, '""')}"`,
+        `"${(f.modificado_por || '').replace(/"/g, '""')}"`,
+        `"${(f.motivo_modificacion || '').replace(/"/g, '""')}"`
+      ];
+    });
+
+    const csvContent = '\uFEFF' + [headers.join(';'), ...filas.map((r) => r.join(';'))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Nexus_Registro_Jornada_${filtroFichajeDesde}_${filtroFichajeHasta}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    notificar('CSV de control horario generado con éxito.', 'ok');
+  };
+
+  const lanzarInformeInspeccionLaboral = () => {
+    if (fichajesHistorico.length === 0) {
+      notificar('No hay registros de fichajes en el periodo para emitir el informe laboral.', 'info');
+      return;
+    }
+
+    const empSeleccionado = empleados.find((e) => e.id === filtroFichajeEmpleado);
+    const nombre = empSeleccionado
+      ? `${empSeleccionado.nombre} ${empSeleccionado.apellidos || ''}`
+      : filtroFichajeEmpleado === 'TODOS'
+      ? 'Toda la Plantilla'
+      : 'Empleado';
+    const dni = empSeleccionado?.dni_nie || 'Todos';
+
+    imprimirInformeInspeccionLaboral({
+      empleadoNombre: nombre,
+      empleadoDni: dni,
+      empleadoRol: empSeleccionado?.rol,
+      fechaDesde: filtroFichajeDesde,
+      fechaHasta: filtroFichajeHasta,
+      registros: fichajesHistorico
+    });
+  };
+
+  // Métodos Módulo Ingresos y Gastos Generales
+  const cargarMovimientosGenerales = async () => {
+    setCargandoMovimientos(true);
+    try {
+      const primerDia = `${mesGastos}-01`;
+      const [anio, mes] = mesGastos.split('-').map(Number);
+      const ultimoDiaMes = new Date(anio, mes, 0).getDate();
+      const ultimoDia = `${mesGastos}-${String(ultimoDiaMes).padStart(2, '0')}`;
+
+      const { data, error } = await supabase
+        .from('movimientos_generales')
+        .select('*')
+        .gte('fecha', primerDia)
+        .lte('fecha', ultimoDia)
+        .order('fecha', { ascending: false });
+
+      if (error) {
+        console.warn('Tabla movimientos_generales:', error.message);
+      }
+      setMovimientosGenerales(data || []);
+    } catch (err) {
+      console.error('Error al cargar movimientos generales:', err);
+    } finally {
+      setCargandoMovimientos(false);
+    }
+  };
+
+  const handleCalculoMonto = (
+    campo: 'base' | 'total',
+    valorStr: string,
+    tipoIva: number,
+    modo: 'directo' | 'inverso'
+  ) => {
+    const val = parseFloat(valorStr) || 0;
+    if (modo === 'inverso' || campo === 'total') {
+      setMovTotal(valorStr);
+      const factor = 1 + tipoIva / 100;
+      const baseCalc = redondearMoneda(val / factor);
+      const cuotaCalc = redondearMoneda(val - baseCalc);
+      setMovBase(baseCalc > 0 ? baseCalc.toFixed(2) : '');
+      setMovCuotaIva(cuotaCalc > 0 ? cuotaCalc.toFixed(2) : '');
+    } else {
+      setMovBase(valorStr);
+      const cuotaCalc = redondearMoneda(val * (tipoIva / 100));
+      const totalCalc = redondearMoneda(val + cuotaCalc);
+      setMovCuotaIva(cuotaCalc > 0 ? cuotaCalc.toFixed(2) : '');
+      setMovTotal(totalCalc > 0 ? totalCalc.toFixed(2) : '');
+    }
+  };
+
+  const guardarMovimientoGeneral = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!movConcepto.trim() || !movTercero.trim() || !movTotal || guardandoMovimiento) return;
+    setGuardandoMovimiento(true);
+
+    try {
+      let adjuntoUrl: string | null = null;
+
+      // Subir archivo a facturas_gastos en Supabase Storage si se ha seleccionado
+      if (movArchivo) {
+        try {
+          const extension = movArchivo.name.split('.').pop() || 'bin';
+          const nombreArchivo = `${movTipo.toLowerCase()}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${extension}`;
+          const ruta = `${mesGastos}/${nombreArchivo}`;
+
+          const { error: uploadError } = await supabase.storage
+            .from('facturas_gastos')
+            .upload(ruta, movArchivo, { cacheControl: '3600', upsert: true });
+
+          if (!uploadError) {
+            const { data: publicData } = supabase.storage
+              .from('facturas_gastos')
+              .getPublicUrl(ruta);
+            adjuntoUrl = publicData?.publicUrl || ruta;
+          } else {
+            console.warn('No se pudo subir a facturas_gastos (se guardará sin adjunto):', uploadError);
+          }
+        } catch (storageErr) {
+          console.warn('Excepción en storage upload:', storageErr);
+        }
+      }
+
+      const totalVal = parseFloat(movTotal) || 0;
+      const baseVal = parseFloat(movBase) || redondearMoneda(totalVal / (1 + movTipoIva / 100));
+      const cuotaVal = parseFloat(movCuotaIva) || redondearMoneda(totalVal - baseVal);
+
+      const payload = {
+        fecha: movFecha,
+        tipo: movTipo,
+        categoria: movCategoria,
+        tercero: movTercero.trim(),
+        concepto: movConcepto.trim(),
+        numero_factura: movNumeroFactura.trim() || null,
+        base_imponible: baseVal,
+        tipo_iva: movTipoIva,
+        cuota_iva: cuotaVal,
+        total: totalVal,
+        metodo_pago: movMetodoPago,
+        pagado: movPagado,
+        adjunto_url: adjuntoUrl
+      };
+
+      const { error } = await supabase.from('movimientos_generales').insert([payload]);
+      if (error) throw error;
+
+      notificar(`Registro de ${movTipo === 'INGRESO' ? 'ingreso' : 'gasto'} guardado con éxito.`, 'ok');
+      setMovConcepto('');
+      setMovTercero('');
+      setMovNumeroFactura('');
+      setMovBase('');
+      setMovCuotaIva('');
+      setMovTotal('');
+      setMovArchivo(null);
+      await cargarMovimientosGenerales();
+    } catch (err: any) {
+      notificar('Error al guardar movimiento: ' + err.message, 'error');
+    } finally {
+      setGuardandoMovimiento(false);
+    }
+  };
+
+  const sincronizarCierresCaja = async () => {
+    if (sincronizandoCierres) return;
+    setSincronizandoCierres(true);
+    try {
+      const primerDia = `${mesGastos}-01`;
+      const [anio, mes] = mesGastos.split('-').map(Number);
+      const ultimoDiaMes = new Date(anio, mes, 0).getDate();
+      const ultimoDia = `${mesGastos}-${String(ultimoDiaMes).padStart(2, '0')}`;
+
+      // 1. Obtener cierres_caja del mes
+      const { data: cierres, error: errCierres } = await supabase
+        .from('cierres_caja')
+        .select('*')
+        .gte('fecha_cierre', `${primerDia}T00:00:00`)
+        .lte('fecha_cierre', `${ultimoDia}T23:59:59`);
+
+      if (errCierres) throw errCierres;
+      if (!cierres || cierres.length === 0) {
+        notificar(`No hay cierres de caja (Z) registrados en el periodo ${mesGastos}.`, 'info');
+        return;
+      }
+
+      // 2. Comprobar cuáles ya existen en movimientos_generales para no duplicar
+      const { data: existentes } = await supabase
+        .from('movimientos_generales')
+        .select('numero_factura')
+        .eq('tipo', 'INGRESO')
+        .eq('categoria', 'Ventas TPV');
+
+      const setFacturasExistentes = new Set((existentes || []).map((e) => e.numero_factura));
+
+      const nuevosParaInsertar: any[] = [];
+      for (const c of cierres) {
+        const numFacturaZ = `Z-${String(c.id).slice(0, 8).toUpperCase()}`;
+        if (!setFacturasExistentes.has(numFacturaZ)) {
+          const totalVentas = redondearMoneda(
+            Number(c.ventas_efectivo_sistema || 0) +
+              Number(c.ventas_tarjeta_sistema || 0) -
+              Number(c.devoluciones_efectivo || 0)
+          );
+          if (totalVentas > 0) {
+            const baseImponible = redondearMoneda(totalVentas / 1.1);
+            const cuotaIva = redondearMoneda(totalVentas - baseImponible);
+            const fechaCierreStr = c.fecha_cierre
+              ? c.fecha_cierre.split('T')[0]
+              : new Date().toISOString().split('T')[0];
+
+            nuevosParaInsertar.push({
+              fecha: fechaCierreStr,
+              tipo: 'INGRESO',
+              categoria: 'Ventas TPV',
+              tercero: 'Clientes Cafetería (Cierre Caja TPV)',
+              concepto: `Cierre Diario Z (${fechaCierreStr}) - Turno ${c.usuario_nombre || 'TPV'}`,
+              numero_factura: numFacturaZ,
+              base_imponible: baseImponible,
+              tipo_iva: 10,
+              cuota_iva: cuotaIva,
+              total: totalVentas,
+              metodo_pago: 'mixto',
+              pagado: true,
+              adjunto_url: null
+            });
+          }
+        }
+      }
+
+      if (nuevosParaInsertar.length === 0) {
+        notificar('Todos los cierres de caja de este periodo ya están sincronizados.', 'info');
+      } else {
+        const { error: insertErr } = await supabase.from('movimientos_generales').insert(nuevosParaInsertar);
+        if (insertErr) throw insertErr;
+        notificar(`¡Sincronizados ${nuevosParaInsertar.length} cierres de caja como ingresos sin duplicados!`, 'ok');
+        await cargarMovimientosGenerales();
+      }
+    } catch (err: any) {
+      notificar('Error al sincronizar cierres de caja: ' + err.message, 'error');
+    } finally {
+      setSincronizandoCierres(false);
+    }
+  };
+
+  const alternarEstadoPagoMovimiento = async (mov: any) => {
+    try {
+      const nuevoPagado = !mov.pagado;
+      setMovimientosGenerales((prev) =>
+        prev.map((m) => (m.id === mov.id ? { ...m, pagado: nuevoPagado } : m))
+      );
+      await supabase.from('movimientos_generales').update({ pagado: nuevoPagado }).eq('id', mov.id);
+      notificar(`Movimiento marcado como ${nuevoPagado ? 'Pagado' : 'Pendiente'}.`, 'ok');
+    } catch (err: any) {
+      notificar('Error al actualizar estado: ' + err.message, 'error');
+    }
+  };
+
+  const eliminarMovimientoGeneral = async (movId: string) => {
+    if (!window.confirm('¿Seguro que deseas eliminar este apunte contable?')) return;
+    try {
+      setMovimientosGenerales((prev) => prev.filter((m) => m.id !== movId));
+      await supabase.from('movimientos_generales').delete().eq('id', movId);
+      notificar('Apunte eliminado correctamente.', 'ok');
+    } catch (err: any) {
+      notificar('Error al eliminar apunte: ' + err.message, 'error');
+    }
+  };
+
+  const exportarCsvGestoria = () => {
+    if (movimientosGenerales.length === 0) {
+      notificar('No hay movimientos en este periodo para exportar.', 'info');
+      return;
+    }
+
+    const headers = [
+      'Fecha',
+      'Tipo Operación',
+      'Nº Factura / Ticket',
+      'Tercero / Razón Social',
+      'Concepto',
+      'Categoría Contable',
+      'Base Imponible (€)',
+      '% IVA',
+      'Cuota IVA (€)',
+      'Total Documento (€)',
+      'Método de Pago',
+      'Estado de Pago'
+    ];
+
+    const filas = movimientosGenerales.map((m) => [
+      m.fecha,
+      m.tipo,
+      `"${(m.numero_factura || '').replace(/"/g, '""')}"`,
+      `"${(m.tercero || '').replace(/"/g, '""')}"`,
+      `"${(m.concepto || '').replace(/"/g, '""')}"`,
+      `"${(m.categoria || '').replace(/"/g, '""')}"`,
+      Number(m.base_imponible || 0).toFixed(2),
+      Number(m.tipo_iva || 0).toFixed(0) + '%',
+      Number(m.cuota_iva || 0).toFixed(2),
+      Number(m.total || 0).toFixed(2),
+      m.metodo_pago || '',
+      m.pagado ? 'PAGADO' : 'PENDIENTE'
+    ]);
+
+    const csvContent = '\uFEFF' + [headers.join(';'), ...filas.map((f) => f.join(';'))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Nexus_Libro_Ingresos_Gastos_${mesGastos}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    notificar('CSV para gestoría generado y descargado correctamente.', 'ok');
+  };
+
+  const cargarProveedores = async () => {
+    try {
+      const { data } = await supabase.from('proveedores').select('*').order('nombre', { ascending: true });
+      if (data && data.length > 0) {
+        setListaProveedores(data);
+      } else {
+        const { data: movs } = await supabase.from('movimientos_stock').select('proveedor').not('proveedor', 'is', null);
+        if (movs) {
+          const unicos = Array.from(new Set(movs.map((m) => m.proveedor))).filter(Boolean).map((p) => ({ id: p, nombre: p }));
+          setListaProveedores(unicos);
+        }
+      }
+    } catch (err) {
+      console.error('Error al cargar proveedores:', err);
+    }
+  };
+
   useEffect(() => {
-    if (adminVerificado && tabActiva === 'empleados') cargarEmpleados();
+    if (adminVerificado && tabActiva === 'empleados') {
+      cargarEmpleados();
+      cargarFichajes();
+    }
     if (adminVerificado && tabActiva === 'inventario') cargarProveedores();
-  }, [tabActiva, adminVerificado]);
+    if (adminVerificado && tabActiva === 'gastos') cargarMovimientosGenerales();
+  }, [tabActiva, adminVerificado, mesGastos, filtroFichajeEmpleado, filtroFichajeDesde, filtroFichajeHasta]);
 
   useEffect(() => {
     if (adminVerificado) cargarMovimientosInventario(pageMovimientos);
@@ -1118,9 +1804,22 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
           base_imponible: orig.base_imponible ?? desgloseNom.baseImponibleTotal,
           cuota_iva: orig.cuota_iva ?? desgloseNom.cuotaIvaTotal,
           hash_anterior,
-          hash_actual
+          hash_actual,
+          ticket_origen_id: orig.id,
+          ticket_origen_numero: orig.numero_completo,
+          cliente_email: modalFacturaNominativa.email?.trim() || null
         })
         .eq('id', docNom.id);
+
+      // Enlace bidireccional: vincular la factura en el ticket origen
+      await supabase
+        .from('facturas_tickets')
+        .update({
+          factura_asociada_id: docNom.id,
+          factura_asociada_numero: docNom.numero_completo,
+          cliente_email: modalFacturaNominativa.email?.trim() || null
+        })
+        .eq('id', orig.id);
 
       const { data: nomCompleta } = await supabase
         .from('facturas_tickets')
@@ -2035,6 +2734,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
             {[
               { id: 'resumen', label: '📊 Resumen y Arqueo Z' },
               { id: 'tickets', label: '🧾 Facturas y Tickets' },
+              { id: 'gastos', label: '💶 Ingresos y Gastos' },
               { id: 'articulos', label: '🍔 Artículos y Escandallos' },
               { id: 'inventario', label: '📦 Stock, Compras y Lotes' },
               { id: 'guisos', label: '🍲 Guisos / Preventa' },
@@ -2317,6 +3017,16 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                             ) : (
                               <div>
                                 <span className="font-mono text-white font-black">{t.numero_completo}</span>
+                                {t.serie === 'F' && t.ticket_origen_numero && (
+                                  <span className="block text-[10px] text-indigo-400 font-bold">
+                                    📄 Generada desde Ticket #{t.ticket_origen_numero}
+                                  </span>
+                                )}
+                                {t.serie === 'T' && (t.factura_asociada_numero || ticketsHistorico.find(x => x.serie === 'F' && (x.ticket_origen_id === t.id || x.ticket_origen_numero === t.numero_completo))) && (
+                                  <span className="block text-[10px] text-cyan-400 font-bold">
+                                    🏢 Factura asociada #{t.factura_asociada_numero || ticketsHistorico.find(x => x.serie === 'F' && (x.ticket_origen_id === t.id || x.ticket_origen_numero === t.numero_completo))?.numero_completo}
+                                  </span>
+                                )}
                                 {t.hash_actual && (
                                   <span
                                     title={`VeriFactu SHA-256: ${t.hash_actual}`}
@@ -2381,21 +3091,28 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                                 🖨️ Copia
                               </button>
                               {t.serie === 'T' && (
-                                <button
-                                  onClick={() =>
-                                    setModalFacturaNominativa({
-                                      factura: t,
-                                      razonSocial: '',
-                                      nifCif: '',
-                                      direccion: '',
-                                      procesando: false
-                                    })
-                                  }
-                                  className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-bold text-[11px] transition-colors cursor-pointer"
-                                  title="Canjear por Factura Nominativa con NIF"
-                                >
-                                  🏢 Nominativa
-                                </button>
+                                (t.factura_asociada_numero || ticketsHistorico.find(x => x.serie === 'F' && (x.ticket_origen_id === t.id || x.ticket_origen_numero === t.numero_completo))) ? (
+                                  <span className="px-2 py-1.5 rounded-lg bg-slate-800 text-slate-400 font-bold text-[11px] border border-white/10" title="Factura nominativa ya emitida para este ticket">
+                                    ✓ Facturada
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() =>
+                                      setModalFacturaNominativa({
+                                        factura: t,
+                                        razonSocial: '',
+                                        nifCif: '',
+                                        direccion: '',
+                                        email: '',
+                                        procesando: false
+                                      })
+                                    }
+                                    className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-bold text-[11px] transition-colors cursor-pointer"
+                                    title="Canjear por Factura Nominativa con NIF"
+                                  >
+                                    🏢 Nominativa
+                                  </button>
+                                )
                               )}
                               {(t.serie === 'T' || t.serie === 'F') && (
                                 <button
@@ -3152,85 +3869,1077 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
           </div>
         )}
 
-        {/* ================= PESTAÑA 5: EMPLEADOS Y ROLES ================= */}
-        {tabActiva === 'empleados' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <form
-              onSubmit={guardarEmpleado}
-              className="lg:col-span-4 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 self-start"
-            >
-              <h3 className="text-lg font-black text-white">➕ Registrar Empleado / PIN</h3>
+        {/* ================= PESTAÑA: INGRESOS Y GASTOS GENERALES ================= */}
+        {tabActiva === 'gastos' && (
+          <div className="space-y-6 animate-fade-in">
+            {/* CABECERA Y FILTROS PRINCIPALES */}
+            <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
-                <label className="text-[10px] font-black uppercase text-slate-400">Nombre Completo</label>
-                <input
-                  type="text"
-                  required
-                  value={empNombre}
-                  onChange={(e) => setEmpNombre(e.target.value)}
-                  disabled={guardandoEmpleado}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
-                />
+                <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
+                  <span>💶 Ingresos y Gastos Generales</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Control económico, previsión trimestral de IVA y exportación para gestoría
+                </p>
               </div>
-              <div>
-                <label className="text-[10px] font-black uppercase text-slate-400">PIN Numérico (4 dígitos)</label>
-                <input
-                  type="text"
-                  required
-                  maxLength={6}
-                  value={empPin}
-                  onChange={(e) => setEmpPin(e.target.value)}
-                  disabled={guardandoEmpleado}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-black text-indigo-400 mt-1"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] font-black uppercase text-slate-400">Rol y Permisos</label>
-                <select
-                  value={empRol}
-                  onChange={(e) => setEmpRol(e.target.value as any)}
-                  disabled={guardandoEmpleado}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white mt-1"
-                >
-                  <option value="camarero">Camarero (Servicio y Cobro)</option>
-                  <option value="encargado">Encargado (Autoriza Descuentos y Backoffice)</option>
-                  <option value="admin">Administrador Total</option>
-                </select>
-              </div>
-              <button
-                type="submit"
-                disabled={guardandoEmpleado}
-                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black py-3 rounded-xl text-xs uppercase"
-              >
-                {guardandoEmpleado ? 'Guardando...' : 'Guardar Empleado'}
-              </button>
-            </form>
 
-            <div className="lg:col-span-8 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4">
-              <h3 className="text-lg font-black text-white">Plantilla Activa</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {empleados.map((emp) => (
-                  <div
-                    key={emp.id}
-                    className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex justify-between items-center"
-                  >
-                    <div>
-                      <p className="font-black text-white">{emp.nombre}</p>
-                      <p className="text-xs text-indigo-400 uppercase font-bold">
-                        {emp.rol} · PIN: {emp.pin_acceso || emp.codigo_pin}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => alternarEstadoEmpleado(emp)}
-                      className={`px-3 py-1.5 rounded-xl font-black text-xs ${
-                        emp.activo ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
-                      }`}
-                    >
-                      {emp.activo ? 'Activo' : 'Inactivo'}
-                    </button>
-                  </div>
-                ))}
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
+                  <Calendar className="h-4 w-4 text-cyan-400" />
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Mes:</span>
+                  <input
+                    type="month"
+                    value={mesGastos}
+                    onChange={(e) => setMesGastos(e.target.value)}
+                    className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={sincronizarCierresCaja}
+                  disabled={sincronizandoCierres}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 font-bold text-xs transition-all cursor-pointer disabled:opacity-50"
+                  title="Importar cierres diarios del TPV (Z) como ingresos sin duplicados"
+                >
+                  <RefreshCw className={`h-4 w-4 ${sincronizandoCierres ? 'animate-spin' : ''}`} />
+                  <span>{sincronizandoCierres ? 'Importando...' : 'Sincronizar Cierres TPV'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportarCsvGestoria}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 font-bold text-xs transition-all cursor-pointer"
+                  title="Exportar CSV oficial desglosado para la gestoría fiscal"
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  <span>Exportar CSV para Gestoría</span>
+                </button>
               </div>
             </div>
+
+            {/* 4 TARJETAS KPI */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* KPI 1: Ingresos Totales */}
+              <div className="bg-[#0f172a] border border-emerald-500/30 rounded-3xl p-5 shadow-lg relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase text-emerald-400 tracking-wider">Ingresos del Mes</span>
+                  <div className="h-8 w-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                    <TrendingUp className="h-4 w-4" />
+                  </div>
+                </div>
+                <p className="text-2xl font-black text-white font-mono mt-2">
+                  {resumenGastos.totalIngresos.toFixed(2)} €
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Base: <strong className="text-emerald-300 font-mono">{resumenGastos.baseIngresos.toFixed(2)} €</strong> · IVA: <strong className="text-slate-300 font-mono">{resumenGastos.cuotaIvaIngresos.toFixed(2)} €</strong>
+                </p>
+              </div>
+
+              {/* KPI 2: Gastos Totales */}
+              <div className="bg-[#0f172a] border border-rose-500/30 rounded-3xl p-5 shadow-lg relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase text-rose-400 tracking-wider">Gastos del Mes</span>
+                  <div className="h-8 w-8 rounded-xl bg-rose-500/10 text-rose-400 flex items-center justify-center">
+                    <TrendingDown className="h-4 w-4" />
+                  </div>
+                </div>
+                <p className="text-2xl font-black text-white font-mono mt-2">
+                  {resumenGastos.totalGastos.toFixed(2)} €
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Base: <strong className="text-rose-300 font-mono">{resumenGastos.baseGastos.toFixed(2)} €</strong> · IVA: <strong className="text-slate-300 font-mono">{resumenGastos.cuotaIvaGastos.toFixed(2)} €</strong>
+                </p>
+              </div>
+
+              {/* KPI 3: Beneficio Operativo Neto */}
+              <div className={`bg-[#0f172a] border rounded-3xl p-5 shadow-lg relative overflow-hidden ${
+                resumenGastos.beneficioOperativoNeto >= 0 ? 'border-cyan-500/30' : 'border-amber-500/30'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase text-cyan-400 tracking-wider">Beneficio Operativo Neto</span>
+                  <div className="h-8 w-8 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
+                    <DollarSign className="h-4 w-4" />
+                  </div>
+                </div>
+                <p className={`text-2xl font-black font-mono mt-2 ${
+                  resumenGastos.beneficioOperativoNeto >= 0 ? 'text-cyan-300' : 'text-amber-400'
+                }`}>
+                  {resumenGastos.beneficioOperativoNeto.toFixed(2)} €
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Base Ingresos − Base Gastos (sin IVA)
+                </p>
+              </div>
+
+              {/* KPI 4: Previsión Trimestral de IVA */}
+              <div className="bg-[#0f172a] border border-indigo-500/30 rounded-3xl p-5 shadow-lg relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase text-indigo-400 tracking-wider">Previsión IVA Trimestre</span>
+                  <div className="h-8 w-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                    <FileText className="h-4 w-4" />
+                  </div>
+                </div>
+                <p className={`text-2xl font-black font-mono mt-2 ${
+                  resumenGastos.previsionTrimestralIva >= 0 ? 'text-indigo-300' : 'text-emerald-300'
+                }`}>
+                  {resumenGastos.previsionTrimestralIva.toFixed(2)} €
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  {resumenGastos.previsionTrimestralIva >= 0 ? 'A ingresar (IVA Repercutido > Soportado)' : 'A compensar / devolver'}
+                </p>
+              </div>
+            </div>
+
+            {/* FORMULARIO RÁPIDO DE APUNTE Y TABLA */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* FORMULARIO DE ALTA */}
+              <form
+                onSubmit={guardarMovimientoGeneral}
+                className="lg:col-span-4 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 self-start shadow-xl"
+              >
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <Plus className="h-4 w-4 text-cyan-400" />
+                    <span>Registrar Ingreso o Gasto</span>
+                  </h3>
+                  <div className="flex rounded-xl bg-slate-900 p-1 border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => { setMovTipo('GASTO'); setMovTipoIva(21); setMovCategoria('Mercancía / Alimentación'); }}
+                      className={`px-3 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                        movTipo === 'GASTO' ? 'bg-rose-500 text-white' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Gasto
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setMovTipo('INGRESO'); setMovTipoIva(10); setMovCategoria('Ventas TPV'); }}
+                      className={`px-3 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                        movTipo === 'INGRESO' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Ingreso
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400">Fecha</label>
+                    <input
+                      type="date"
+                      required
+                      value={movFecha}
+                      onChange={(e) => setMovFecha(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400">Categoría</label>
+                    <select
+                      value={movCategoria}
+                      onChange={(e) => setMovCategoria(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                    >
+                      {movTipo === 'GASTO' ? (
+                        <>
+                          <option value="Mercancía / Alimentación">Mercancía / Alimentación</option>
+                          <option value="Bebidas / Cafetería">Bebidas / Cafetería</option>
+                          <option value="Suministros (Luz, Agua, Red)">Suministros (Luz, Agua, Red)</option>
+                          <option value="Alquiler Local">Alquiler Local</option>
+                          <option value="Nóminas / Personal">Nóminas / Personal</option>
+                          <option value="Reparaciones y Mantenimiento">Reparaciones y Mantenimiento</option>
+                          <option value="Publicidad y Marketing">Publicidad y Marketing</option>
+                          <option value="Software y Suscripciones">Software y Suscripciones</option>
+                          <option value="Tasas e Impuestos">Tasas e Impuestos</option>
+                          <option value="Otros Gastos">Otros Gastos</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="Ventas TPV">Ventas TPV</option>
+                          <option value="Eventos / Escape Rooms">Eventos / Escape Rooms</option>
+                          <option value="Guisos Bajo Demanda">Guisos Bajo Demanda</option>
+                          <option value="Patrocinios / Otros">Patrocinios / Otros</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">
+                    {movTipo === 'GASTO' ? 'Proveedor / Acreedor *' : 'Cliente / Tercero *'}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej: Distribuidora Bebidas S.L. o Endesa"
+                    value={movTercero}
+                    onChange={(e) => setMovTercero(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Concepto / Descripción *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej: Factura café especialidad mes noviembre"
+                    value={movConcepto}
+                    onChange={(e) => setMovConcepto(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400">Nº Factura / Ticket</label>
+                    <input
+                      type="text"
+                      placeholder="Ej: F-2026/982"
+                      value={movNumeroFactura}
+                      onChange={(e) => setMovNumeroFactura(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-mono font-bold text-cyan-300 mt-1 uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400">Tipo IVA</label>
+                    <select
+                      value={movTipoIva}
+                      onChange={(e) => {
+                        const nuevoIva = Number(e.target.value);
+                        setMovTipoIva(nuevoIva);
+                        handleCalculoMonto(
+                          movModoCalculo === 'inverso' ? 'total' : 'base',
+                          movModoCalculo === 'inverso' ? movTotal : movBase,
+                          nuevoIva,
+                          movModoCalculo
+                        );
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                    >
+                      <option value={21}>21% (General / Suministros)</option>
+                      <option value={10}>10% (Hostelería / Alimentación)</option>
+                      <option value={4}>4% (Superreducido)</option>
+                      <option value={0}>0% (Exento)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* SELECTOR MODO DE CÁLCULO DIRECTO VS INVERSO */}
+                <div className="bg-slate-900/80 p-2.5 rounded-2xl border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-400">Modo de Introducción:</span>
+                    <div className="flex gap-1 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => setMovModoCalculo('inverso')}
+                        className={`px-2 py-0.5 rounded-md font-bold cursor-pointer ${
+                          movModoCalculo === 'inverso' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Total con IVA (Inverso)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMovModoCalculo('directo')}
+                        className={`px-2 py-0.5 rounded-md font-bold cursor-pointer ${
+                          movModoCalculo === 'directo' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Base Imponible
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[9px] font-black uppercase text-slate-400">Base (€)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={movBase}
+                        onChange={(e) => handleCalculoMonto('base', e.target.value, movTipoIva, 'directo')}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-mono font-bold text-white mt-0.5"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black uppercase text-slate-400">Cuota IVA (€)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        readOnly
+                        placeholder="0.00"
+                        value={movCuotaIva}
+                        className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-2 text-xs font-mono font-bold text-slate-400 mt-0.5"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black uppercase text-cyan-400">Total (€) *</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        placeholder="0.00"
+                        value={movTotal}
+                        onChange={(e) => handleCalculoMonto('total', e.target.value, movTipoIva, 'inverso')}
+                        className="w-full bg-slate-950 border border-cyan-500/40 rounded-xl p-2 text-xs font-mono font-black text-cyan-300 mt-0.5"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400">Método de Pago</label>
+                    <select
+                      value={movMetodoPago}
+                      onChange={(e) => setMovMetodoPago(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                    >
+                      <option value="transferencia">Transferencia Bancaria</option>
+                      <option value="tarjeta">Tarjeta Bancaria</option>
+                      <option value="efectivo">Efectivo</option>
+                      <option value="domiciliacion">Domiciliación Recibo</option>
+                      <option value="bizum">Bizum</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400">Estado</label>
+                    <select
+                      value={movPagado ? 'si' : 'no'}
+                      onChange={(e) => setMovPagado(e.target.value === 'si')}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                    >
+                      <option value="si">Pagado / Cobrado</option>
+                      <option value="no">Pendiente de Pago</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400 flex items-center justify-between">
+                    <span>Adjunto Factura / Ticket (PDF o Imagen)</span>
+                    <span className="text-[9px] text-slate-500 font-normal">Bucket: facturas_gastos</span>
+                  </label>
+                  <input
+                    type="file"
+                    accept=".pdf,image/*"
+                    onChange={(e) => setMovArchivo(e.target.files?.[0] || null)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-medium text-slate-300 mt-1 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[10px] file:font-black file:bg-indigo-600 file:text-white cursor-pointer"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={guardandoMovimiento}
+                  className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg"
+                >
+                  {guardandoMovimiento ? 'Guardando Apunte...' : '💾 Registrar Apunte Contable'}
+                </button>
+              </form>
+
+              {/* TABLA FILTRABLE DE MOVIMIENTOS */}
+              <div className="lg:col-span-8 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-black text-white">Libro Diario de Movimientos</h3>
+                    <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-xs font-bold font-mono">
+                      {movimientosGenerales.length}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input
+                      type="text"
+                      placeholder="Buscar por concepto, tercero o nº..."
+                      value={busquedaMov}
+                      onChange={(e) => setBusquedaMov(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 outline-none w-48"
+                    />
+
+                    <select
+                      value={filtroTipoMov}
+                      onChange={(e) => setFiltroTipoMov(e.target.value as any)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-300"
+                    >
+                      <option value="TODOS">Todos (Tipo)</option>
+                      <option value="INGRESO">Solo Ingresos</option>
+                      <option value="GASTO">Solo Gastos</option>
+                    </select>
+
+                    <select
+                      value={filtroCategoriaMov}
+                      onChange={(e) => setFiltroCategoriaMov(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-300"
+                    >
+                      <option value="TODAS">Todas las Categorías</option>
+                      {Array.from(new Set(movimientosGenerales.map((m) => m.categoria)))
+                        .filter(Boolean)
+                        .map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                    </select>
+
+                    <select
+                      value={filtroEstadoMov}
+                      onChange={(e) => setFiltroEstadoMov(e.target.value as any)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-300"
+                    >
+                      <option value="TODOS">Todos (Estado)</option>
+                      <option value="pagado">Pagados</option>
+                      <option value="pendiente">Pendientes</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px] font-black">
+                        <th className="p-3">Fecha</th>
+                        <th className="p-3">Tipo</th>
+                        <th className="p-3">Nº Factura</th>
+                        <th className="p-3">Tercero / Concepto</th>
+                        <th className="p-3 text-right">Base</th>
+                        <th className="p-3 text-center">IVA</th>
+                        <th className="p-3 text-right">Total</th>
+                        <th className="p-3 text-center">Estado</th>
+                        <th className="p-3 text-center">Adjunto</th>
+                        <th className="p-3 text-center">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-medium">
+                      {cargandoMovimientos ? (
+                        <tr>
+                          <td colSpan={10} className="p-8 text-center text-slate-500">
+                            Cargando movimientos contables...
+                          </td>
+                        </tr>
+                      ) : movimientosGenerales.length === 0 ? (
+                        <tr>
+                          <td colSpan={10} className="p-8 text-center text-slate-500">
+                            No hay movimientos registrados en este periodo. Puedes añadir uno manual o sincronizar los cierres de caja.
+                          </td>
+                        </tr>
+                      ) : (
+                        movimientosGenerales
+                          .filter((m) => {
+                            if (filtroTipoMov !== 'TODOS' && m.tipo !== filtroTipoMov) return false;
+                            if (filtroCategoriaMov !== 'TODAS' && m.categoria !== filtroCategoriaMov) return false;
+                            if (filtroEstadoMov === 'pagado' && !m.pagado) return false;
+                            if (filtroEstadoMov === 'pendiente' && m.pagado) return false;
+                            if (busquedaMov.trim()) {
+                              const q = busquedaMov.toLowerCase();
+                              const coincide =
+                                String(m.concepto || '').toLowerCase().includes(q) ||
+                                String(m.tercero || '').toLowerCase().includes(q) ||
+                                String(m.numero_factura || '').toLowerCase().includes(q) ||
+                                String(m.categoria || '').toLowerCase().includes(q);
+                              if (!coincide) return false;
+                            }
+                            return true;
+                          })
+                          .map((m) => (
+                            <tr key={m.id} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="p-3 text-slate-300 font-mono text-[11px] whitespace-nowrap">
+                                {m.fecha}
+                              </td>
+                              <td className="p-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded-md font-black text-[10px] border ${
+                                    m.tipo === 'INGRESO'
+                                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                      : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                                  }`}
+                                >
+                                  {m.tipo}
+                                </span>
+                              </td>
+                              <td className="p-3 font-mono text-cyan-300 font-bold text-[11px]">
+                                {m.numero_factura || '-'}
+                              </td>
+                              <td className="p-3">
+                                <span className="font-bold text-white block truncate max-w-xs">{m.tercero}</span>
+                                <span className="text-[10px] text-slate-400 block truncate max-w-xs">{m.concepto}</span>
+                                <span className="text-[9px] text-indigo-400 block uppercase font-semibold">{m.categoria}</span>
+                              </td>
+                              <td className="p-3 text-right font-mono text-slate-300">
+                                {Number(m.base_imponible || 0).toFixed(2)} €
+                              </td>
+                              <td className="p-3 text-center font-mono text-slate-400 text-[11px]">
+                                {Number(m.tipo_iva || 0)}%
+                              </td>
+                              <td
+                                className={`p-3 text-right font-mono font-black text-xs ${
+                                  m.tipo === 'INGRESO' ? 'text-emerald-400' : 'text-rose-400'
+                                }`}
+                              >
+                                {Number(m.total || 0).toFixed(2)} €
+                              </td>
+                              <td className="p-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => alternarEstadoPagoMovimiento(m)}
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-black cursor-pointer transition-all ${
+                                    m.pagado
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                  }`}
+                                  title="Pulsa para alternar estado de pago"
+                                >
+                                  {m.pagado ? 'Pagado' : 'Pendiente'}
+                                </button>
+                              </td>
+                              <td className="p-3 text-center">
+                                {m.adjunto_url ? (
+                                  <a
+                                    href={m.adjunto_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 text-cyan-400 hover:text-cyan-300 text-[11px] font-bold"
+                                    title="Ver adjunto en Supabase Storage"
+                                  >
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                  </a>
+                                ) : (
+                                  <span className="text-slate-600">-</span>
+                                )}
+                              </td>
+                              <td className="p-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => eliminarMovimientoGeneral(m.id)}
+                                  className="text-slate-500 hover:text-rose-400 p-1 rounded transition-colors cursor-pointer"
+                                  title="Eliminar apunte"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= PESTAÑA 5: EMPLEADOS, HORARIOS Y FICHAJES UNIFICADOS ================= */}
+        {tabActiva === 'empleados' && (
+          <div className="space-y-6 animate-fade-in">
+            {/* SUB-NAVEGACIÓN PLANTILLA VS FICHAJES */}
+            <div className="flex items-center justify-between bg-[#0f172a] border border-slate-800 rounded-3xl p-4 flex-wrap gap-3">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSubtabEmpleados('plantilla')}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                    subtabEmpleados === 'plantilla'
+                      ? 'bg-indigo-600 text-white shadow-lg'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  👥 Plantilla y Horarios ({empleados.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setSubtabEmpleados('fichajes'); cargarFichajes(); }}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                    subtabEmpleados === 'fichajes'
+                      ? 'bg-indigo-600 text-white shadow-lg'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  ⏱️ Histórico de Fichajes y Registro de Jornada
+                </button>
+              </div>
+
+              {subtabEmpleados === 'fichajes' && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setModalFichajeManual(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span>Añadir Fichaje Manual</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={lanzarInformeInspeccionLaboral}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-bold transition-all cursor-pointer"
+                    title="Imprimir informe legal oficial de control horario para Inspección de Trabajo"
+                  >
+                    <Printer className="h-4 w-4" />
+                    <span>🖨️ Informe Inspección (Print)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={exportarFichajesCsv}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    <Download className="h-4 w-4" />
+                    <span>CSV</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* SUB-VISTA 1: PLANTILLA Y HORARIOS */}
+            {subtabEmpleados === 'plantilla' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* FORMULARIO ALTA Y EDICIÓN COMPLETA */}
+                <form
+                  onSubmit={guardarEmpleado}
+                  className="lg:col-span-5 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 self-start shadow-xl"
+                >
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-black text-white flex items-center gap-2">
+                      {editandoEmpleado ? (
+                        <>
+                          <Edit className="h-4 w-4 text-cyan-400" />
+                          <span>Editando Empleado: {editandoEmpleado.nombre}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="h-4 w-4 text-indigo-400" />
+                          <span>Alta y Edición de Plantilla</span>
+                        </>
+                      )}
+                    </h3>
+                    {editandoEmpleado && (
+                      <button
+                        type="button"
+                        onClick={limpiarFormEmpleado}
+                        className="text-xs text-rose-400 hover:text-rose-300 font-bold"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">Nombre *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Nombre de pila"
+                        value={empNombre}
+                        onChange={(e) => setEmpNombre(e.target.value)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">Apellidos</label>
+                      <input
+                        type="text"
+                        placeholder="Apellidos"
+                        value={empApellidos}
+                        onChange={(e) => setEmpApellidos(e.target.value)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">DNI / NIE / CIF *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="12345678X"
+                        value={empDniNie}
+                        onChange={(e) => setEmpDniNie(e.target.value)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-mono font-bold text-white mt-1 uppercase"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">Teléfono</label>
+                      <input
+                        type="tel"
+                        placeholder="600 000 000"
+                        value={empTelefono}
+                        onChange={(e) => setEmpTelefono(e.target.value)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">Email Corporativo</label>
+                      <input
+                        type="email"
+                        placeholder="empleado@nexus.es"
+                        value={empEmail}
+                        onChange={(e) => setEmpEmail(e.target.value)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">Fecha de Alta</label>
+                      <input
+                        type="date"
+                        value={empFechaAlta}
+                        onChange={(e) => setEmpFechaAlta(e.target.value)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">PIN Acceso (4 dígitos) *</label>
+                      <input
+                        type="password"
+                        required
+                        maxLength={4}
+                        placeholder="••••"
+                        value={empPin}
+                        onChange={(e) => setEmpPin(e.target.value)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-black text-indigo-400 mt-1 font-mono tracking-widest text-center"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400">Rol Operativo *</label>
+                      <select
+                        value={empRol}
+                        onChange={(e) => setEmpRol(e.target.value as any)}
+                        disabled={guardandoEmpleado}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                      >
+                        <option value="camarero">Camarero (Sala y Cobro)</option>
+                        <option value="cocinero">Cocinero (KDS Cocina)</option>
+                        <option value="encargado">Encargado (Descuentos y Arqueos)</option>
+                        <option value="admin">Administrador General</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* CONFIGURACIÓN HORARIO Y TURNO PREVISTO */}
+                  <div className="bg-slate-900/80 p-3.5 rounded-2xl border border-slate-800 space-y-3">
+                    <p className="text-[11px] font-black uppercase text-indigo-400 tracking-wider">
+                      Turno y Horario Asignado
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400">Días Previstos</label>
+                        <input
+                          type="text"
+                          placeholder="Ej: Lunes a Viernes"
+                          value={empDiasTrabajo}
+                          onChange={(e) => setEmpDiasTrabajo(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-bold text-white mt-0.5"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400">Franja Horaria Prevista</label>
+                        <input
+                          type="text"
+                          placeholder="Ej: 08:00 - 16:00"
+                          value={empHorarioAsignado}
+                          onChange={(e) => setEmpHorarioAsignado(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-bold text-white mt-0.5"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400">Horas Semanales Contratadas</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={empHorasSemanales}
+                        onChange={(e) => setEmpHorasSemanales(Number(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-bold text-white mt-0.5"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={guardandoEmpleado}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black py-3 rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg"
+                  >
+                    {guardandoEmpleado
+                      ? 'Guardando...'
+                      : editandoEmpleado
+                      ? 'Actualizar Empleado'
+                      : 'Guardar Nuevo Empleado'}
+                  </button>
+                </form>
+
+                {/* LISTA Y TARJETAS DE PLANTILLA */}
+                <div className="lg:col-span-7 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 shadow-xl">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-black text-white">Plantilla de Empleados ({empleados.length})</h3>
+                    <span className="text-xs text-slate-400">Gestión de acceso y estado activo</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    {empleados.map((emp) => (
+                      <div
+                        key={emp.id}
+                        className={`border p-4 rounded-2xl flex flex-col justify-between space-y-3 transition-all ${
+                          emp.activo
+                            ? 'bg-slate-900 border-slate-800'
+                            : 'bg-slate-950/70 border-rose-900/30 opacity-75'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-black text-white text-sm">
+                                {emp.nombre} {emp.apellidos || ''}
+                              </p>
+                              <p className="text-[11px] text-indigo-400 uppercase font-black tracking-wider mt-0.5">
+                                {emp.rol} · PIN: {emp.pin_acceso || emp.codigo_pin}
+                              </p>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                                emp.activo
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                              }`}
+                            >
+                              {emp.activo ? 'Activo' : 'Inactivo'}
+                            </span>
+                          </div>
+
+                          <div className="mt-3 space-y-1 text-slate-400 text-xs">
+                            {emp.dni_nie && (
+                              <p className="text-[11px]">
+                                DNI/NIE: <strong className="text-slate-200 font-mono">{emp.dni_nie}</strong>
+                              </p>
+                            )}
+                            {emp.telefono && <p className="text-[11px]">Tel: {emp.telefono}</p>}
+                            {emp.email && <p className="text-[11px] truncate">Email: {emp.email}</p>}
+                            <p className="text-[10px] text-cyan-300/80">
+                              🕒 {emp.dias_trabajo || 'L-V'} ({emp.horario_asignado || '08:00 - 16:00'}) · {emp.horas_semanales || 40}h
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
+                          <button
+                            type="button"
+                            onClick={() => iniciarEdicionEmpleado(emp)}
+                            className="flex-1 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <Edit className="h-3.5 w-3.5" />
+                            <span>Editar</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => alternarEstadoEmpleado(emp)}
+                            className={`flex-1 py-1.5 rounded-xl font-black text-xs transition-colors cursor-pointer ${
+                              emp.activo
+                                ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30'
+                                : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
+                            }`}
+                            title={emp.activo ? 'Desactivar acceso a este empleado' : 'Activar acceso a este empleado'}
+                          >
+                            {emp.activo ? 'Desactivar' : 'Activar'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-VISTA 2: HISTÓRICO DE FICHAJES Y CONTROL HORARIO */}
+            {subtabEmpleados === 'fichajes' && (
+              <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 shadow-xl">
+                {/* FILTROS Y RESUMEN */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
+                      <span className="text-[10px] uppercase font-bold text-slate-400">Empleado:</span>
+                      <select
+                        value={filtroFichajeEmpleado}
+                        onChange={(e) => setFiltroFichajeEmpleado(e.target.value)}
+                        className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
+                      >
+                        <option value="TODOS" className="bg-slate-900">Toda la Plantilla</option>
+                        {empleados.map((emp) => (
+                          <option key={emp.id} value={emp.id} className="bg-slate-900">
+                            {emp.nombre} {emp.apellidos || ''} ({emp.rol})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
+                      <span className="text-[10px] uppercase font-bold text-slate-400">Desde:</span>
+                      <input
+                        type="date"
+                        value={filtroFichajeDesde}
+                        onChange={(e) => setFiltroFichajeDesde(e.target.value)}
+                        className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
+                      <span className="text-[10px] uppercase font-bold text-slate-400">Hasta:</span>
+                      <input
+                        type="date"
+                        value={filtroFichajeHasta}
+                        onChange={(e) => setFiltroFichajeHasta(e.target.value)}
+                        className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <span className="text-xs text-slate-400 font-mono">
+                    {fichajesHistorico.length} registros cargados
+                  </span>
+                </div>
+
+                {/* TABLA DE FICHAJES */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px] font-black">
+                        <th className="p-3">Fecha y Hora</th>
+                        <th className="p-3">Empleado</th>
+                        <th className="p-3">DNI / NIE</th>
+                        <th className="p-3">Tipo de Registro</th>
+                        <th className="p-3">Observaciones / Auditoría</th>
+                        <th className="p-3 text-center">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-medium">
+                      {cargandoFichajes ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500">
+                            Cargando registros de jornada...
+                          </td>
+                        </tr>
+                      ) : fichajesHistorico.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500">
+                            No constan registros de fichaje para el periodo y empleado seleccionados.
+                          </td>
+                        </tr>
+                      ) : (
+                        fichajesHistorico.map((f) => {
+                          const d = new Date(f.timestamp_fichaje);
+                          const tipoColor =
+                            f.tipo === 'entrada'
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : f.tipo === 'salida'
+                              ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                              : f.tipo === 'inicio_descanso'
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40';
+
+                          const tipoLabel =
+                            f.tipo === 'entrada'
+                              ? '🟢 Entrada'
+                              : f.tipo === 'salida'
+                              ? '🔴 Salida'
+                              : f.tipo === 'inicio_descanso'
+                              ? '☕ Inicio Pausa'
+                              : '▶️ Fin Pausa';
+
+                          return (
+                            <tr key={f.id} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="p-3 font-mono text-slate-200 text-[11px] whitespace-nowrap">
+                                <span className="font-bold text-white block">{d.toLocaleDateString('es-ES')}</span>
+                                <span className="text-slate-400 text-[10px]">
+                                  {d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                              </td>
+                              <td className="p-3">
+                                <span className="font-bold text-white">
+                                  {f.empleados?.nombre || 'Empleado'} {f.empleados?.apellidos || ''}
+                                </span>
+                                <span className="text-[10px] text-indigo-400 block uppercase font-bold">
+                                  {f.empleados?.rol || ''}
+                                </span>
+                              </td>
+                              <td className="p-3 font-mono text-slate-300 text-[11px]">
+                                {f.empleados?.dni_nie || '-'}
+                              </td>
+                              <td className="p-3">
+                                <span className={`px-2.5 py-1 rounded-xl text-xs font-black border ${tipoColor}`}>
+                                  {tipoLabel}
+                                </span>
+                              </td>
+                              <td className="p-3">
+                                <span className="text-slate-300 text-xs block">{f.notas || '-'}</span>
+                                {f.modificado_por && (
+                                  <span className="text-[10px] text-amber-400/90 italic block mt-0.5">
+                                    Modificado por: {f.modificado_por} ({f.motivo_modificacion})
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const dt = new Date(f.timestamp_fichaje);
+                                      setModalEditarFichaje({
+                                        fichaje: f,
+                                        fecha: dt.toISOString().split('T')[0],
+                                        hora: dt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+                                        tipo: f.tipo,
+                                        motivo: '',
+                                        procesando: false
+                                      });
+                                    }}
+                                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors cursor-pointer"
+                                    title="Modificar registro de jornada"
+                                  >
+                                    <Edit className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setModalEliminarFichaje({
+                                        fichaje: f,
+                                        motivo: '',
+                                        procesando: false
+                                      })
+                                    }
+                                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/50 text-rose-400 transition-colors cursor-pointer"
+                                    title="Eliminar registro erróneo"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -3630,6 +5339,15 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               }
               className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white"
             />
+            <input
+              type="email"
+              placeholder="Email del cliente (opcional para envío de ticket)"
+              value={modalFacturaNominativa.email || ''}
+              onChange={(e) =>
+                setModalFacturaNominativa({ ...modalFacturaNominativa, email: e.target.value })
+              }
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white"
+            />
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -3644,6 +5362,279 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                 className="px-5 py-2 rounded-xl bg-indigo-600 disabled:opacity-50 text-white text-xs font-black uppercase"
               >
                 {modalFacturaNominativa.procesando ? 'Generando...' : 'Emitir e Imprimir'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= MODAL AÑADIR FICHAJE MANUAL ================= */}
+      {modalFichajeManual && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form
+            onSubmit={guardarFichajeManual}
+            className="bg-[#0f172a] border border-cyan-500/40 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-cyan-400 flex items-center gap-2">
+                <Clock className="h-4 w-4" />
+                <span>Añadir Fichaje Manual</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setModalFichajeManual(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">Empleado *</label>
+              <select
+                required
+                value={manualEmpId}
+                onChange={(e) => setManualEmpId(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+              >
+                <option value="">-- Selecciona el empleado --</option>
+                {empleados.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.nombre} {emp.apellidos || ''} ({emp.dni_nie || emp.rol})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Fecha *</label>
+                <input
+                  type="date"
+                  required
+                  value={manualFecha}
+                  onChange={(e) => setManualFecha(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Hora (HH:mm) *</label>
+                <input
+                  type="time"
+                  required
+                  value={manualHora}
+                  onChange={(e) => setManualHora(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-mono font-bold text-white mt-1"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">Tipo de Registro *</label>
+              <select
+                value={manualTipo}
+                onChange={(e) => setManualTipo(e.target.value as any)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+              >
+                <option value="entrada">🟢 Entrada al turno</option>
+                <option value="inicio_descanso">☕ Inicio de Pausa / Café</option>
+                <option value="fin_descanso">▶️ Fin de Pausa / Regreso al turno</option>
+                <option value="salida">🔴 Salida del turno</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">
+                Motivo / Justificación del Fichaje Manual *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="Ej: Olvido de fichaje al ingresar, confirmado por encargado"
+                value={manualMotivo}
+                onChange={(e) => setManualMotivo(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setModalFichajeManual(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={guardandoFichajeManual}
+                className="px-5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-slate-950 font-black text-xs uppercase"
+              >
+                {guardandoFichajeManual ? 'Registrando...' : 'Registrar Fichaje'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= MODAL EDITAR FICHAJE ================= */}
+      {modalEditarFichaje && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form
+            onSubmit={confirmarEditarFichaje}
+            className="bg-[#0f172a] border border-indigo-500/40 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-indigo-400 flex items-center gap-2">
+                <Edit className="h-4 w-4" />
+                <span>Modificar Registro de Jornada</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setModalEditarFichaje(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              Empleado:{' '}
+              <strong className="text-white">
+                {modalEditarFichaje.fichaje.empleados?.nombre} {modalEditarFichaje.fichaje.empleados?.apellidos || ''}
+              </strong>
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Fecha *</label>
+                <input
+                  type="date"
+                  required
+                  value={modalEditarFichaje.fecha}
+                  onChange={(e) => setModalEditarFichaje({ ...modalEditarFichaje, fecha: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Hora (HH:mm) *</label>
+                <input
+                  type="time"
+                  required
+                  value={modalEditarFichaje.hora}
+                  onChange={(e) => setModalEditarFichaje({ ...modalEditarFichaje, hora: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-mono font-bold text-white mt-1"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">Tipo de Registro *</label>
+              <select
+                value={modalEditarFichaje.tipo}
+                onChange={(e) => setModalEditarFichaje({ ...modalEditarFichaje, tipo: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+              >
+                <option value="entrada">🟢 Entrada</option>
+                <option value="inicio_descanso">☕ Inicio de Pausa</option>
+                <option value="fin_descanso">▶️ Fin de Pausa</option>
+                <option value="salida">🔴 Salida</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">
+                Motivo de la Corrección (Obligatorio por ley para traza de auditoría) *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="Ej: Corrección de hora por error en marcaje"
+                value={modalEditarFichaje.motivo}
+                onChange={(e) => setModalEditarFichaje({ ...modalEditarFichaje, motivo: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setModalEditarFichaje(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={modalEditarFichaje.procesando}
+                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black text-xs uppercase"
+              >
+                {modalEditarFichaje.procesando ? 'Guardando...' : 'Guardar Corrección'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= MODAL ELIMINAR FICHAJE ================= */}
+      {modalEliminarFichaje && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form
+            onSubmit={confirmarEliminarFichaje}
+            className="bg-[#0f172a] border border-rose-500/40 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-rose-400 flex items-center gap-2">
+                <Trash2 className="h-4 w-4" />
+                <span>Confirmar Eliminación de Fichaje</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setModalEliminarFichaje(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="bg-rose-950/20 border border-rose-900/40 rounded-2xl p-3 text-xs text-rose-300">
+              <p>
+                Vas a eliminar el registro de <strong>{modalEliminarFichaje.fichaje.tipo}</strong> del empleado{' '}
+                <strong>
+                  {modalEliminarFichaje.fichaje.empleados?.nombre} {modalEliminarFichaje.fichaje.empleados?.apellidos || ''}
+                </strong>{' '}
+                del {new Date(modalEliminarFichaje.fichaje.timestamp_fichaje).toLocaleString('es-ES')}.
+              </p>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-400">
+                Motivo de la Eliminación (Obligatorio para auditoría) *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="Ej: Registro duplicado por error de pulsación"
+                value={modalEliminarFichaje.motivo}
+                onChange={(e) => setModalEliminarFichaje({ ...modalEliminarFichaje, motivo: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setModalEliminarFichaje(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={modalEliminarFichaje.procesando}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black text-xs uppercase"
+              >
+                {modalEliminarFichaje.procesando ? 'Eliminando...' : 'Eliminar Registro'}
               </button>
             </div>
           </form>

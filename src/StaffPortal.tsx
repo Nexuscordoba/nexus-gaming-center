@@ -303,14 +303,19 @@ export default function StaffPortal() {
       const { data, error } = await supabase
         .from('empleados')
         .select('*')
-        .eq('pin_acceso', pin)
-        .eq('activo', true)
+        .or(`pin_acceso.eq.${pin},codigo_pin.eq.${pin}`)
         .maybeSingle();
 
       if (error) throw error;
 
       if (!data) {
-        setMensaje({ tipo: 'error', texto: 'PIN incorrecto o empleado inactivo' });
+        setMensaje({ tipo: 'error', texto: 'PIN incorrecto. Verifica tus 4 dígitos.' });
+        setPin('');
+      } else if (data.activo === false) {
+        setMensaje({
+          tipo: 'error',
+          texto: `Acceso bloqueado: ${data.nombre} está marcado como INACTIVO en el sistema. Contacta con administración.`
+        });
         setPin('');
       } else {
         setEmpleado(data);

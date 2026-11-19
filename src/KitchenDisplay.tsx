@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from './supabase';
+import QuickClockInModal from './QuickClockInModal';
 import {
   ChefHat,
   CheckCircle2,
@@ -71,6 +72,7 @@ export default function KitchenDisplay() {
 
   // Estado para la Previsión de Cocina (Cocinera)
   const [mostrarPrevisionGuisos, setMostrarPrevisionGuisos] = useState<boolean>(false);
+  const [mostrarFichajeRapido, setMostrarFichajeRapido] = useState<boolean>(false);
   const [guisosProgramados, setGuisosProgramados] = useState<GuisoProgramado[]>([]);
   const [reservasGuisos, setReservasGuisos] = useState<ReservaGuiso[]>([]);
   const [, setMesasLocal] = useState<MesaLocal[]>([]);
@@ -525,6 +527,16 @@ export default function KitchenDisplay() {
 
           <button
             type="button"
+            onClick={() => setMostrarFichajeRapido(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 font-bold text-xs shadow-md transition-all cursor-pointer"
+            title="Fichaje Rápido de Jornada (Entrada, Pausa, Salida)"
+          >
+            <Clock className="h-4 w-4 text-cyan-400" />
+            <span>⏱️ Fichar</span>
+          </button>
+
+          <button
+            type="button"
             onClick={volverAWebPrincipal}
             className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
           >
@@ -944,6 +956,13 @@ export default function KitchenDisplay() {
           </div>
         </div>
       )}
+
+      {/* MODAL DE FICHAJE RÁPIDO PARA PERSONAL DE COCINA */}
+      <QuickClockInModal
+        isOpen={mostrarFichajeRapido}
+        onClose={() => setMostrarFichajeRapido(false)}
+        pantallaOrigen="cocina"
+      />
     </div>
   );
 }

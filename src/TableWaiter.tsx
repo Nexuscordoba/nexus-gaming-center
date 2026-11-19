@@ -4,6 +4,7 @@ import { supabase } from './supabase';
 import LoyverseDashboard from './LoyverseDashboard';
 import MesasReservasPanel from './MesasReservasPanel';
 import BarraView from './BarraView';
+import QuickClockInModal from './QuickClockInModal';
 import CobroModal, { type DatosFiscalesCliente } from './CobroModal';
 import {
   cargarTicketsBarraAbiertos,
@@ -366,8 +367,11 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     razonSocial: string;
     nifCif: string;
     direccion: string;
+    email: string;
     procesando: boolean;
   } | null>(null);
+
+  const [mostrarFichajeRapido, setMostrarFichajeRapido] = useState<boolean>(false);
 
   const [comboActivo, setComboActivo] = useState<Producto | null>(null);
   const [pasoComboActual, setPasoComboActual] = useState(0);
@@ -2772,9 +2776,22 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           base_imponible: orig.base_imponible ?? desgloseNom.baseImponibleTotal,
           cuota_iva: orig.cuota_iva ?? desgloseNom.cuotaIvaTotal,
           hash_anterior,
-          hash_actual
+          hash_actual,
+          ticket_origen_id: orig.id,
+          ticket_origen_numero: orig.numero_completo,
+          cliente_email: modalFacturaNominativa.email?.trim() || null
         })
         .eq('id', docNom.id);
+
+      // Enlace bidireccional: vincular la factura en el ticket origen
+      await supabase
+        .from('facturas_tickets')
+        .update({
+          factura_asociada_id: docNom.id,
+          factura_asociada_numero: docNom.numero_completo,
+          cliente_email: modalFacturaNominativa.email?.trim() || null
+        })
+        .eq('id', orig.id);
 
       const { data: nomCompleta } = await supabase
         .from('facturas_tickets')
@@ -2786,6 +2803,21 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       if (nomCompleta) {
         imprimirDocumentoFiscalHTML(nomCompleta, cfg);
       }
+
+      setFacturasHoy((prev) => [
+        nomCompleta || {
+          ...docNom,
+          tipo_factura: 'F1',
+          serie: 'F',
+          ticket_origen_id: orig.id,
+          ticket_origen_numero: orig.numero_completo
+        },
+        ...prev.map((f) =>
+          f.id === orig.id
+            ? { ...f, factura_asociada_id: docNom.id, factura_asociada_numero: docNom.numero_completo }
+            : f
+        )
+      ]);
 
       // Guardar en el historial de clientes frecuentes
       try {
@@ -3099,6 +3131,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           {new Date(f.fecha_expedicion).toLocaleTimeString('es-ES')} · Atendido por: <strong>{f.vendedor_nombre}</strong> · Pago: <strong>{String(f.metodo_pago || '').toUpperCase()}</strong>
           {f.cliente_nif && ` · Cliente: ${f.cliente_nombre_razon} (${f.cliente_nif})`}
         </p>
+        {f.serie === 'F' && f.ticket_origen_numero && (
+          <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-bold text-[10px]">
+            📄 Generada desde Ticket #{f.ticket_origen_numero}
+          </span>
+        )}
+        {f.serie === 'T' && f.factura_asociada_numero && (
+          <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold text-[10px]">
+            🏢 Factura asociada #{f.factura_asociada_numero}
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-2 self-end sm:self-center">
@@ -3109,9 +3151,15 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           <Printer className="h-3.5 w-3.5" /> Ticket
         </button>
         {f.serie === 'T' && f.estado_fiscal === 'EMITIDO' && (
-          <button type="button" title="Convertir en Factura Nominativa para cliente" onClick={() => setModalFacturaNominativa({ factura: f, razonSocial: '', nifCif: '', direccion: '', procesando: false })} className="px-2.5 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 text-cyan-300 border border-cyan-500/30 font-bold flex items-center gap-1 cursor-pointer transition-all">
-            <FileText className="h-3.5 w-3.5" /> Factura
-          </button>
+          f.factura_asociada_numero ? (
+            <span className="px-2.5 py-1.5 rounded-xl bg-slate-800 text-slate-400 font-bold text-xs border border-white/10">
+              ✓ Facturada
+            </span>
+          ) : (
+            <button type="button" title="Convertir en Factura Nominativa para cliente" onClick={() => setModalFacturaNominativa({ factura: f, razonSocial: '', nifCif: '', direccion: '', email: '', procesando: false })} className="px-2.5 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500 hover:text-slate-950 text-cyan-300 border border-cyan-500/30 font-bold flex items-center gap-1 cursor-pointer transition-all">
+              <FileText className="h-3.5 w-3.5" /> Factura
+            </button>
+          )
         )}
         {(f.serie === 'T' || f.serie === 'F') && f.estado_fiscal === 'EMITIDO' && (
           <button type="button" title="Anular / Devolver (Factura Rectificativa Simplificada)" onClick={() => setModalRectificativa({ factura: f, motivo: '', pinAdmin: '', procesando: false })} className="px-2.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/30 font-bold flex items-center gap-1 cursor-pointer transition-all">
@@ -3906,6 +3954,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
                   className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white"
                 />
               </div>
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">Correo Electrónico del Cliente (Opcional)</label>
+                <input
+                  type="email"
+                  placeholder="cliente@empresa.com"
+                  value={modalFacturaNominativa.email || ''}
+                  onChange={(e) => setModalFacturaNominativa({ ...modalFacturaNominativa, email: e.target.value })}
+                  className="w-full bg-black/60 border border-white/20 rounded-xl px-3.5 py-2 text-xs text-white"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3 pt-2">
@@ -4072,6 +4130,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           >
             <RefreshCw className={`h-4 w-4 ${refrescandoMesas ? 'animate-spin' : ''}`} />
             <span>{refrescandoMesas ? 'Sincronizando...' : 'Refrescar Mesas'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMostrarFichajeRapido(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 text-xs font-bold shadow-md transition-all cursor-pointer"
+            title="Fichaje Rápido de Jornada (Entrada, Pausa, Salida)"
+          >
+            <Clock className="h-4 w-4 text-cyan-400" />
+            <span>⏱️ Fichar</span>
           </button>
 
           {/* BOTÓN DESTACADO: NUEVO TICKET DE BARRA */}
@@ -5348,6 +5416,13 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           <MesasReservasPanel notificar={(txt, tipo) => mostrarAlerta(txt, tipo === 'ok' ? 'exito' : tipo === 'error' ? 'error' : 'aviso')} />
         </main>
       )}
+
+      {/* ACCESO RÁPIDO DE FICHAJE PARA PERSONAL DE SALA / CAMAREROS */}
+      <QuickClockInModal
+        isOpen={mostrarFichajeRapido}
+        onClose={() => setMostrarFichajeRapido(false)}
+        pantallaOrigen="camarero"
+      />
     </div>
   );
 }

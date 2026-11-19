@@ -37,7 +37,7 @@ import GuisosPublicView from './GuisosPublicView';
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar' | 'guisos'>('home');
   const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa' | 'waiter'>('main');
-  const [backofficeTab, setBackofficeTab] = useState<'resumen' | 'guisos' | 'mesas'>('resumen');
+  const [backofficeTab, setBackofficeTab] = useState<'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion' | 'gastos'>('resumen');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
 
   const [adminDesbloqueado, setAdminDesbloqueado] = useState(false);
@@ -546,6 +546,21 @@ export default function App() {
         setShowCafeteriaMenu(true);
       } else if (hash === '#mesas' || hash === '#/mesas' || hash === '#reservas' || hash === '#backoffice-mesas') {
         setBackofficeTab('mesas');
+        setSubdomainRoute('ventas');
+        setAdminDesbloqueado(true);
+        setShowCafeteriaMenu(true);
+      } else if (hash === '#gastos' || hash === '#/gastos' || hash === '#backoffice-gastos' || hash === '#ingresos-gastos') {
+        setBackofficeTab('gastos');
+        setSubdomainRoute('ventas');
+        setAdminDesbloqueado(true);
+        setShowCafeteriaMenu(true);
+      } else if (hash === '#empleados' || hash === '#/empleados' || hash === '#backoffice-empleados') {
+        setBackofficeTab('empleados');
+        setSubdomainRoute('ventas');
+        setAdminDesbloqueado(true);
+        setShowCafeteriaMenu(true);
+      } else if (hash === '#tickets' || hash === '#/tickets' || hash === '#facturas') {
+        setBackofficeTab('tickets');
         setSubdomainRoute('ventas');
         setAdminDesbloqueado(true);
         setShowCafeteriaMenu(true);

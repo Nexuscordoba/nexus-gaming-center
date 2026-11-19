@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
 import { redondearMoneda } from './fiscalService';
-import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X, Lock } from 'lucide-react';
+import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X, Lock, Mail, Receipt } from 'lucide-react';
 
 interface OpcionCombo {
   nombre: string;
@@ -62,6 +62,13 @@ export default function TableOrder() {
   const [mensaje, setMensaje] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
+  // Estados para ticket / recibo digital enviado por correo tras cobro de mesa
+  const [ultimoTicketCobrado, setUltimoTicketCobrado] = useState<any | null>(null);
+  const [emailRecibo, setEmailRecibo] = useState<string>('');
+  const [enviandoEmailTicket, setEnviandoEmailTicket] = useState<boolean>(false);
+  const [ticketEnviadoOk, setTicketEnviadoOk] = useState<boolean>(false);
+  const [errorEmailTicket, setErrorEmailTicket] = useState<string | null>(null);
+
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -89,6 +96,7 @@ export default function TableOrder() {
     cargarConfiguracion();
     cargarProductosCarta();
     cargarCuentaDesdeSupabase(mNum);
+    cargarUltimoTicketCobrado(mNum);
 
     const channel = supabase
       .channel(`mesa-${mNum}`)
@@ -102,6 +110,7 @@ export default function TableOrder() {
             setCarritoActual([]);
             localStorage.removeItem(`nexus_mesa_${mNum}_cuenta`);
             setMensaje('¡Cuenta cobrada con éxito! Gracias por vuestra visita.');
+            cargarUltimoTicketCobrado(mNum);
           } else {
             cargarCuentaDesdeSupabase(mNum);
           }
@@ -279,6 +288,70 @@ export default function TableOrder() {
       }
     } catch (err) {
       console.error('Excepción al cargar cuenta de la mesa:', err);
+    }
+  };
+
+  const cargarUltimoTicketCobrado = async (mNum: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('facturas_tickets')
+        .select('*')
+        .or(`mesa.eq.MESA ${mNum},mesa.eq.${mNum}`)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && data) {
+        // Comprobar que el ticket sea de las últimas 3 horas
+        const fechaTicket = new Date(data.created_at || data.fecha_expedicion).getTime();
+        const ahora = Date.now();
+        if (ahora - fechaTicket <= 3 * 60 * 60 * 1000) {
+          setUltimoTicketCobrado(data);
+          setTicketEnviadoOk(false);
+          setErrorEmailTicket(null);
+        }
+      }
+    } catch (err) {
+      console.warn('No se pudo verificar el último ticket cobrado de la mesa:', err);
+    }
+  };
+
+  const enviarTicketPorCorreo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailRecibo.trim() || !ultimoTicketCobrado || enviandoEmailTicket) return;
+
+    setEnviandoEmailTicket(true);
+    setErrorEmailTicket(null);
+
+    try {
+      const res = await fetch('/api/send-ticket-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailRecibo.trim(),
+          ticket: ultimoTicketCobrado
+        })
+      });
+
+      const resJson = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(resJson.error || 'No se pudo enviar el correo.');
+      }
+
+      setTicketEnviadoOk(true);
+
+      // Vincular email en facturas_tickets si la columna existe
+      supabase
+        .from('facturas_tickets')
+        .update({ cliente_email: emailRecibo.trim() })
+        .eq('id', ultimoTicketCobrado.id)
+        .then(() => {});
+    } catch (err: any) {
+      console.error('Error enviando ticket:', err);
+      setErrorEmailTicket(err.message || 'Error al conectar con el servidor de correo');
+    } finally {
+      setEnviandoEmailTicket(false);
     }
   };
 
@@ -641,6 +714,70 @@ export default function TableOrder() {
 
       <main className={`max-w-3xl w-full mx-auto p-4 space-y-6 ${carritoActual.length > 0 ? 'pb-72' : 'pb-24'}`}>
         
+        {/* RECIBO DIGITAL DE LA ÚLTIMA COMANDA COBRADA */}
+        {cuentaMesa.length === 0 && ultimoTicketCobrado && (
+          <div className="p-4 sm:p-5 rounded-3xl bg-gradient-to-r from-[#0b1322] to-[#07192f] border border-cyan-500/40 space-y-3 shadow-2xl animate-slide-up">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-2xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
+                  <Receipt className="h-5 w-5" />
+                </div>
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400">Última Comanda Cobrada</span>
+                  <h3 className="text-sm sm:text-base font-black text-white">
+                    Ticket #{ultimoTicketCobrado.numero_completo} · {Number(ultimoTicketCobrado.total_final).toFixed(2)} €
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Mesa {mesaNum} · {new Date(ultimoTicketCobrado.fecha_expedicion || ultimoTicketCobrado.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUltimoTicketCobrado(null)}
+                className="text-slate-500 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors"
+                title="Cerrar aviso"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {ticketEnviadoOk ? (
+              <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                <span>¡Ticket enviado con éxito a {emailRecibo}! Revisa tu bandeja de entrada o spam.</span>
+              </div>
+            ) : (
+              <form onSubmit={enviarTicketPorCorreo} className="pt-1 space-y-2">
+                <p className="text-xs text-slate-300">
+                  ¿Quieres recibir el desglose de tu ticket legal y justificante de compra por email?
+                </p>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="email"
+                    required
+                    placeholder="Introduce tu correo (ej: cliente@email.com)"
+                    value={emailRecibo}
+                    onChange={(e) => setEmailRecibo(e.target.value)}
+                    className="flex-1 bg-black/60 border border-white/20 rounded-xl px-3.5 py-2.5 text-xs text-white focus:border-cyan-400 outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={enviandoEmailTicket}
+                    className="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <Mail className="h-4 w-4" />
+                    <span>{enviandoEmailTicket ? 'Enviando...' : 'Enviar Recibo'}</span>
+                  </button>
+                </div>
+                {errorEmailTicket && (
+                  <p className="text-xs text-rose-400 font-bold">{errorEmailTicket}</p>
+                )}
+              </form>
+            )}
+          </div>
+        )}
+
         {cuentaMesa.length > 0 && (
           <div className="p-4 rounded-3xl bg-[#0d0f17] border border-cyan-500/30 space-y-3 shadow-xl animate-fade-in">
             <div className="flex items-center justify-between pb-2 border-b border-white/10 text-cyan-400 font-bold text-xs uppercase tracking-wider">
