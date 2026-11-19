@@ -323,7 +323,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   // Estados Módulo Ingresos y Gastos Generales
   const [movimientosGenerales, setMovimientosGenerales] = useState<any[]>([]);
   const [cargandoMovimientos, setCargandoMovimientos] = useState<boolean>(false);
-  const [mesGastos, setMesGastos] = useState<string>(() => new Date().toISOString().slice(0, 7));
+  const [mesGastos, setMesGastos] = useState<string>('TODOS');
   const [filtroTipoMov, setFiltroTipoMov] = useState<'TODOS' | 'INGRESO' | 'GASTO'>('TODOS');
   const [filtroCategoriaMov, setFiltroCategoriaMov] = useState<string>('TODAS');
   const [filtroEstadoMov, setFiltroEstadoMov] = useState<'TODOS' | 'pagado' | 'pendiente'>('TODOS');
@@ -989,20 +989,25 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   };
 
   // Métodos Módulo Ingresos y Gastos Generales
-  const cargarMovimientosGenerales = async () => {
+  const cargarMovimientosGenerales = async (mesOverride?: string) => {
     setCargandoMovimientos(true);
     try {
-      const primerDia = `${mesGastos}-01`;
-      const [anio, mes] = mesGastos.split('-').map(Number);
-      const ultimoDiaMes = new Date(anio, mes, 0).getDate();
-      const ultimoDia = `${mesGastos}-${String(ultimoDiaMes).padStart(2, '0')}`;
-
-      const { data, error } = await supabase
+      const periodo = mesOverride ?? mesGastos;
+      let query = supabase
         .from('movimientos_generales')
         .select('*')
-        .gte('fecha', primerDia)
-        .lte('fecha', ultimoDia)
-        .order('fecha', { ascending: false });
+        .order('fecha', { ascending: false })
+        .order('created_at', { ascending: false });
+
+      if (periodo && periodo !== 'TODOS' && periodo.includes('-')) {
+        const primerDia = `${periodo}-01`;
+        const [anio, mes] = periodo.split('-').map(Number);
+        const ultimoDiaMes = new Date(anio, mes, 0).getDate();
+        const ultimoDia = `${periodo}-${String(ultimoDiaMes).padStart(2, '0')}`;
+        query = query.gte('fecha', primerDia).lte('fecha', ultimoDia);
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         console.warn('Tabla movimientos_generales:', error.message);
@@ -1041,17 +1046,37 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const guardarMovimientoGeneral = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!movConcepto.trim() || !movTercero.trim() || !movTotal || guardandoMovimiento) return;
+
+    // Validar formato y año razonable (4 dígitos entre 2020 y 2100) para evitar errores como "0206"
+    const matchFecha = /^(\d{4})-(\d{2})-(\d{2})$/.exec(movFecha.trim());
+    const anioFecha = matchFecha ? Number(matchFecha[1]) : 0;
+    if (!matchFecha || anioFecha < 2020 || anioFecha > 2100) {
+      notificar('La fecha introducida no es válida. El año debe estar entre 2020 y 2100 (ej. 2026).', 'error');
+      return;
+    }
+
+    const fechaConciliacionLimpia = movFechaConciliacion.trim() ? movFechaConciliacion.trim() : null;
+    if (fechaConciliacionLimpia) {
+      const matchConc = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaConciliacionLimpia);
+      const anioConc = matchConc ? Number(matchConc[1]) : 0;
+      if (!matchConc || anioConc < 2020 || anioConc > 2100) {
+        notificar('La fecha de conciliación bancaria debe tener un año entre 2020 y 2100.', 'error');
+        return;
+      }
+    }
+
     setGuardandoMovimiento(true);
 
     try {
       let adjuntoUrl: string | null = null;
+      const mesDelMovimiento = movFecha.slice(0, 7);
 
       // Subir archivo a facturas_gastos en Supabase Storage si se ha seleccionado
       if (movArchivo) {
         try {
           const extension = movArchivo.name.split('.').pop() || 'bin';
           const nombreArchivo = `${movTipo.toLowerCase()}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${extension}`;
-          const ruta = `${mesGastos}/${nombreArchivo}`;
+          const ruta = `${mesDelMovimiento}/${nombreArchivo}`;
 
           const { error: uploadError } = await supabase.storage
             .from('facturas_gastos')
@@ -1072,7 +1097,6 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
       const totalVal = parseFloat(movTotal) || 0;
       const baseVal = parseFloat(movBase) || redondearMoneda(totalVal / (1 + movTipoIva / 100));
-      const fechaConciliacionLimpia = movFechaConciliacion.trim() ? movFechaConciliacion.trim() : null;
 
       // Nota: cuota_iva y total son columnas GENERATED ALWAYS AS ... STORED en PostgreSQL;
       // se omiten del payload para que PostgreSQL las calcule automáticamente.
@@ -1095,7 +1119,6 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       const { error } = await supabase.from('movimientos_generales').insert([payload]);
       if (error) throw error;
 
-      notificar(`Registro de ${movTipo === 'INGRESO' ? 'ingreso' : 'gasto'} guardado con éxito.`, 'ok');
       setMovConcepto('');
       setMovTercero('');
       setMovNumeroFactura('');
@@ -1104,7 +1127,19 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       setMovTotal('');
       setMovFechaConciliacion('');
       setMovArchivo(null);
-      await cargarMovimientosGenerales();
+
+      // Si el usuario tiene un mes distinto seleccionado, cambiar automáticamente al mes del apunte para mostrarlo
+      if (mesGastos !== 'TODOS' && mesGastos !== mesDelMovimiento) {
+        setMesGastos(mesDelMovimiento);
+        await cargarMovimientosGenerales(mesDelMovimiento);
+        notificar(
+          `Registro guardado en ${mesDelMovimiento}. Filtro cambiado automáticamente a ${mesDelMovimiento} para mostrarlo.`,
+          'ok'
+        );
+      } else {
+        await cargarMovimientosGenerales(mesGastos);
+        notificar(`Registro de ${movTipo === 'INGRESO' ? 'ingreso' : 'gasto'} guardado con éxito.`, 'ok');
+      }
     } catch (err: any) {
       notificar('Error al guardar movimiento: ' + err.message, 'error');
     } finally {
@@ -1116,21 +1151,28 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     if (sincronizandoCierres) return;
     setSincronizandoCierres(true);
     try {
-      const primerDia = `${mesGastos}-01`;
-      const [anio, mes] = mesGastos.split('-').map(Number);
-      const ultimoDiaMes = new Date(anio, mes, 0).getDate();
-      const ultimoDia = `${mesGastos}-${String(ultimoDiaMes).padStart(2, '0')}`;
+      // 1. Obtener cierres_caja (del mes seleccionado o todo el histórico si está en TODOS)
+      let queryCierres = supabase.from('cierres_caja').select('*');
+      if (mesGastos !== 'TODOS' && mesGastos.includes('-')) {
+        const primerDia = `${mesGastos}-01`;
+        const [anio, mes] = mesGastos.split('-').map(Number);
+        const ultimoDiaMes = new Date(anio, mes, 0).getDate();
+        const ultimoDia = `${mesGastos}-${String(ultimoDiaMes).padStart(2, '0')}`;
+        queryCierres = queryCierres
+          .gte('fecha_cierre', `${primerDia}T00:00:00`)
+          .lte('fecha_cierre', `${ultimoDia}T23:59:59`);
+      }
 
-      // 1. Obtener cierres_caja del mes
-      const { data: cierres, error: errCierres } = await supabase
-        .from('cierres_caja')
-        .select('*')
-        .gte('fecha_cierre', `${primerDia}T00:00:00`)
-        .lte('fecha_cierre', `${ultimoDia}T23:59:59`);
+      const { data: cierres, error: errCierres } = await queryCierres;
 
       if (errCierres) throw errCierres;
       if (!cierres || cierres.length === 0) {
-        notificar(`No hay cierres de caja (Z) registrados en el periodo ${mesGastos}.`, 'info');
+        notificar(
+          mesGastos === 'TODOS'
+            ? 'No hay cierres de caja (Z) registrados en el sistema.'
+            : `No hay cierres de caja (Z) registrados en el periodo ${mesGastos}.`,
+          'info'
+        );
         return;
       }
 
@@ -4050,15 +4092,28 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
               </div>
 
               <div className="flex items-center gap-3 flex-wrap">
-                <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
-                  <Calendar className="h-4 w-4 text-cyan-400" />
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Mes:</span>
-                  <input
-                    type="month"
-                    value={mesGastos}
-                    onChange={(e) => setMesGastos(e.target.value)}
-                    className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
-                  />
+                <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setMesGastos('TODOS')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                      mesGastos === 'TODOS'
+                        ? 'bg-cyan-500 text-slate-950 shadow'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    Todo el histórico
+                  </button>
+                  <div className="flex items-center gap-1.5 px-2">
+                    <Calendar className="h-4 w-4 text-cyan-400" />
+                    <input
+                      type="month"
+                      value={mesGastos === 'TODOS' ? '' : mesGastos}
+                      onChange={(e) => setMesGastos(e.target.value || 'TODOS')}
+                      className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
+                      title="Filtrar por un mes concreto"
+                    />
+                  </div>
                 </div>
 
                 <button
@@ -4197,6 +4252,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                     <input
                       type="date"
                       required
+                      min="2020-01-01"
+                      max="2100-12-31"
                       value={movFecha}
                       onChange={(e) => setMovFecha(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
@@ -4410,6 +4467,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                   </label>
                   <input
                     type="date"
+                    min="2020-01-01"
+                    max="2100-12-31"
                     value={movFechaConciliacion}
                     onChange={(e) => setMovFechaConciliacion(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
