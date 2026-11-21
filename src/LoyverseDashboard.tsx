@@ -170,6 +170,72 @@ const normalizarMetodoPagoMovimiento = (metodo: string): string => {
   return 'TRANSFERENCIA';
 };
 
+type ClaveTramoIva = '0' | '4' | '10' | '21';
+
+const TRAMOS_IVA_VACIOS = (): Record<ClaveTramoIva, { base: string; total: string }> => ({
+  '0': { base: '', total: '' },
+  '4': { base: '', total: '' },
+  '10': { base: '', total: '' },
+  '21': { base: '', total: '' }
+});
+
+const obtenerResumenIvaMovimiento = (m: any) => {
+  const b0 = Number(m?.base_0 || 0);
+  const b4 = Number(m?.base_4 || 0);
+  const b10 = Number(m?.base_10 || 0);
+  const b21 = Number(m?.base_21 || 0);
+  const i4 = Number(m?.iva_4 || 0);
+  const i10 = Number(m?.iva_10 || 0);
+  const i21 = Number(m?.iva_21 || 0);
+
+  const tramosRaw = [
+    { tipo: 0, base: b0, cuota: 0 },
+    { tipo: 4, base: b4, cuota: i4 },
+    { tipo: 10, base: b10, cuota: i10 },
+    { tipo: 21, base: b21, cuota: i21 }
+  ].filter((t) => Math.abs(t.base) > 0 || Math.abs(t.cuota) > 0);
+
+  const tieneDesgloseTramos = tramosRaw.length > 0;
+  const esMultiIva =
+    Boolean(m?.desglose_iva?.multi_iva) ||
+    tramosRaw.length >= 2 ||
+    (m?.desglose_iva && typeof m.desglose_iva === 'object' && Object.keys(m.desglose_iva.tramos || m.desglose_iva).length >= 2);
+
+  // Siempre sumar las cuotas reales por tramo (iva_4 + iva_10 + iva_21) cuando exista desglose;
+  // usar cuota_iva únicamente como respaldo en registros antiguos sin desglose por tramos.
+  if (tieneDesgloseTramos) {
+    const baseTotal = redondearMoneda(b0 + b4 + b10 + b21);
+    const cuotaIvaTotal = redondearMoneda(i4 + i10 + i21);
+    const totalDocumento = redondearMoneda(baseTotal + cuotaIvaTotal);
+    return {
+      esMultiIva,
+      baseTotal,
+      cuotaIvaTotal,
+      totalDocumento,
+      tramos: tramosRaw.map((t) => ({ ...t, total: redondearMoneda(t.base + t.cuota) }))
+    };
+  }
+
+  const baseTotal = Number(m?.base_imponible || 0);
+  const tipoIva = Number(m?.tipo_iva || 0);
+  const cuotaIvaTotal =
+    m?.cuota_iva !== undefined && m?.cuota_iva !== null
+      ? Number(m.cuota_iva)
+      : redondearMoneda(baseTotal * (tipoIva / 100));
+  const totalDocumento =
+    m?.total !== undefined && m?.total !== null
+      ? Number(m.total)
+      : redondearMoneda(baseTotal + cuotaIvaTotal);
+
+  return {
+    esMultiIva: false,
+    baseTotal,
+    cuotaIvaTotal,
+    totalDocumento,
+    tramos: [{ tipo: tipoIva, base: baseTotal, cuota: cuotaIvaTotal, total: totalDocumento }]
+  };
+};
+
 export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: BackofficeProps) {
   const [adminVerificado, setAdminVerificado] = useState<{ nombre: string; rol: string } | null>(null);
   const [pinAcceso, setPinAcceso] = useState('');
@@ -342,10 +408,15 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
   const [movBase, setMovBase] = useState<string>('');
   const [movCuotaIva, setMovCuotaIva] = useState<string>('');
   const [movTotal, setMovTotal] = useState<string>('');
+  const [movMultiIva, setMovMultiIva] = useState<boolean>(false);
+  const [movTramosIva, setMovTramosIva] = useState<Record<ClaveTramoIva, { base: string; total: string }>>(
+    TRAMOS_IVA_VACIOS
+  );
   const [movMetodoPago, setMovMetodoPago] = useState<string>('TRANSFERENCIA');
   const [movPagado, setMovPagado] = useState<boolean>(true);
   const [movFechaConciliacion, setMovFechaConciliacion] = useState<string>('');
   const [movArchivo, setMovArchivo] = useState<File | null>(null);
+  const [editandoMovimiento, setEditandoMovimiento] = useState<any | null>(null);
   const [guardandoMovimiento, setGuardandoMovimiento] = useState<boolean>(false);
   const [sincronizandoCierres, setSincronizandoCierres] = useState<boolean>(false);
 
@@ -596,9 +667,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     let totalGastos = 0;
 
     for (const mov of movimientosGenerales) {
-      const b = Number(mov.base_imponible || 0);
-      const iva = Number(mov.cuota_iva || 0);
-      const tot = Number(mov.total || 0);
+      const { baseTotal: b, cuotaIvaTotal: iva, totalDocumento: tot } = obtenerResumenIvaMovimiento(mov);
 
       if (mov.tipo === 'INGRESO') {
         baseIngresos = redondearMoneda(baseIngresos + b);
@@ -1052,9 +1121,103 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     }
   };
 
+  const handleCalculoTramoMultiIva = (
+    tramo: ClaveTramoIva,
+    campo: 'base' | 'total',
+    valorStr: string
+  ) => {
+    const val = parseFloat(valorStr) || 0;
+    const tasa = Number(tramo);
+    const factor = 1 + tasa / 100;
+
+    setMovTramosIva((prev) => {
+      if (campo === 'total') {
+        const baseCalc = redondearMoneda(val / factor);
+        return {
+          ...prev,
+          [tramo]: {
+            base: val > 0 ? baseCalc.toFixed(2) : '',
+            total: valorStr
+          }
+        };
+      }
+      const totalCalc = redondearMoneda(val * factor);
+      return {
+        ...prev,
+        [tramo]: {
+          base: valorStr,
+          total: val > 0 ? totalCalc.toFixed(2) : ''
+        }
+      };
+    });
+  };
+
+  const limpiarFormMovimiento = () => {
+    setMovTipo('GASTO');
+    setMovFecha(new Date().toISOString().split('T')[0]);
+    setMovCategoria('MATERIA_PRIMA');
+    setMovConcepto('');
+    setMovTercero('');
+    setMovNumeroFactura('');
+    setMovBase('');
+    setMovCuotaIva('');
+    setMovTotal('');
+    setMovMultiIva(false);
+    setMovTramosIva(TRAMOS_IVA_VACIOS());
+    setMovMetodoPago('TRANSFERENCIA');
+    setMovPagado(true);
+    setMovFechaConciliacion('');
+    setMovArchivo(null);
+    setEditandoMovimiento(null);
+  };
+
+  const iniciarEdicionMovimiento = (mov: any) => {
+    setEditandoMovimiento(mov);
+    setMovTipo(mov.tipo === 'INGRESO' ? 'INGRESO' : 'GASTO');
+    setMovFecha(mov.fecha || new Date().toISOString().split('T')[0]);
+    setMovCategoria(normalizarCategoriaMovimiento(mov.categoria || '', mov.tipo === 'INGRESO' ? 'INGRESO' : 'GASTO'));
+    setMovTercero(mov.tercero || '');
+    setMovConcepto(mov.concepto || '');
+    setMovNumeroFactura(mov.numero_factura || '');
+    setMovMetodoPago(normalizarMetodoPagoMovimiento(mov.metodo_pago || 'TRANSFERENCIA'));
+    setMovPagado(Boolean(mov.pagado));
+    setMovFechaConciliacion(mov.fecha_conciliacion || '');
+    setMovArchivo(null);
+
+    const resumenIva = obtenerResumenIvaMovimiento(mov);
+    if (resumenIva.esMultiIva) {
+      setMovMultiIva(true);
+      const nuevosTramos = TRAMOS_IVA_VACIOS();
+      (['0', '4', '10', '21'] as ClaveTramoIva[]).forEach((clave) => {
+        const b = Number(mov[`base_${clave}`] || 0);
+        const cuota = clave === '0' ? 0 : Number(mov[`iva_${clave}`] || redondearMoneda(b * (Number(clave) / 100)));
+        if (b > 0) {
+          nuevosTramos[clave] = {
+            base: b.toFixed(2),
+            total: redondearMoneda(b + cuota).toFixed(2)
+          };
+        }
+      });
+      setMovTramosIva(nuevosTramos);
+      setMovBase('');
+      setMovCuotaIva('');
+      setMovTotal('');
+    } else {
+      setMovMultiIva(false);
+      setMovTramosIva(TRAMOS_IVA_VACIOS());
+      const tasa = Number(mov.tipo_iva ?? 21);
+      setMovTipoIva(tasa);
+      setMovBase(resumenIva.baseTotal > 0 ? resumenIva.baseTotal.toFixed(2) : '');
+      setMovCuotaIva(resumenIva.cuotaIvaTotal > 0 ? resumenIva.cuotaIvaTotal.toFixed(2) : '');
+      setMovTotal(resumenIva.totalDocumento > 0 ? resumenIva.totalDocumento.toFixed(2) : '');
+    }
+
+    document.getElementById('form-movimiento-general')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const guardarMovimientoGeneral = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!movConcepto.trim() || !movTercero.trim() || !movTotal || guardandoMovimiento) return;
+    if (!movConcepto.trim() || !movTercero.trim() || guardandoMovimiento) return;
 
     // Validar formato y año razonable (4 dígitos entre 2020 y 2100) para evitar errores como "0206"
     const matchFecha = /^(\d{4})-(\d{2})-(\d{2})$/.exec(movFecha.trim());
@@ -1074,13 +1237,88 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       }
     }
 
+    // Calcular importes según modo simple o multi-IVA
+    let baseVal = 0;
+    let tipoIvaPrincipal = movTipoIva;
+    let b0 = 0;
+    let b4 = 0;
+    let b10 = 0;
+    let b21 = 0;
+    let i4 = 0;
+    let i10 = 0;
+    let i21 = 0;
+    let desgloseJson: any = null;
+
+    if (movMultiIva) {
+      b0 = redondearMoneda(parseFloat(movTramosIva['0'].base) || 0);
+      b4 = redondearMoneda(parseFloat(movTramosIva['4'].base) || 0);
+      b10 = redondearMoneda(parseFloat(movTramosIva['10'].base) || 0);
+      b21 = redondearMoneda(parseFloat(movTramosIva['21'].base) || 0);
+
+      i4 = redondearMoneda(b4 * 0.04);
+      i10 = redondearMoneda(b10 * 0.1);
+      i21 = redondearMoneda(b21 * 0.21);
+
+      baseVal = redondearMoneda(b0 + b4 + b10 + b21);
+      const cuotaTotal = redondearMoneda(i4 + i10 + i21);
+      const totalGeneral = redondearMoneda(baseVal + cuotaTotal);
+
+      if (totalGeneral <= 0) {
+        notificar('Introduce al menos un importe mayor que 0 en alguno de los tramos de IVA.', 'error');
+        return;
+      }
+
+      // tipo_iva en PostgreSQL solo admite 0, 4, 10 o 21; elegimos el tramo con mayor base imponible
+      const candidatos = [
+        { tipo: 21, base: b21 },
+        { tipo: 10, base: b10 },
+        { tipo: 4, base: b4 },
+        { tipo: 0, base: b0 }
+      ].sort((a, b) => b.base - a.base);
+      tipoIvaPrincipal = candidatos[0].tipo;
+
+      const tramosObj: Record<string, { base: number; cuota: number; total: number }> = {};
+      if (b0 > 0) tramosObj['0'] = { base: b0, cuota: 0, total: b0 };
+      if (b4 > 0) tramosObj['4'] = { base: b4, cuota: i4, total: redondearMoneda(b4 + i4) };
+      if (b10 > 0) tramosObj['10'] = { base: b10, cuota: i10, total: redondearMoneda(b10 + i10) };
+      if (b21 > 0) tramosObj['21'] = { base: b21, cuota: i21, total: redondearMoneda(b21 + i21) };
+
+      desgloseJson = {
+        multi_iva: Object.keys(tramosObj).length >= 2,
+        tramos: tramosObj,
+        cuota_total: cuotaTotal,
+        total_general: totalGeneral
+      };
+    } else {
+      const totalVal = parseFloat(movTotal) || 0;
+      if (totalVal <= 0) {
+        notificar('Introduce un importe total válido mayor que 0.', 'error');
+        return;
+      }
+      baseVal = parseFloat(movBase) || redondearMoneda(totalVal / (1 + movTipoIva / 100));
+      const cuotaSimple = redondearMoneda(totalVal - baseVal);
+      if (movTipoIva === 0) b0 = baseVal;
+      if (movTipoIva === 4) {
+        b4 = baseVal;
+        i4 = cuotaSimple;
+      }
+      if (movTipoIva === 10) {
+        b10 = baseVal;
+        i10 = cuotaSimple;
+      }
+      if (movTipoIva === 21) {
+        b21 = baseVal;
+        i21 = cuotaSimple;
+      }
+    }
+
     setGuardandoMovimiento(true);
 
     try {
-      let adjuntoUrl: string | null = null;
+      let adjuntoUrl: string | null = editandoMovimiento?.adjunto_url || null;
       const mesDelMovimiento = movFecha.slice(0, 7);
 
-      // Subir archivo a facturas_gastos en Supabase Storage si se ha seleccionado
+      // Subir archivo a facturas_gastos en Supabase Storage si se ha seleccionado uno nuevo
       if (movArchivo) {
         try {
           const extension = movArchivo.name.split('.').pop() || 'bin';
@@ -1104,9 +1342,6 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         }
       }
 
-      const totalVal = parseFloat(movTotal) || 0;
-      const baseVal = parseFloat(movBase) || redondearMoneda(totalVal / (1 + movTipoIva / 100));
-
       // Nota: cuota_iva y total son columnas GENERATED ALWAYS AS ... STORED en PostgreSQL;
       // se omiten del payload para que PostgreSQL las calcule automáticamente.
       const payload = {
@@ -1117,7 +1352,15 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         concepto: movConcepto.trim(),
         numero_factura: movNumeroFactura.trim() || null,
         base_imponible: baseVal,
-        tipo_iva: movTipoIva,
+        tipo_iva: tipoIvaPrincipal,
+        base_0: b0,
+        base_4: b4,
+        base_10: b10,
+        base_21: b21,
+        iva_4: i4,
+        iva_10: i10,
+        iva_21: i21,
+        desglose_iva: desgloseJson,
         metodo_pago: normalizarMetodoPagoMovimiento(movMetodoPago),
         pagado: movPagado,
         fecha_conciliacion: fechaConciliacionLimpia,
@@ -1125,17 +1368,25 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         adjunto_url: adjuntoUrl
       };
 
-      const { error } = await supabase.from('movimientos_generales').insert([payload]);
-      if (error) throw error;
+      const estabaEditando = Boolean(editandoMovimiento);
 
-      setMovConcepto('');
-      setMovTercero('');
-      setMovNumeroFactura('');
-      setMovBase('');
-      setMovCuotaIva('');
-      setMovTotal('');
-      setMovFechaConciliacion('');
-      setMovArchivo(null);
+      if (editandoMovimiento) {
+        const { data: updatedRows, error } = await supabase
+          .from('movimientos_generales')
+          .update(payload)
+          .eq('id', editandoMovimiento.id)
+          .select();
+
+        if (error) throw error;
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error('No se pudo actualizar el apunte en Supabase (revisa política RLS de UPDATE).');
+        }
+      } else {
+        const { error } = await supabase.from('movimientos_generales').insert([payload]).select();
+        if (error) throw error;
+      }
+
+      limpiarFormMovimiento();
 
       // Si el usuario tiene un mes distinto seleccionado, cambiar automáticamente al mes del apunte para mostrarlo
       if (mesGastos !== 'TODOS' && mesGastos !== mesDelMovimiento) {
@@ -1143,12 +1394,17 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         setMesGastos(mesDelMovimiento);
         await cargarMovimientosGenerales(mesDelMovimiento);
         notificar(
-          `Registro guardado en ${mesDelMovimiento}. Filtro cambiado automáticamente a ${mesDelMovimiento} para mostrarlo.`,
+          `${estabaEditando ? 'Cambios guardados' : 'Registro guardado'} en ${mesDelMovimiento}. Filtro cambiado automáticamente a ${mesDelMovimiento}.`,
           'ok'
         );
       } else {
         await cargarMovimientosGenerales(mesGastos);
-        notificar(`Registro de ${movTipo === 'INGRESO' ? 'ingreso' : 'gasto'} guardado con éxito.`, 'ok');
+        notificar(
+          estabaEditando
+            ? 'Apunte contable actualizado con éxito.'
+            : `Registro de ${movTipo === 'INGRESO' ? 'ingreso' : 'gasto'} guardado con éxito.`,
+          'ok'
+        );
       }
     } catch (err: any) {
       notificar('Error al guardar movimiento: ' + err.message, 'error');
@@ -1321,32 +1577,57 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
       'Tercero / Razón Social',
       'Concepto',
       'Categoría Contable',
-      'Base Imponible (€)',
+      'Base Imponible Total (€)',
       '% IVA',
-      'Cuota IVA (€)',
+      'Cuota IVA Total (€)',
       'Total Documento (€)',
+      'Base 0% (€)',
+      'Base 4% (€)',
+      'IVA 4% (€)',
+      'Base 10% (€)',
+      'IVA 10% (€)',
+      'Base 21% (€)',
+      'IVA 21% (€)',
       'Método de Pago',
       'Estado de Pago',
       'Conciliado',
       'Fecha Conciliación'
     ];
 
-    const filas = movimientosGenerales.map((m) => [
-      m.fecha,
-      m.tipo,
-      `"${(m.numero_factura || '').replace(/"/g, '""')}"`,
-      `"${(m.tercero || '').replace(/"/g, '""')}"`,
-      `"${(m.concepto || '').replace(/"/g, '""')}"`,
-      `"${(ETIQUETAS_CATEGORIA_MOV[m.categoria] || m.categoria || '').replace(/"/g, '""')}"`,
-      Number(m.base_imponible || 0).toFixed(2),
-      Number(m.tipo_iva || 0).toFixed(0) + '%',
-      Number(m.cuota_iva || 0).toFixed(2),
-      Number(m.total || 0).toFixed(2),
-      ETIQUETAS_METODO_PAGO_MOV[m.metodo_pago] || m.metodo_pago || '',
-      m.pagado ? 'PAGADO' : 'PENDIENTE',
-      m.conciliado ? 'SI' : 'NO',
-      m.fecha_conciliacion || ''
-    ]);
+    const filas = movimientosGenerales.map((m) => {
+      const { esMultiIva, baseTotal, cuotaIvaTotal, totalDocumento } = obtenerResumenIvaMovimiento(m);
+      const b0 = Number(m.base_0 || (Number(m.tipo_iva) === 0 ? baseTotal : 0));
+      const b4 = Number(m.base_4 || (Number(m.tipo_iva) === 4 ? baseTotal : 0));
+      const i4 = Number(m.iva_4 || (Number(m.tipo_iva) === 4 ? cuotaIvaTotal : 0));
+      const b10 = Number(m.base_10 || (Number(m.tipo_iva) === 10 ? baseTotal : 0));
+      const i10 = Number(m.iva_10 || (Number(m.tipo_iva) === 10 ? cuotaIvaTotal : 0));
+      const b21 = Number(m.base_21 || (Number(m.tipo_iva) === 21 ? baseTotal : 0));
+      const i21 = Number(m.iva_21 || (Number(m.tipo_iva) === 21 ? cuotaIvaTotal : 0));
+
+      return [
+        m.fecha,
+        m.tipo,
+        `"${(m.numero_factura || '').replace(/"/g, '""')}"`,
+        `"${(m.tercero || '').replace(/"/g, '""')}"`,
+        `"${(m.concepto || '').replace(/"/g, '""')}"`,
+        `"${(ETIQUETAS_CATEGORIA_MOV[m.categoria] || m.categoria || '').replace(/"/g, '""')}"`,
+        baseTotal.toFixed(2),
+        esMultiIva ? 'MIXTO' : Number(m.tipo_iva || 0).toFixed(0) + '%',
+        cuotaIvaTotal.toFixed(2),
+        totalDocumento.toFixed(2),
+        b0.toFixed(2),
+        b4.toFixed(2),
+        i4.toFixed(2),
+        b10.toFixed(2),
+        i10.toFixed(2),
+        b21.toFixed(2),
+        i21.toFixed(2),
+        ETIQUETAS_METODO_PAGO_MOV[m.metodo_pago] || m.metodo_pago || '',
+        m.pagado ? 'PAGADO' : 'PENDIENTE',
+        m.conciliado ? 'SI' : 'NO',
+        m.fecha_conciliacion || ''
+      ];
+    });
 
     const csvContent = '\uFEFF' + [headers.join(';'), ...filas.map((f) => f.join(';'))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -4252,16 +4533,39 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
             {/* FORMULARIO RÁPIDO DE APUNTE Y TABLA */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* FORMULARIO DE ALTA */}
+              {/* FORMULARIO DE ALTA Y EDICIÓN */}
               <form
+                id="form-movimiento-general"
                 onSubmit={guardarMovimientoGeneral}
-                className="lg:col-span-4 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-4 self-start shadow-xl"
+                className={`lg:col-span-4 bg-[#0f172a] border rounded-3xl p-6 space-y-4 self-start shadow-xl ${
+                  editandoMovimiento ? 'border-cyan-500/60 ring-1 ring-cyan-500/30' : 'border-slate-800'
+                }`}
               >
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                  <h3 className="text-base font-black text-white flex items-center gap-2">
-                    <Plus className="h-4 w-4 text-cyan-400" />
-                    <span>Registrar Ingreso o Gasto</span>
-                  </h3>
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3 gap-2 flex-wrap">
+                  <div>
+                    <h3 className="text-base font-black text-white flex items-center gap-2">
+                      {editandoMovimiento ? (
+                        <>
+                          <Edit className="h-4 w-4 text-cyan-400" />
+                          <span>Editando Apunte</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="h-4 w-4 text-cyan-400" />
+                          <span>Registrar Ingreso o Gasto</span>
+                        </>
+                      )}
+                    </h3>
+                    {editandoMovimiento && (
+                      <button
+                        type="button"
+                        onClick={limpiarFormMovimiento}
+                        className="text-[11px] font-bold text-rose-400 hover:text-rose-300 mt-0.5 cursor-pointer"
+                      >
+                        ✕ Cancelar edición
+                      </button>
+                    )}
+                  </div>
                   <div className="flex rounded-xl bg-slate-900 p-1 border border-slate-700">
                     <button
                       type="button"
@@ -4381,92 +4685,191 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-black uppercase text-slate-400">Tipo IVA</label>
-                    <select
-                      value={movTipoIva}
-                      onChange={(e) => {
-                        const nuevoIva = Number(e.target.value);
-                        setMovTipoIva(nuevoIva);
-                        handleCalculoMonto(
-                          movModoCalculo === 'inverso' ? 'total' : 'base',
-                          movModoCalculo === 'inverso' ? movTotal : movBase,
-                          nuevoIva,
-                          movModoCalculo
-                        );
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
-                    >
-                      <option value={21}>21% (General / Suministros)</option>
-                      <option value={10}>10% (Hostelería / Alimentación)</option>
-                      <option value={4}>4% (Superreducido)</option>
-                      <option value={0}>0% (Exento)</option>
-                    </select>
+                    <label className="text-[10px] font-black uppercase text-slate-400">
+                      {movMultiIva ? 'Modo Fiscal' : 'Tipo IVA'}
+                    </label>
+                    {movMultiIva ? (
+                      <div className="w-full bg-indigo-950/50 border border-indigo-500/40 rounded-xl p-2.5 text-xs font-black text-indigo-300 mt-1 text-center">
+                        Multi-IVA Activo
+                      </div>
+                    ) : (
+                      <select
+                        value={movTipoIva}
+                        onChange={(e) => {
+                          const nuevoIva = Number(e.target.value);
+                          setMovTipoIva(nuevoIva);
+                          handleCalculoMonto(
+                            movModoCalculo === 'inverso' ? 'total' : 'base',
+                            movModoCalculo === 'inverso' ? movTotal : movBase,
+                            nuevoIva,
+                            movModoCalculo
+                          );
+                        }}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs font-bold text-white mt-1"
+                      >
+                        <option value={21}>21% (General / Suministros)</option>
+                        <option value={10}>10% (Hostelería / Alimentación)</option>
+                        <option value={4}>4% (Superreducido)</option>
+                        <option value={0}>0% (Exento)</option>
+                      </select>
+                    )}
                   </div>
                 </div>
 
-                {/* SELECTOR MODO DE CÁLCULO DIRECTO VS INVERSO */}
-                <div className="bg-slate-900/80 p-2.5 rounded-2xl border border-slate-800 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-slate-400">Modo de Introducción:</span>
-                    <div className="flex gap-1 text-[10px]">
-                      <button
-                        type="button"
-                        onClick={() => setMovModoCalculo('inverso')}
-                        className={`px-2 py-0.5 rounded-md font-bold cursor-pointer ${
-                          movModoCalculo === 'inverso' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        Total con IVA (Inverso)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setMovModoCalculo('directo')}
-                        className={`px-2 py-0.5 rounded-md font-bold cursor-pointer ${
-                          movModoCalculo === 'directo' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        Base Imponible
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="text-[9px] font-black uppercase text-slate-400">Base (€)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
-                        value={movBase}
-                        onChange={(e) => handleCalculoMonto('base', e.target.value, movTipoIva, 'directo')}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-mono font-bold text-white mt-0.5"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] font-black uppercase text-slate-400">Cuota IVA (€)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        readOnly
-                        placeholder="0.00"
-                        value={movCuotaIva}
-                        className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-2 text-xs font-mono font-bold text-slate-400 mt-0.5"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] font-black uppercase text-cyan-400">Total (€) *</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        required
-                        placeholder="0.00"
-                        value={movTotal}
-                        onChange={(e) => handleCalculoMonto('total', e.target.value, movTipoIva, 'inverso')}
-                        className="w-full bg-slate-950 border border-cyan-500/40 rounded-xl p-2 text-xs font-mono font-black text-cyan-300 mt-0.5"
-                      />
-                    </div>
-                  </div>
+                {/* TOGGLE MODO SIMPLE VS DESGLOSE MULTI-IVA */}
+                <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2">
+                  <span className="text-[11px] font-bold text-slate-300">
+                    Desglose multi-IVA (varios tipos en una factura)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMovMultiIva((prev) => !prev)}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all cursor-pointer ${
+                      movMultiIva
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'bg-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {movMultiIva ? 'Activado' : 'Activar'}
+                  </button>
                 </div>
+
+                {!movMultiIva ? (
+                  /* SELECTOR MODO DE CÁLCULO DIRECTO VS INVERSO (1 TIPO DE IVA) */
+                  <div className="bg-slate-900/80 p-2.5 rounded-2xl border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-400">Modo de Introducción:</span>
+                      <div className="flex gap-1 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => setMovModoCalculo('inverso')}
+                          className={`px-2 py-0.5 rounded-md font-bold cursor-pointer ${
+                            movModoCalculo === 'inverso' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Total con IVA (Inverso)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMovModoCalculo('directo')}
+                          className={`px-2 py-0.5 rounded-md font-bold cursor-pointer ${
+                            movModoCalculo === 'directo' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Base Imponible
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[9px] font-black uppercase text-slate-400">Base (€)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={movBase}
+                          onChange={(e) => handleCalculoMonto('base', e.target.value, movTipoIva, 'directo')}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-mono font-bold text-white mt-0.5"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-black uppercase text-slate-400">Cuota IVA (€)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          readOnly
+                          placeholder="0.00"
+                          value={movCuotaIva}
+                          className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-2 text-xs font-mono font-bold text-slate-400 mt-0.5"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-black uppercase text-cyan-400">Total (€) *</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          required
+                          placeholder="0.00"
+                          value={movTotal}
+                          onChange={(e) => handleCalculoMonto('total', e.target.value, movTipoIva, 'inverso')}
+                          className="w-full bg-slate-950 border border-cyan-500/40 rounded-xl p-2 text-xs font-mono font-black text-cyan-300 mt-0.5"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* DESGLOSE MULTI-IVA (0%, 4%, 10%, 21% SIMULTÁNEOS) */
+                  <div className="bg-slate-900/80 p-3 rounded-2xl border border-indigo-500/30 space-y-2.5">
+                    <div className="grid grid-cols-12 gap-1.5 text-[9px] font-black uppercase text-slate-400 px-1">
+                      <span className="col-span-2">IVA</span>
+                      <span className="col-span-4">Base (€)</span>
+                      <span className="col-span-2 text-right">Cuota</span>
+                      <span className="col-span-4 text-right text-cyan-400">Total (€)</span>
+                    </div>
+                    {(['0', '4', '10', '21'] as ClaveTramoIva[]).map((tramo) => {
+                      const bNum = parseFloat(movTramosIva[tramo].base) || 0;
+                      const tNum = parseFloat(movTramosIva[tramo].total) || 0;
+                      const cuotaNum = redondearMoneda(tNum - bNum);
+                      return (
+                        <div key={tramo} className="grid grid-cols-12 gap-1.5 items-center">
+                          <span className="col-span-2 text-xs font-black text-indigo-300 font-mono">
+                            {tramo}%
+                          </span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="0.00"
+                            value={movTramosIva[tramo].base}
+                            onChange={(e) => handleCalculoTramoMultiIva(tramo, 'base', e.target.value)}
+                            className="col-span-4 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs font-mono text-white"
+                          />
+                          <span className="col-span-2 text-[10px] font-mono text-slate-400 text-right">
+                            {cuotaNum > 0 ? cuotaNum.toFixed(2) : '0.00'}
+                          </span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="0.00"
+                            value={movTramosIva[tramo].total}
+                            onChange={(e) => handleCalculoTramoMultiIva(tramo, 'total', e.target.value)}
+                            className="col-span-4 bg-slate-950 border border-cyan-500/30 rounded-lg px-2 py-1.5 text-xs font-mono text-cyan-300 text-right"
+                          />
+                        </div>
+                      );
+                    })}
+                    {(() => {
+                      const sumaB = redondearMoneda(
+                        (['0', '4', '10', '21'] as ClaveTramoIva[]).reduce(
+                          (acc, t) => acc + (parseFloat(movTramosIva[t].base) || 0),
+                          0
+                        )
+                      );
+                      const sumaT = redondearMoneda(
+                        (['0', '4', '10', '21'] as ClaveTramoIva[]).reduce(
+                          (acc, t) => acc + (parseFloat(movTramosIva[t].total) || 0),
+                          0
+                        )
+                      );
+                      const sumaC = redondearMoneda(sumaT - sumaB);
+                      return (
+                        <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-[11px] font-mono">
+                          <span className="text-slate-400">
+                            Base: <strong className="text-white">{sumaB.toFixed(2)}€</strong>
+                          </span>
+                          <span className="text-slate-400">
+                            IVA: <strong className="text-indigo-300">{sumaC.toFixed(2)}€</strong>
+                          </span>
+                          <span className="text-cyan-300 font-black">
+                            Total: {sumaT.toFixed(2)}€
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -4518,6 +4921,17 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                     <span>Adjunto Factura / Ticket (PDF o Imagen)</span>
                     <span className="text-[9px] text-slate-500 font-normal">Bucket: facturas_gastos</span>
                   </label>
+                  {editandoMovimiento?.adjunto_url && (
+                    <a
+                      href={editandoMovimiento.adjunto_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-cyan-400 hover:text-cyan-300 mt-1"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      <span>Ver adjunto actual guardado (sube otro para reemplazar)</span>
+                    </a>
+                  )}
                   <input
                     type="file"
                     accept=".pdf,image/*"
@@ -4526,13 +4940,28 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                   />
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={guardandoMovimiento}
-                  className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg"
-                >
-                  {guardandoMovimiento ? 'Guardando Apunte...' : '💾 Registrar Apunte Contable'}
-                </button>
+                <div className="flex gap-2">
+                  {editandoMovimiento && (
+                    <button
+                      type="button"
+                      onClick={limpiarFormMovimiento}
+                      className="px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={guardandoMovimiento}
+                    className="flex-1 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg"
+                  >
+                    {guardandoMovimiento
+                      ? 'Guardando...'
+                      : editandoMovimiento
+                      ? '💾 Guardar cambios'
+                      : '💾 Registrar Apunte Contable'}
+                  </button>
+                </div>
               </form>
 
               {/* TABLA FILTRABLE DE MOVIMIENTOS */}
@@ -4651,8 +5080,18 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                             }
                             return true;
                           })
-                          .map((m) => (
-                            <tr key={m.id} className="hover:bg-slate-800/30 transition-colors">
+                          .map((m) => {
+                            const rIva = obtenerResumenIvaMovimiento(m);
+                            const tooltipTramos = rIva.tramos
+                              .map((t) => `${t.tipo}%: Base ${t.base.toFixed(2)}€ + IVA ${t.cuota.toFixed(2)}€`)
+                              .join(' | ');
+                            return (
+                            <tr
+                              key={m.id}
+                              className={`hover:bg-slate-800/30 transition-colors ${
+                                editandoMovimiento?.id === m.id ? 'bg-cyan-950/30' : ''
+                              }`}
+                            >
                               <td className="p-3 text-slate-300 font-mono text-[11px] whitespace-nowrap">
                                 {m.fecha}
                               </td>
@@ -4678,17 +5117,28 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                                 </span>
                               </td>
                               <td className="p-3 text-right font-mono text-slate-300">
-                                {Number(m.base_imponible || 0).toFixed(2)} €
+                                {rIva.baseTotal.toFixed(2)} €
                               </td>
-                              <td className="p-3 text-center font-mono text-slate-400 text-[11px]">
-                                {Number(m.tipo_iva || 0)}%
+                              <td className="p-3 text-center font-mono text-slate-400 text-[11px]" title={tooltipTramos}>
+                                {rIva.esMultiIva ? (
+                                  <div className="inline-flex flex-col items-center gap-0.5">
+                                    <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] font-black">
+                                      MIXTO
+                                    </span>
+                                    <span className="text-[9px] text-slate-400 whitespace-nowrap">
+                                      {rIva.tramos.map((t) => `${t.tipo}%: ${t.cuota.toFixed(2)}€`).join(' · ')}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span>{Number(m.tipo_iva || 0)}%</span>
+                                )}
                               </td>
                               <td
                                 className={`p-3 text-right font-mono font-black text-xs ${
                                   m.tipo === 'INGRESO' ? 'text-emerald-400' : 'text-rose-400'
                                 }`}
                               >
-                                {Number(m.total || 0).toFixed(2)} €
+                                {rIva.totalDocumento.toFixed(2)} €
                               </td>
                               <td className="p-3 text-center">
                                 <button
@@ -4757,17 +5207,28 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                                 )}
                               </td>
                               <td className="p-3 text-center">
-                                <button
-                                  type="button"
-                                  onClick={() => eliminarMovimientoGeneral(m.id)}
-                                  className="text-slate-500 hover:text-rose-400 p-1 rounded transition-colors cursor-pointer"
-                                  title="Eliminar apunte"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
+                                <div className="inline-flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => iniciarEdicionMovimiento(m)}
+                                    className="text-slate-400 hover:text-cyan-400 p-1 rounded transition-colors cursor-pointer"
+                                    title="Editar apunte"
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => eliminarMovimientoGeneral(m.id)}
+                                    className="text-slate-500 hover:text-rose-400 p-1 rounded transition-colors cursor-pointer"
+                                    title="Eliminar apunte"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </div>
                               </td>
                             </tr>
-                          ))
+                            );
+                          })
                       )}
                     </tbody>
                   </table>
