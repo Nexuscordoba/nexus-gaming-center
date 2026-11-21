@@ -73,6 +73,9 @@ export default function KitchenDisplay() {
   // Estado para la Previsión de Cocina (Cocinera)
   const [mostrarPrevisionGuisos, setMostrarPrevisionGuisos] = useState<boolean>(false);
   const [mostrarFichajeRapido, setMostrarFichajeRapido] = useState<boolean>(false);
+  const [vistaCocina, setVistaCocina] = useState<'activas' | 'listos_recientes'>('activas');
+  const [recienCompletadasIds, setRecienCompletadasIds] = useState<string[]>([]);
+  const timeoutsCompletadasRef = useRef<Record<string, number>>({});
   const [guisosProgramados, setGuisosProgramados] = useState<GuisoProgramado[]>([]);
   const [reservasGuisos, setReservasGuisos] = useState<ReservaGuiso[]>([]);
   const [, setMesasLocal] = useState<MesaLocal[]>([]);
@@ -310,8 +313,30 @@ export default function KitchenDisplay() {
       supabase.removeChannel(channel);
       clearInterval(interval);
       clearInterval(clockInterval);
+      Object.values(timeoutsCompletadasRef.current).forEach((tId) => window.clearTimeout(tId));
     };
   }, [cargarComandas]);
+
+  const programarOcultacionComanda = useCallback((id: string) => {
+    const key = String(id);
+    if (timeoutsCompletadasRef.current[key]) {
+      window.clearTimeout(timeoutsCompletadasRef.current[key]);
+    }
+    setRecienCompletadasIds((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    timeoutsCompletadasRef.current[key] = window.setTimeout(() => {
+      setRecienCompletadasIds((prev) => prev.filter((item) => item !== key));
+      delete timeoutsCompletadasRef.current[key];
+    }, 4000);
+  }, []);
+
+  const cancelarOcultacionComanda = useCallback((id: string) => {
+    const key = String(id);
+    if (timeoutsCompletadasRef.current[key]) {
+      window.clearTimeout(timeoutsCompletadasRef.current[key]);
+      delete timeoutsCompletadasRef.current[key];
+    }
+    setRecienCompletadasIds((prev) => prev.filter((item) => item !== key));
+  }, []);
 
   // Paso 1: Marcar o desmarcar un plato (y sus modificadores ├─ asociados) como "Listo"
   const marcarPlatoListo = async (
@@ -348,6 +373,12 @@ export default function KitchenDisplay() {
         Boolean(it.listo || it.estado_cocina === 'listo' || it.entregado || it.estado_cocina === 'servido')
       );
       const nuevoEstadoComanda: Comanda['estado'] = todosListosEnCocina ? 'listo' : 'pendiente';
+
+      if (todosListosEnCocina) {
+        programarOcultacionComanda(String(comandaId));
+      } else {
+        cancelarOcultacionComanda(String(comandaId));
+      }
 
       setComandas((prev) =>
         prev.map((c) =>
@@ -389,6 +420,12 @@ export default function KitchenDisplay() {
 
       const nuevoEstadoItem: ItemComanda['estado_cocina'] = revertirAPendiente ? 'pendiente' : 'listo';
       const nuevoEstadoComanda: Comanda['estado'] = revertirAPendiente ? 'pendiente' : 'listo';
+
+      if (!revertirAPendiente) {
+        programarOcultacionComanda(String(comandaId));
+      } else {
+        cancelarOcultacionComanda(String(comandaId));
+      }
 
       const nuevosItems: ItemComanda[] = comandaActual.items.map((item) => {
         if (Boolean(item.entregado) || item.estado_cocina === 'servido') {
@@ -455,24 +492,39 @@ export default function KitchenDisplay() {
       .sort((a, b) => b.total - a.total);
   }, [comandas, esItemCocina]);
 
-  // Auto-ordenar: primero las comandas con platos pendientes (más antiguas arriba), y al final las ya listas
-  const comandasOrdenadas = useMemo(() => {
-    return [...comandas].sort((a, b) => {
-      const aTodosListos =
-        Array.isArray(a.items) &&
-        a.items.length > 0 &&
-        a.items.every((it) => Boolean(it.listo || it.estado_cocina === 'listo' || it.entregado || it.estado_cocina === 'servido'));
-      const bTodosListos =
-        Array.isArray(b.items) &&
-        b.items.length > 0 &&
-        b.items.every((it) => Boolean(it.listo || it.estado_cocina === 'listo' || it.entregado || it.estado_cocina === 'servido'));
+  const esComandaListaEnCocina = useCallback((c: Comanda): boolean => {
+    if (c.estado === 'listo' || c.estado === 'servido') return true;
+    if (!Array.isArray(c.items) || c.items.length === 0) return false;
+    return c.items.every((it) =>
+      Boolean(it.listo || it.estado_cocina === 'listo' || it.entregado || it.estado_cocina === 'servido')
+    );
+  }, []);
 
-      if (aTodosListos !== bTodosListos) {
-        return aTodosListos ? 1 : -1;
-      }
-      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-    });
-  }, [comandas]);
+  // Comandas activas en fuego (oculta automáticamente las ya listas salvo las marcadas en los últimos 4s)
+  const comandasEnFuego = useMemo(() => {
+    return comandas
+      .filter((c) => !esComandaListaEnCocina(c) || recienCompletadasIds.includes(String(c.id)))
+      .sort((a, b) => {
+        const aLista = esComandaListaEnCocina(a);
+        const bLista = esComandaListaEnCocina(b);
+        if (aLista !== bLista) return aLista ? 1 : -1;
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      });
+  }, [comandas, esComandaListaEnCocina, recienCompletadasIds]);
+
+  // Historial reciente de comandas listas del turno (últimas 12h) para poder revertir en caso de error
+  const comandasListasRecientes = useMemo(() => {
+    const limiteMs = ahoraMs - 12 * 60 * 60 * 1000;
+    return comandas
+      .filter((c) => {
+        if (!esComandaListaEnCocina(c)) return false;
+        const ts = new Date(c.created_at).getTime();
+        return Number.isNaN(ts) || ts >= limiteMs;
+      })
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [comandas, esComandaListaEnCocina, ahoraMs]);
+
+  const comandasOrdenadas = vistaCocina === 'activas' ? comandasEnFuego : comandasListasRecientes;
 
   const agruparItemsConModificadores = (items: ItemComanda[]): GrupoPlatoConHijos[] => {
     const grupos: GrupoPlatoConHijos[] = [];
@@ -521,9 +573,31 @@ export default function KitchenDisplay() {
             <span>🍲 Platos Confirmados (Previsión Cocina)</span>
           </button>
 
-          <span className="text-xs font-mono text-amber-400 bg-amber-950/40 px-3.5 py-1.5 rounded-xl border border-amber-500/20 hidden sm:inline">
-            {comandas.filter((c) => c.estado === 'pendiente').length} Comanda(s) en fuego
-          </span>
+          <div className="flex items-center gap-1 bg-white/5 border border-white/10 p-1 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setVistaCocina('activas')}
+              className={`px-3 py-1 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                vistaCocina === 'activas'
+                  ? 'bg-amber-500 text-slate-950 shadow'
+                  : 'text-amber-300 hover:bg-white/5'
+              }`}
+            >
+              🔥 {comandas.filter((c) => !esComandaListaEnCocina(c)).length} En fuego
+            </button>
+            <button
+              type="button"
+              onClick={() => setVistaCocina('listos_recientes')}
+              className={`px-3 py-1 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                vistaCocina === 'listos_recientes'
+                  ? 'bg-emerald-500 text-slate-950 shadow'
+                  : 'text-emerald-300 hover:bg-white/5'
+              }`}
+              title="Ver comandas marcadas como listas recientemente para revertir en caso de error"
+            >
+              ✅ Listos ({comandasListasRecientes.length})
+            </button>
+          </div>
 
           <button
             type="button"
@@ -547,7 +621,7 @@ export default function KitchenDisplay() {
       </header>
 
       {/* 1. BARRA SUPERIOR DE TOTALIZADOR DE PRODUCCIÓN POR LOTES (ALL-DAY COUNTER) */}
-      {lotesPendientes.length > 0 && (
+      {vistaCocina === 'activas' && lotesPendientes.length > 0 && (
         <section className="mb-6 p-3.5 rounded-2xl bg-[#0b0d14] border border-amber-500/30 shadow-lg">
           <div className="flex items-center gap-2 mb-2.5 text-[11px] font-black uppercase tracking-wider text-amber-400">
             <Layers className="h-4 w-4" />
@@ -576,7 +650,11 @@ export default function KitchenDisplay() {
         ) : comandasOrdenadas.length === 0 ? (
           <div className="text-center py-24 space-y-3">
             <Utensils className="h-12 w-12 text-slate-600 mx-auto" />
-            <p className="text-slate-400 text-base font-semibold">¡Todo al día! No hay platos pendientes en cocina.</p>
+            <p className="text-slate-400 text-base font-semibold">
+              {vistaCocina === 'activas'
+                ? '¡Todo al día! No hay platos pendientes en cocina.'
+                : 'No hay comandas marcadas como listas en las últimas horas.'}
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
