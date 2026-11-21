@@ -826,49 +826,52 @@ export default function App() {
         </div>
       )}
 
-      <header className="border-b border-white/[0.06] bg-[#06070a]/90 backdrop-blur sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <header className="border-b border-white/[0.06] bg-[#06070a]/95 backdrop-blur sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto px-3 sm:px-5 h-16 flex items-center justify-between gap-2">
           <div 
             onClick={() => navigateTo('home')}
-            className="flex items-center gap-3 cursor-pointer"
+            className="flex items-center gap-2 sm:gap-3 cursor-pointer shrink-0"
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-950/40 text-cyan-400 shadow-[0_0_15px_rgba(0,242,254,0.15)]">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-950/40 text-cyan-400 shadow-[0_0_15px_rgba(0,242,254,0.15)] shrink-0">
               <Gamepad2 className="h-5 w-5" />
             </div>
-            <span className="font-bold text-white tracking-wider text-base">
-              NEXUS <span className="text-cyan-400">GAMING CENTER</span>
+            <span className="font-bold text-white tracking-wider text-sm sm:text-base whitespace-nowrap">
+              NEXUS <span className="text-cyan-400 hidden sm:inline">GAMING CENTER</span>
             </span>
           </div>
 
-          <nav className="flex items-center gap-3 sm:gap-5 text-sm">
+          <nav className="flex items-center gap-1.5 sm:gap-3 text-sm shrink-0">
             {currentView !== 'home' ? (
               <>
                 <button
                   onClick={() => navigateTo('bar')}
-                  className={`font-semibold transition-colors flex items-center gap-1.5 cursor-pointer text-xs sm:text-sm ${
+                  className={`h-9 px-2.5 sm:px-3 rounded-xl border text-xs sm:text-sm font-semibold transition-all flex items-center gap-1 sm:gap-1.5 cursor-pointer whitespace-nowrap ${
                     currentView === 'bar'
-                      ? 'text-amber-400 underline underline-offset-4'
-                      : 'text-slate-300 hover:text-amber-300'
+                      ? 'border-amber-400/60 bg-amber-500/20 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
+                      : 'border-white/10 bg-white/5 text-slate-300 hover:text-amber-300 hover:bg-white/10'
                   }`}
                 >
-                  <Coffee className="h-4 w-4" />
-                  <span>Cafetería & Menú</span>
+                  <Coffee className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-400 shrink-0" />
+                  <span className="hidden sm:inline">Cafetería & Menú</span>
+                  <span className="sm:hidden">Menú</span>
                 </button>
                 <button
                   onClick={() => navigateTo('guisos')}
-                  className={`font-bold transition-colors flex items-center gap-1.5 cursor-pointer text-xs sm:text-sm px-3 py-1.5 rounded-xl border ${
+                  className={`h-9 px-2.5 sm:px-3 rounded-xl border text-xs sm:text-sm font-bold transition-all flex items-center gap-1 sm:gap-1.5 cursor-pointer whitespace-nowrap ${
                     currentView === 'guisos'
                       ? 'border-amber-400/60 bg-amber-500/20 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
                       : 'border-amber-500/30 bg-amber-950/30 text-amber-300 hover:bg-amber-900/40'
                   }`}
                 >
-                  <span>🍲 Guisos de la Casa</span>
+                  <span className="shrink-0">🍲</span>
+                  <span className="hidden sm:inline">Guisos de la Casa</span>
+                  <span className="sm:hidden">Guisos</span>
                 </button>
                 <button
                   onClick={() => navigateTo('home')}
-                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-slate-300 hover:text-white transition-all cursor-pointer"
+                  className="h-9 px-2.5 sm:px-3.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs sm:text-sm font-semibold text-slate-300 hover:text-white transition-all flex items-center gap-1 sm:gap-1.5 cursor-pointer whitespace-nowrap"
                 >
-                  <ArrowLeft className="h-4 w-4" />
+                  <ArrowLeft className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
                   <span className="hidden sm:inline">Volver a la web principal</span>
                   <span className="sm:hidden">Volver</span>
                 </button>
@@ -877,21 +880,27 @@ export default function App() {
               <>
                 <button 
                   onClick={() => navigateTo('bar')} 
-                  className="text-amber-400 font-semibold hover:text-amber-300 transition-colors flex items-center gap-1.5 cursor-pointer"
+                  className="h-9 px-2.5 sm:px-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-amber-400 font-semibold hover:text-amber-300 transition-all flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm cursor-pointer whitespace-nowrap"
                 >
-                  <Coffee className="h-4 w-4" /> Cafetería & Menú
+                  <Coffee className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                  <span className="hidden sm:inline">Cafetería & Menú</span>
+                  <span className="sm:hidden">Menú</span>
                 </button>
                 <button 
                   onClick={() => navigateTo('guisos')} 
-                  className="text-orange-400 font-bold hover:text-orange-300 transition-colors flex items-center gap-1.5 cursor-pointer px-3 py-1.5 rounded-xl border border-orange-500/30 bg-orange-950/30 hover:bg-orange-900/40"
+                  className="h-9 px-2.5 sm:px-3 rounded-xl border border-orange-500/30 bg-orange-950/30 hover:bg-orange-900/40 text-orange-400 font-bold hover:text-orange-300 transition-all flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm cursor-pointer whitespace-nowrap"
                 >
-                  <span>🍲 Guisos de la Casa</span>
+                  <span className="shrink-0">🍲</span>
+                  <span className="hidden sm:inline">Guisos de la Casa</span>
+                  <span className="sm:hidden">Guisos</span>
                 </button>
                 <a 
                   href="https://escape.nexusgamingcenter.es" 
-                  className="text-cyan-400 font-semibold hover:text-cyan-300 transition-colors flex items-center gap-1.5"
+                  className="h-9 px-2.5 sm:px-3 rounded-xl border border-cyan-500/30 bg-cyan-950/30 hover:bg-cyan-900/40 text-cyan-400 font-semibold hover:text-cyan-300 transition-all flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm whitespace-nowrap"
                 >
-                  <KeyRound className="h-4 w-4" /> Escape Rooms
+                  <KeyRound className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                  <span className="hidden sm:inline">Escape Rooms</span>
+                  <span className="sm:hidden">Escape</span>
                 </a>
                 <a href="#eventos-tarde" className="hidden md:inline hover:text-cyan-400 transition-colors">
                   Eventos

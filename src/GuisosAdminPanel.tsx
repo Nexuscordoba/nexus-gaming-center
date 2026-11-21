@@ -629,14 +629,18 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     const pBarra = Math.max(0, parseFloat(precioBarra) || 0);
     const pTakeaway = Math.max(0, parseFloat(precioTakeaway) || 0);
     const refFecha = diasDestino[0];
-    const diffDiasCalculado = fechaCorte
-      ? calcularDiferenciaDiasCorte(refFecha, fechaCorte)
-      : margenDiasCorte;
+    // Margen relativo de días de corte respecto a la fecha de servicio (por defecto 1 día antes a las 21:00)
+    const margenDias =
+      margenDiasCorte && margenDiasCorte > 0
+        ? margenDiasCorte
+        : fechaCorte && refFecha
+        ? Math.max(1, calcularDiferenciaDiasCorte(refFecha, fechaCorte))
+        : 1;
 
     setGuardandoGuiso(true);
     try {
       if (editandoGuisoId) {
-        const fechaCorteFinal = fechaCorte || calcularFechaCorteMenosDias(fechaPlato, 1);
+        const fechaCorteFinal = fechaCorte || calcularFechaCorteMenosDias(fechaPlato, margenDias);
         const guisoPrevio = guisos.find((g) => g.id === editandoGuisoId);
         // Regla de permanencia: un plato confirmado NUNCA vuelve a 'buscando_minimo'
         const estadoFinal =
@@ -670,13 +674,13 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
         }
         notificar(`Guiso "${payloadBase.nombre_plato}" actualizado correctamente.`, 'ok');
       } else {
-        // Inserción masiva para todos los días seleccionados con cálculo automático de fecha_corte
+        // Inserción para todos los días seleccionados: CADA DÍA calcula dinámicamente su fecha_corte relativa a su propia fecha_servicio
         const filasConFechaCorte = diasDestino.map((fDia) => ({
           fecha: fDia,
           fecha_corte:
             diasDestino.length === 1 && fechaCorte
               ? fechaCorte
-              : calcularFechaCorteMenosDias(fDia, diffDiasCalculado),
+              : calcularFechaCorteMenosDias(fDia, margenDias),
           hora_corte: (horaCorte || '21:00').trim(),
           nombre_plato: nombrePlato.trim(),
           descripcion: descripcionPlato.trim(),
@@ -745,13 +749,15 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     if (!ok) return;
 
     const fechaCorteOrig = obtenerFechaCorteEfectiva(guiso);
-    const margenOriginal = calcularDiferenciaDiasCorte(guiso.fecha, fechaCorteOrig);
+    const diffCalc = calcularDiferenciaDiasCorte(guiso.fecha, fechaCorteOrig);
+    const margenOriginal = diffCalc > 0 ? diffCalc : 1;
+    const horaCorteEfectiva = (guiso.hora_corte || '21:00').trim();
 
     try {
       const clonesConCorte = diasRestantes.map((fDestino) => ({
         fecha: fDestino,
         fecha_corte: calcularFechaCorteMenosDias(fDestino, margenOriginal),
-        hora_corte: guiso.hora_corte || '21:00',
+        hora_corte: horaCorteEfectiva,
         nombre_plato: guiso.nombre_plato,
         descripcion: guiso.descripcion || '',
         min_raciones: Number(guiso.min_raciones || 8),
@@ -886,18 +892,37 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     try {
       const { error } = await supabase
         .from('guisos_programados')
-        .update({ estado: 'cancelado' })
+        .update({ estado: 'cancelado', cierre_procesado: true })
         .eq('id', guiso.id);
       if (error) throw error;
 
-      // Notificar a los clientes apuntados sobre el Plan B y opciones alternativas
-      const clientesDeEsteGuiso = reservas.filter((r) => r.guiso_id === guiso.id);
+      // Si ya se procesó el cierre previamente, no re-enviar emails
+      if ((guiso as any).cierre_procesado) {
+        notificar(`Plato "${guiso.nombre_plato}" cancelado. Los avisos ya se habían enviado previamente.`, 'info');
+        await cargarGuisosYReservas();
+        return;
+      }
+
+      // Notificar a los clientes apuntados sobre el Plan B evitando duplicados
+      const clientesDeEsteGuiso = reservas.filter(
+        (r) =>
+          r.guiso_id === guiso.id &&
+          r.estado_pago !== 'cancelado' &&
+          r.estado_pago !== 'expirado' &&
+          !(r as any).aviso_cancelacion_enviado
+      );
       const otrosConfirmados = guisos.filter(
         (g) => g.fecha === guiso.fecha && g.id !== guiso.id && g.estado === 'confirmado'
       );
       let emailsEnviados = 0;
       for (const res of clientesDeEsteGuiso) {
         if (res.email && res.email.includes('@')) {
+          // Bloqueo atómico antes de enviar email
+          await supabase
+            .from('reservas_guisos')
+            .update({ aviso_cancelacion_enviado: true })
+            .eq('id', res.id);
+
           dispararEmailGuiso({
             tipo: 'plato_cancelado_plan_b',
             reserva: res,

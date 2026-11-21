@@ -37,10 +37,15 @@ CREATE POLICY "Modificacion de config_guisos"
   USING (true)
   WITH CHECK (true);
 
--- 2. Añadir expira_pago_at, aviso_expiracion_enviado y soportar estados expirado y cancelado en reservas_guisos
+-- 2. Añadir expira_pago_at, aviso_expiracion_enviado, aviso_cancelacion_enviado y soportar estados expirado y cancelado en reservas_guisos
 ALTER TABLE public.reservas_guisos
   ADD COLUMN IF NOT EXISTS expira_pago_at timestamptz,
-  ADD COLUMN IF NOT EXISTS aviso_expiracion_enviado boolean DEFAULT false;
+  ADD COLUMN IF NOT EXISTS aviso_expiracion_enviado boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS aviso_cancelacion_enviado boolean DEFAULT false;
+
+-- Bandera de cierre / cancelación idempotente en guisos_programados
+ALTER TABLE public.guisos_programados
+  ADD COLUMN IF NOT EXISTS cierre_procesado boolean DEFAULT false;
 
 -- Si existe una restricción CHECK en estado_pago, actualizarla para admitir 'expirado' y 'cancelado'
 DO $$

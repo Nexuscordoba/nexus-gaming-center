@@ -5,6 +5,9 @@ declare const process: { env: { [key: string]: string | undefined } };
 const apiKey = process.env.RESEND_API_KEY || '';
 const resend = new Resend(apiKey);
 
+// Cache de idempotencia en memoria para evitar envíos duplicados de cancelaciones
+const enviosCancelacionProcesados = new Set<string>();
+
 export default async function handler(req: any, res: any) {
   // Configuración de CORS
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -30,6 +33,7 @@ export default async function handler(req: any, res: any) {
 
   const {
     tipo = 'reserva_en_cola', // 'reserva_en_cola' | 'plato_confirmado_pago' | 'plato_cancelado_plan_b' | 'reserva_cancelada' | 'plato_cambiado' | 'reserva_expirada'
+    reservaId = '',
     email,
     nombre,
     telefono,
@@ -54,6 +58,24 @@ export default async function handler(req: any, res: any) {
   const emailDestino = String(email || '').trim().toLowerCase();
   if (!emailDestino || !emailDestino.includes('@')) {
     return res.status(400).json({ error: 'Correo electrónico no válido o ausente' });
+  }
+
+  // Control estricto de idempotencia para tipos de cancelación/expiración
+  const esAvisoCancelacionOExpiracion =
+    tipo === 'reserva_cancelada' ||
+    tipo === 'reserva_expirada' ||
+    tipo === 'plato_cancelado_plan_b';
+
+  if (esAvisoCancelacionOExpiracion && (reservaId || emailDestino)) {
+    const claveIdempotencia = `${tipo}_${reservaId || emailDestino}_${fecha || ''}`;
+    if (enviosCancelacionProcesados.has(claveIdempotencia)) {
+      return res.status(200).json({
+        ok: true,
+        bloqueadoPorIdempotencia: true,
+        mensaje: 'Aviso de cancelación/expiración ya enviado previamente. Omitiendo duplicado.'
+      });
+    }
+    enviosCancelacionProcesados.add(claveIdempotencia);
   }
 
   const emailEmpresa = process.env.NEXUS_ALERT_EMAIL || 'nexuscordoba26@gmail.com';

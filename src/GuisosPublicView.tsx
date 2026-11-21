@@ -256,8 +256,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       .then(setConfigPago)
       .catch((e) => console.warn('Aviso cargando config_guisos:', e));
 
-    // Limpieza de reservas con plazo de pago expirado
-    limpiarReservasExpiradasEnDB().catch((e) =>
+    // Limpieza de reservas con plazo de pago expirado (estrictamente SIN disparo de emails desde el cliente público)
+    limpiarReservasExpiradasEnDB({ notificarPorEmail: false }).catch((e) =>
       console.warn('Aviso limpiando reservas expiradas:', e)
     );
 
@@ -928,10 +928,15 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
     setMensajeGestionOk(null);
 
     try {
-      // 1. Marcar reserva como cancelada
+      // 1. Marcar reserva como cancelada y registrar aviso_cancelacion_enviado atómicamente
+      const yaEnviadoAviso = Boolean((reservaSeleccionada as any).aviso_cancelacion_enviado);
+
       const { error: errRes } = await supabase
         .from('reservas_guisos')
-        .update({ estado_pago: 'cancelado' })
+        .update({
+          estado_pago: 'cancelado',
+          aviso_cancelacion_enviado: true
+        })
         .eq('id', reservaSeleccionada.id);
 
       if (errRes) throw errRes;
@@ -944,19 +949,23 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
           .eq('reserva_guiso_id', reservaSeleccionada.id);
       } catch {}
 
-      // 3. Enviar email de cancelación si tenía correo
+      // 3. Enviar email de cancelación SOLO SI no se había enviado antes (idempotencia)
       const guisoActual = guisos.find((g) => g.id === reservaSeleccionada.guiso_id);
-      if (guisoActual && reservaSeleccionada.email && reservaSeleccionada.email.includes('@')) {
+      if (!yaEnviadoAviso && guisoActual && reservaSeleccionada.email && reservaSeleccionada.email.includes('@')) {
         dispararEmailGuiso({
           tipo: 'reserva_cancelada',
-          reserva: reservaSeleccionada,
+          reserva: {
+            ...reservaSeleccionada,
+            aviso_cancelacion_enviado: true
+          },
           guiso: guisoActual
         }).catch((e) => console.warn('Error enviando email cancelacion:', e));
       }
 
       setReservaSeleccionada({
         ...reservaSeleccionada,
-        estado_pago: 'cancelado'
+        estado_pago: 'cancelado',
+        aviso_cancelacion_enviado: true
       });
       setConfirmandoCancelacion(false);
       setMensajeGestionOk(
@@ -975,8 +984,8 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
       {/* HERO COMPACTO DE GUISOS DE LA CASA (#guisos) */}
       <section className="relative overflow-hidden py-10 sm:py-14 border-b border-white/[0.06] bg-gradient-to-b from-[#12101b] via-[#0c0d14] to-[#08090d]">
         <div className="max-w-5xl mx-auto px-5 text-center relative z-10">
-          <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-950/80 backdrop-blur-md px-3.5 py-1 text-[11px] font-bold text-amber-300 mb-4 shadow-[0_0_25px_rgba(245,158,11,0.2)]">
-            <Flame className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-950/80 backdrop-blur-md px-3.5 py-1.5 text-xs sm:text-sm font-bold text-amber-300 mb-4 shadow-[0_0_25px_rgba(245,158,11,0.2)]">
+            <Flame className="w-4 h-4 text-amber-400 animate-pulse" />
             <span>Cocina Casera Bajo Demanda · Cero Desperdicio · Chinales 45</span>
           </div>
 
@@ -987,44 +996,44 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
             </span>
           </h1>
 
-          <p className="mt-3 text-xs sm:text-base text-slate-300 max-w-2xl mx-auto leading-relaxed">
+          <p className="mt-3 text-sm sm:text-base text-slate-300 max-w-2xl mx-auto leading-relaxed">
             Cada día proponemos nuestros mejores guisos tradicionales de cuchara.{' '}
             <strong className="text-amber-300">Apúntate gratis a tu plato favorito:</strong> en cuanto alcanzamos el mínimo de raciones, encendemos los fogones y te avisamos.
           </p>
 
           {/* PASOS EXPLICATIVOS COMPACTOS */}
-          <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5 max-w-3xl mx-auto text-left">
-            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3 flex items-start gap-2.5">
-              <div className="h-7 w-7 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center font-black text-xs shrink-0">
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl mx-auto text-left">
+            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3.5 flex items-start gap-3">
+              <div className="h-8 w-8 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center font-black text-sm shrink-0">
                 1
               </div>
               <div>
-                <h3 className="text-[11px] font-black text-white uppercase">Elige día y plato</h3>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <h3 className="text-xs sm:text-sm font-black text-white uppercase">Elige día y plato</h3>
+                <p className="text-xs sm:text-sm text-slate-300 mt-0.5">
                   Reserva para tomar en el bar o para llevar.
                 </p>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3 flex items-start gap-2.5">
-              <div className="h-7 w-7 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-black text-xs shrink-0">
+            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3.5 flex items-start gap-3">
+              <div className="h-8 w-8 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-black text-sm shrink-0">
                 2
               </div>
               <div>
-                <h3 className="text-[11px] font-black text-white uppercase">Alcanzamos el mínimo</h3>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <h3 className="text-xs sm:text-sm font-black text-white uppercase">Alcanzamos el mínimo</h3>
+                <p className="text-xs sm:text-sm text-slate-300 mt-0.5">
                   No pagas nada al apuntarte mientras busca mínimo.
                 </p>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3 flex items-start gap-2.5">
-              <div className="h-7 w-7 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0">
+            <div className="rounded-2xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur p-3.5 flex items-start gap-3">
+              <div className="h-8 w-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center font-black text-sm shrink-0">
                 3
               </div>
               <div>
-                <h3 className="text-[11px] font-black text-white uppercase">¡A los fogones!</h3>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <h3 className="text-xs sm:text-sm font-black text-white uppercase">¡A los fogones!</h3>
+                <p className="text-xs sm:text-sm text-slate-300 mt-0.5">
                   Al confirmarse, formalizas tu reserva y lo disfrutas.
                 </p>
               </div>
@@ -1142,10 +1151,10 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   : 'bg-[#131722]/80 border-white/10 text-slate-300 hover:border-white/25'
               }`}
             >
-              <span className="text-[10px] font-black uppercase text-amber-400">Semana completa</span>
+              <span className="text-xs font-black uppercase text-amber-400">Semana completa</span>
               <div>
-                <span className="text-xs font-black mt-0.5 block">Lun - Dom</span>
-                <span className="text-[10px] text-slate-400 block">{rangoSemanaTexto}</span>
+                <span className="text-xs sm:text-sm font-black mt-0.5 block">Lun - Dom</span>
+                <span className="text-xs text-slate-400 block">{rangoSemanaTexto}</span>
               </div>
             </button>
 
@@ -1166,27 +1175,27 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                    <span className="text-xs font-black uppercase tracking-wider text-slate-300">
                       {dia.nombre}
                     </span>
                     {dia.esHoy && (
-                      <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-cyan-500 text-slate-950">
+                      <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-cyan-500 text-slate-950">
                         Hoy
                       </span>
                     )}
                   </div>
                   <div className="mt-1">
-                    <span className="text-xs font-bold block text-white">{dia.diaMes}</span>
+                    <span className="text-xs sm:text-sm font-bold block text-white">{dia.diaMes}</span>
                     {guisosDelDia.length > 0 ? (
                       <span
-                        className={`text-[10px] font-black mt-0.5 block ${
+                        className={`text-xs font-black mt-0.5 block ${
                           confirmadosDia > 0 ? 'text-emerald-400' : 'text-amber-400'
                         }`}
                       >
                         {guisosDelDia.length} {guisosDelDia.length === 1 ? 'guiso' : 'guisos'}
                       </span>
                     ) : (
-                      <span className="text-[10px] text-slate-500 mt-0.5 block">Sin programar</span>
+                      <span className="text-xs text-slate-400 mt-0.5 block">Sin programar</span>
                     )}
                   </div>
                 </button>
@@ -1285,28 +1294,28 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   >
                     <div className="space-y-2.5">
                       <div className="flex flex-wrap items-center justify-between gap-1.5">
-                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300">
+                        <span className="text-xs font-bold uppercase px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300">
                           📅 {formatearFechaHumana(guiso.fecha)}
                         </span>
-                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 flex items-center gap-1">
-                          <AlertTriangle className="h-3 w-3" />
+                        <span className="text-xs font-bold uppercase px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 flex items-center gap-1">
+                          <AlertTriangle className="h-3.5 w-3.5" />
                           Sin mínimo
                         </span>
                       </div>
 
                       <div>
-                        <h3 className="text-base font-black text-slate-300 line-through decoration-rose-500/70">
+                        <h3 className="text-base sm:text-lg font-black text-slate-300 line-through decoration-rose-500/70">
                           {guiso.nombre_plato}
                         </h3>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
+                        <p className="text-xs sm:text-sm text-slate-300 mt-1">
                           No alcanzó el mínimo antes del cierre ({formatearFechaCorteHumana(guiso)}).
                         </p>
                       </div>
 
                       {/* 1º ALTERNATIVA DINÁMICA: OTROS GUISOS DE ESE MISMO DÍA QUE SÍ ESTÁN CONFIRMADOS */}
                       <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3 space-y-2">
-                        <p className="text-[11px] font-black text-emerald-300 flex items-center gap-1">
-                          <Flame className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                        <p className="text-xs sm:text-sm font-black text-emerald-300 flex items-center gap-1.5">
+                          <Flame className="h-4 w-4 text-emerald-400 shrink-0" />
                           <span>¡No te quedes con hambre! Guisos confirmados hoy:</span>
                         </p>
 
@@ -1318,25 +1327,25 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                               return (
                                 <div
                                   key={alt.id}
-                                  className="flex items-center justify-between gap-2 bg-[#0c0d14]/90 border border-emerald-500/30 rounded-xl p-2"
+                                  className="flex items-center justify-between gap-2 bg-[#0c0d14]/90 border border-emerald-500/30 rounded-xl p-2.5"
                                 >
-                                  <div className="flex items-center gap-2 min-w-0">
+                                  <div className="flex items-center gap-2.5 min-w-0">
                                     {fotoAlt ? (
                                       <img
                                         src={fotoAlt}
                                         alt={alt.nombre_plato}
-                                        className="w-9 h-9 rounded-lg object-cover shrink-0 border border-white/10"
+                                        className="w-10 h-10 rounded-lg object-cover shrink-0 border border-white/10"
                                       />
                                     ) : (
-                                      <div className="w-9 h-9 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-sm shrink-0">
+                                      <div className="w-10 h-10 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-base shrink-0">
                                         🍲
                                       </div>
                                     )}
                                     <div className="min-w-0">
-                                      <h4 className="text-[11px] font-black text-white truncate">
+                                      <h4 className="text-xs sm:text-sm font-black text-white truncate">
                                         {alt.nombre_plato}
                                       </h4>
-                                      <p className="text-[10px] text-emerald-400 font-bold">
+                                      <p className="text-xs text-emerald-400 font-bold">
                                         🪑 {Number(alt.precio_barra).toFixed(2)}€ · 🛍️{' '}
                                         {Number(alt.precio_takeaway).toFixed(2)}€
                                       </p>
@@ -1346,12 +1355,12 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                                     <button
                                       type="button"
                                       onClick={() => abrirModalReserva(alt)}
-                                      className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[10px] shrink-0 cursor-pointer transition-all"
+                                      className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs shrink-0 cursor-pointer transition-all"
                                     >
                                       ⚡ Reservar
                                     </button>
                                   ) : (
-                                    <span className="text-[9px] font-bold text-amber-300 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 shrink-0">
+                                    <span className="text-xs font-bold text-amber-300 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 shrink-0">
                                       En barra
                                     </span>
                                   )}
@@ -1360,7 +1369,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                             })}
                           </div>
                         ) : (
-                          <p className="text-[11px] text-slate-300">
+                          <p className="text-xs sm:text-sm text-slate-300">
                             Tenemos nuestra cocina de sala a pleno rendimiento con toda la carta principal.
                           </p>
                         )}
@@ -1372,11 +1381,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       <button
                         type="button"
                         onClick={onIrACartaBar}
-                        className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-95 text-slate-950 font-black text-[11px] uppercase tracking-wider shadow-[0_0_20px_rgba(245,158,11,0.25)] flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+                        className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-95 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-wider shadow-[0_0_20px_rgba(245,158,11,0.25)] flex items-center justify-center gap-1.5 cursor-pointer transition-all"
                       >
-                        <UtensilsCrossed className="h-3.5 w-3.5" />
+                        <UtensilsCrossed className="h-4 w-4" />
                         <span>Ver Carta Principal (#bar)</span>
-                        <ArrowRight className="h-3.5 w-3.5" />
+                        <ArrowRight className="h-4 w-4" />
                       </button>
                     </div>
                   </div>
@@ -1407,24 +1416,24 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                         <div className="absolute inset-0 bg-gradient-to-t from-[#0c0d14] via-[#0c0d14]/25 to-transparent" />
 
                         <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between gap-1.5">
-                          <span className="px-2.5 py-0.5 rounded-full bg-black/80 backdrop-blur-md border border-white/15 text-[10px] font-black text-white capitalize">
+                          <span className="px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md border border-white/15 text-xs font-bold text-white capitalize">
                             📅 {formatearFechaHumana(guiso.fecha)}
                           </span>
 
                           {esConfirmado ? (
-                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                            <span className="px-2.5 py-1 rounded-full bg-emerald-500 text-slate-950 text-xs font-black shadow flex items-center gap-1">
                               🟢 Confirmado
                             </span>
                           ) : (
-                            <span className="px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                            <span className="px-2.5 py-1 rounded-full bg-amber-400 text-slate-950 text-xs font-black shadow flex items-center gap-1">
                               🟡 Preventa
                             </span>
                           )}
                         </div>
 
-                        <div className="absolute bottom-2 left-2.5 right-2.5 flex items-center justify-between text-[10px] text-slate-200">
-                          <span className="inline-flex items-center gap-1 bg-black/75 backdrop-blur px-2 py-0.5 rounded-md border border-white/10">
-                            <Clock className="h-3 w-3 text-amber-400" />
+                        <div className="absolute bottom-2 left-2.5 right-2.5 flex items-center justify-between text-xs text-slate-200">
+                          <span className="inline-flex items-center gap-1 bg-black/75 backdrop-blur px-2.5 py-1 rounded-md border border-white/10">
+                            <Clock className="h-3.5 w-3.5 text-amber-400" />
                             <span>
                               Corte: <strong className="text-amber-300">{formatearFechaCorteHumana(guiso)}</strong>
                             </span>
@@ -1435,24 +1444,24 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       /* ENCABEZADO LIMPIO Y COMPACTO SIN FOTO INVENTADA */
                       <div className="relative px-4 pt-3.5 pb-3 bg-gradient-to-br from-[#171926] via-[#10131e] to-[#0c0d14] border-b border-white/[0.07]">
                         <div className="flex items-center justify-between gap-1.5">
-                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] border border-white/10 text-[10px] font-black text-amber-300 capitalize">
+                          <span className="px-2.5 py-1 rounded-full bg-white/[0.06] border border-white/10 text-xs font-bold text-amber-300 capitalize">
                             📅 {formatearFechaHumana(guiso.fecha)}
                           </span>
 
                           {esConfirmado ? (
-                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                            <span className="px-2.5 py-1 rounded-full bg-emerald-500 text-slate-950 text-xs font-black shadow flex items-center gap-1">
                               🟢 Confirmado
                             </span>
                           ) : (
-                            <span className="px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black shadow flex items-center gap-1">
+                            <span className="px-2.5 py-1 rounded-full bg-amber-400 text-slate-950 text-xs font-black shadow flex items-center gap-1">
                               🟡 Buscando mínimo
                             </span>
                           )}
                         </div>
 
                         <div className="mt-2.5 flex items-center justify-between gap-2">
-                          <div className="inline-flex items-center gap-1.5 text-[10px] text-slate-300 bg-black/40 px-2.5 py-1 rounded-lg border border-white/10">
-                            <Clock className="h-3 w-3 text-amber-400 shrink-0" />
+                          <div className="inline-flex items-center gap-1.5 text-xs text-slate-300 bg-black/40 px-2.5 py-1 rounded-lg border border-white/10">
+                            <Clock className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                             <span>
                               Cierre preventa:{' '}
                               <strong className="text-amber-300">{formatearFechaCorteHumana(guiso)}</strong>
@@ -1468,11 +1477,11 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                     {/* CONTENIDO COMPACTO DEL PLATO (p-4) */}
                     <div className="p-4 space-y-3">
                       <div>
-                        <h3 className="text-base font-black text-white leading-snug line-clamp-1">
+                        <h3 className="text-base sm:text-lg font-black text-white leading-snug line-clamp-1">
                           {guiso.nombre_plato}
                         </h3>
                         {guiso.descripcion && (
-                          <p className="text-xs text-slate-400 mt-1 leading-relaxed line-clamp-2">
+                          <p className="text-xs sm:text-sm text-slate-300 mt-1 leading-relaxed line-clamp-2">
                             {guiso.descripcion}
                           </p>
                         )}
@@ -1481,43 +1490,43 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       {/* BLOQUES DE PRECIO COMPACTOS Y ESTILIZADOS */}
                       <div className="grid grid-cols-2 gap-2">
                         <div className="rounded-xl border border-amber-500/25 bg-amber-950/20 px-2.5 py-2 flex flex-col justify-between">
-                          <span className="text-[9px] font-black uppercase text-amber-300 tracking-wide">
+                          <span className="text-[10px] sm:text-xs font-black uppercase text-amber-300 tracking-wide">
                             🪑 En el Bar
                           </span>
                           <div className="flex items-baseline justify-between mt-0.5">
-                            <span className="text-base font-black text-white">
+                            <span className="text-base sm:text-lg font-black text-white">
                               {Number(guiso.precio_barra).toFixed(2)}€
                             </span>
-                            <span className="text-[9px] text-slate-400">Sala/Mesa</span>
+                            <span className="text-[10px] sm:text-xs text-slate-400">Sala/Mesa</span>
                           </div>
                         </div>
 
                         <div className="rounded-xl border border-cyan-500/25 bg-cyan-950/20 px-2.5 py-2 flex flex-col justify-between">
-                          <span className="text-[9px] font-black uppercase text-cyan-300 tracking-wide">
+                          <span className="text-[10px] sm:text-xs font-black uppercase text-cyan-300 tracking-wide">
                             🛍️ Para llevar
                           </span>
                           <div className="flex items-baseline justify-between mt-0.5">
-                            <span className="text-base font-black text-white">
+                            <span className="text-base sm:text-lg font-black text-white">
                               {Number(guiso.precio_takeaway).toFixed(2)}€
                             </span>
-                            <span className="text-[9px] text-slate-400">Takeaway</span>
+                            <span className="text-[10px] sm:text-xs text-slate-400">Takeaway</span>
                           </div>
                         </div>
                       </div>
 
-                      {/* BARRA DE RACIONES ESTILIZADA Y PEQUEÑA */}
-                      <div className="rounded-xl bg-[#131722] border border-white/10 p-2.5 space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px]">
+                      {/* BARRA DE RACIONES ESTILIZADA */}
+                      <div className="rounded-xl bg-[#131722] border border-white/10 p-3 space-y-1.5">
+                        <div className="flex items-center justify-between text-xs sm:text-sm">
                           <span className="font-black text-white flex items-center gap-1">
                             <Flame
-                              className={`h-3.5 w-3.5 ${
+                              className={`h-4 w-4 ${
                                 esConfirmado ? 'text-emerald-400' : 'text-amber-400'
                               }`}
                             />
                             {racionesActuales}/{minRequerido} raciones
                           </span>
                           <span
-                            className={`font-black text-[10px] ${
+                            className={`font-black text-xs ${
                               esConfirmado ? 'text-emerald-400' : 'text-amber-300'
                             }`}
                           >
@@ -1527,7 +1536,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           </span>
                         </div>
 
-                        <div className="w-full h-2 bg-black/60 rounded-full overflow-hidden border border-white/10">
+                        <div className="w-full h-2.5 bg-black/60 rounded-full overflow-hidden border border-white/10">
                           <div
                             className={`h-full rounded-full transition-all duration-700 ${
                               esConfirmado
@@ -1538,7 +1547,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           />
                         </div>
 
-                        <p className="text-[10px] text-slate-400 leading-tight">
+                        <p className="text-xs text-slate-300 leading-normal">
                           {preventaCerradaPorFecha
                             ? '🔒 Preventa online finalizada. Consulta en barra.'
                             : esConfirmado
@@ -1552,7 +1561,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   {/* BOTÓN DE RESERVA COMPACTO */}
                   <div className="px-4 pb-4">
                     {preventaCerradaPorFecha ? (
-                      <div className="w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-white/10 text-slate-400 font-black text-[11px] uppercase tracking-wider flex items-center justify-center gap-1.5">
+                      <div className="w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-white/10 text-slate-400 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5">
                         <Lock className="h-3.5 w-3.5 text-rose-400 shrink-0" />
                         <span className="truncate">Cerrado ({formatearFechaCorteHumana(guiso)})</span>
                       </div>
@@ -1560,7 +1569,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       <button
                         type="button"
                         onClick={() => abrirModalReserva(guiso)}
-                        className={`w-full py-2.5 px-4 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer transition-all shadow-md ${
+                        className={`w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md ${
                           esConfirmado
                             ? 'bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:opacity-95'
                             : 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-[0_0_20px_rgba(245,158,11,0.25)] hover:opacity-95'
@@ -1568,12 +1577,12 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       >
                         {esConfirmado ? (
                           <>
-                            <Sparkles className="h-3.5 w-3.5" />
+                            <Sparkles className="h-4 w-4" />
                             <span>⚡ Reservar Ración</span>
                           </>
                         ) : (
                           <>
-                            <ChefHat className="h-3.5 w-3.5" />
+                            <ChefHat className="h-4 w-4" />
                             <span>🍲 Apuntarme Gratis (0€)</span>
                           </>
                         )}
@@ -1600,18 +1609,18 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
             {/* CABECERA DEL MODAL */}
             <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
               <div>
-                <span className="text-[10px] font-black uppercase tracking-wider text-amber-400 block">
+                <span className="text-xs font-bold uppercase tracking-wider text-amber-400 block">
                   📅 {formatearFechaHumana(guisoActivoModal.fecha)} · 🛑 Corte:{' '}
                   {formatearFechaCorteHumana(guisoActivoModal)}
                 </span>
-                <h3 className="text-xl font-black text-white mt-0.5">
+                <h3 className="text-xl sm:text-2xl font-black text-white mt-1">
                   {guisoActivoModal.nombre_plato}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={cerrarModalReserva}
-                className="text-slate-400 hover:text-white p-1.5 rounded-xl bg-white/5 cursor-pointer"
+                className="text-slate-400 hover:text-white p-2 rounded-xl bg-white/5 cursor-pointer"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -1622,13 +1631,13 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
               <form onSubmit={handleConfirmarReserva} className="space-y-4">
                 {/* AVISO DESTACADO SI EL GUISO YA ESTÁ CONFIRMADO */}
                 {guisoActivoModal.estado === 'confirmado' ? (
-                  <div className="rounded-2xl border border-emerald-500/50 bg-emerald-950/40 p-4 text-xs text-emerald-200 leading-relaxed shadow-[0_0_25px_rgba(16,185,129,0.15)]">
+                  <div className="rounded-2xl border border-emerald-500/50 bg-emerald-950/40 p-4 text-xs sm:text-sm text-emerald-200 leading-relaxed shadow-[0_0_25px_rgba(16,185,129,0.15)]">
                     <p className="font-bold">
                       ⚡ ¡Plato Confirmado y en marcha! Este guiso ya ha alcanzado su mínimo y se cocinará sin falta. Al apuntarte ahora, tu ración queda asegurada inmediatamente, por lo que en el siguiente paso formalizaremos el abono directo de tu reserva.
                     </p>
                   </div>
                 ) : (
-                  <div className="rounded-2xl border border-amber-500/30 bg-amber-950/30 p-3.5 text-xs text-amber-200/90">
+                  <div className="rounded-2xl border border-amber-500/30 bg-amber-950/30 p-4 text-xs sm:text-sm text-amber-200/90 leading-relaxed">
                     🟡 <strong>Preventa sin compromiso de pago inmediato:</strong> Te apuntas gratis hoy y solo abonas tu reserva cuando el plato alcance las{' '}
                     <strong>{guisoActivoModal.min_raciones} raciones mínimas</strong>.
                   </div>
@@ -1636,7 +1645,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
                 {/* 1. MODALIDAD: BARRA vs TAKEAWAY Y CONTROL DE AFORO */}
                 <div>
-                  <label className="text-xs font-black uppercase text-slate-300 block mb-2">
+                  <label className="text-xs sm:text-sm font-black uppercase text-slate-300 block mb-2">
                     1. ¿Cómo prefieres disfrutarlo?
                   </label>
                   <div className="grid grid-cols-2 gap-3">
@@ -1652,12 +1661,12 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           : 'bg-white/[0.03] border-white/10 text-slate-400 hover:text-white'
                       }`}
                     >
-                      <span className="text-sm font-black block">🪑 Comer en el local</span>
-                      <span className="text-xs text-amber-400 font-bold mt-1 block">
+                      <span className="text-sm sm:text-base font-black block">🪑 Comer en el local</span>
+                      <span className="text-xs sm:text-sm text-amber-400 font-bold mt-1 block">
                         {Number(guisoActivoModal.precio_barra).toFixed(2)} € / ración
                       </span>
                       {!disponibilidadMesasModal.hayAlgunaMesaEnLocal && (
-                        <span className="text-[10px] text-rose-400 font-black block mt-1">
+                        <span className="text-xs text-rose-400 font-black block mt-1">
                           ⚠️ Aforo completo a las {horaServicio}
                         </span>
                       )}
@@ -1672,14 +1681,14 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           : 'bg-white/[0.03] border-white/10 text-slate-400 hover:text-white'
                       }`}
                     >
-                      <div className="flex items-center gap-1">
-                        <ShoppingBag className="h-3.5 w-3.5 text-cyan-400" />
-                        <span className="text-sm font-black">🛍️ Pasar a recoger</span>
+                      <div className="flex items-center gap-1.5">
+                        <ShoppingBag className="h-4 w-4 text-cyan-400" />
+                        <span className="text-sm sm:text-base font-black">🛍️ Pasar a recoger</span>
                       </div>
-                      <span className="text-xs text-cyan-400 font-bold mt-1 block">
+                      <span className="text-xs sm:text-sm text-cyan-400 font-bold mt-1 block">
                         {Number(guisoActivoModal.precio_takeaway).toFixed(2)} € / ración
                       </span>
-                      <span className="text-[10px] text-slate-400 block mt-1">
+                      <span className="text-xs text-slate-400 block mt-1">
                         Listo a la hora indicada
                       </span>
                     </button>
@@ -1688,7 +1697,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
                 {/* AVISO AUTOMÁTICO SI TODAS LAS MESAS ESTÁN COMPLETAS */}
                 {!disponibilidadMesasModal.hayAlgunaMesaEnLocal && modalidadReserva === 'takeaway' && (
-                  <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-3.5 text-xs text-amber-200">
+                  <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-3.5 text-xs sm:text-sm text-amber-200">
                     <p className="font-bold flex items-center gap-1.5">
                       <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
                       <span>
@@ -1699,17 +1708,17 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                 )}
 
                 {/* 2. SELECCIÓN DE HORA Y CONFIGURACIÓN DE MESA/ZONA */}
-                <div className="bg-[#131722] border border-white/10 rounded-2xl p-3.5 space-y-3">
+                <div className="bg-[#131722] border border-white/10 rounded-2xl p-4 space-y-3.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="text-xs font-black uppercase text-amber-400 block">
+                    <label className="text-xs sm:text-sm font-black uppercase text-amber-400 block">
                       {modalidadReserva === 'barra' ? '2. Turno y Zona en el Local' : '2. Hora de Recogida'}
                     </label>
                   </div>
 
                   {/* SELECTOR DE HORA (Tramos de 13:00 a 16:00 o cena) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <div>
-                      <span className="text-[10px] font-bold text-slate-400 block mb-1">
+                      <span className="text-xs font-bold text-slate-300 block mb-1">
                         ⏰ {modalidadReserva === 'barra' ? 'Hora deseada de comida:' : 'Hora para pasar a recoger:'}
                       </span>
                       <select
@@ -1718,7 +1727,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           const nuevaHora = e.target.value;
                           setHoraServicio(nuevaHora);
                         }}
-                        className="w-full bg-slate-950 border border-slate-700 focus:border-amber-400 rounded-xl px-3 py-2 text-xs font-bold text-amber-300 outline-none"
+                        className="w-full bg-slate-950 border border-slate-700 focus:border-amber-400 rounded-xl px-3 py-2.5 text-xs sm:text-sm font-bold text-amber-300 outline-none"
                       >
                         {['13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00'].map((h) => (
                           <option key={h} value={h}>
@@ -1730,24 +1739,24 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
                     {modalidadReserva === 'barra' && (
                       <div>
-                        <span className="text-[10px] font-bold text-slate-400 block mb-1">
+                        <span className="text-xs font-bold text-slate-300 block mb-1">
                           👥 Comensales en mesa:
                         </span>
                         <div className="flex items-center bg-slate-950 border border-slate-700 rounded-xl p-1 justify-between">
                           <button
                             type="button"
                             onClick={() => setComensalesMesa((p) => Math.max(1, p - 1))}
-                            className="h-7 w-7 rounded-lg bg-white/5 text-white flex items-center justify-center font-bold"
+                            className="h-8 w-8 rounded-lg bg-white/5 text-white flex items-center justify-center font-bold"
                           >
-                            <Minus className="h-3 w-3" />
+                            <Minus className="h-3.5 w-3.5" />
                           </button>
-                          <span className="text-xs font-black text-white">{comensalesMesa} pers.</span>
+                          <span className="text-xs sm:text-sm font-black text-white">{comensalesMesa} pers.</span>
                           <button
                             type="button"
                             onClick={() => setComensalesMesa((p) => Math.min(25, p + 1))}
-                            className="h-7 w-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center font-bold"
+                            className="h-8 w-8 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center font-bold"
                           >
-                            <Plus className="h-3 w-3" />
+                            <Plus className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
@@ -1757,7 +1766,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                   {/* SI ELIGE COMER EN EL LOCAL: ELECCIÓN DE ZONA Y MESAS LIBRES EN TIEMPO REAL */}
                   {modalidadReserva === 'barra' && (
                     <div>
-                      <span className="text-[10px] font-bold text-slate-400 block mb-1.5">
+                      <span className="text-xs font-bold text-slate-300 block mb-2">
                         📍 Elige Zona Preferida (Disponibilidad en vivo a las {horaServicio}):
                       </span>
                       <div className="grid grid-cols-2 gap-2">
@@ -1766,7 +1775,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           type="button"
                           disabled={disponibilidadMesasModal.interiorLibres === 0}
                           onClick={() => setZonaPreferida('interior')}
-                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                             zonaPreferida === 'interior'
                               ? 'bg-indigo-600/30 border-indigo-400 text-white font-black shadow-md'
                               : disponibilidadMesasModal.interiorLibres === 0
@@ -1774,9 +1783,9 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                               : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
                           }`}
                         >
-                          <span className="text-xs font-bold block">🏠 Salón Interior</span>
+                          <span className="text-xs sm:text-sm font-bold block">🏠 Salón Interior</span>
                           <span
-                            className={`text-[10px] block mt-0.5 ${
+                            className={`text-xs block mt-1 ${
                               disponibilidadMesasModal.interiorLibres > 0
                                 ? 'text-emerald-400'
                                 : 'text-rose-400'
@@ -1793,7 +1802,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                           type="button"
                           disabled={disponibilidadMesasModal.terrazaLibres === 0}
                           onClick={() => setZonaPreferida('terraza')}
-                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                             zonaPreferida === 'terraza'
                               ? 'bg-amber-500/30 border-amber-400 text-white font-black shadow-md'
                               : disponibilidadMesasModal.terrazaLibres === 0
@@ -1801,9 +1810,9 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                               : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
                           }`}
                         >
-                          <span className="text-xs font-bold block">☀️ Terraza</span>
+                          <span className="text-xs sm:text-sm font-bold block">☀️ Terraza</span>
                           <span
-                            className={`text-[10px] block mt-0.5 ${
+                            className={`text-xs block mt-1 ${
                               disponibilidadMesasModal.terrazaLibres > 0
                                 ? 'text-amber-400'
                                 : 'text-rose-400'
@@ -1821,10 +1830,10 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
                 {/* 3. SELECTOR NUMÉRICO DE RACIONES */}
                 <div>
-                  <label className="text-xs font-black uppercase text-slate-300 block mb-2">
+                  <label className="text-xs sm:text-sm font-black uppercase text-slate-300 block mb-2">
                     3. Número de raciones
                   </label>
-                  <div className="flex items-center justify-between bg-[#131722] border border-white/10 rounded-2xl p-3">
+                  <div className="flex items-center justify-between bg-[#131722] border border-white/10 rounded-2xl p-3.5">
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
@@ -1846,10 +1855,10 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                     </div>
 
                     <div className="text-right">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                      <span className="text-xs uppercase font-bold text-slate-400 block">
                         Total Reserva
                       </span>
-                      <span className="text-xl font-black text-emerald-400">
+                      <span className="text-xl sm:text-2xl font-black text-emerald-400">
                         {calcularImporteReserva(
                           guisoActivoModal,
                           racionesReserva,
@@ -1863,12 +1872,12 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
 
                 {/* 4. DATOS DEL CLIENTE SIN FRICCIÓN */}
                 <div className="space-y-3 pt-1">
-                  <label className="text-xs font-black uppercase text-slate-300 block mb-1">
+                  <label className="text-xs sm:text-sm font-black uppercase text-slate-300 block mb-1">
                     4. Tus datos de contacto
                   </label>
                   <div>
-                    <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-1">
-                      <User className="h-3.5 w-3.5 text-amber-400" />
+                    <label className="text-xs sm:text-sm font-bold text-slate-300 flex items-center gap-1.5 mb-1.5">
+                      <User className="h-4 w-4 text-amber-400" />
                       <span>Nombre y Apellidos *</span>
                     </label>
                     <input
@@ -1877,13 +1886,13 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       value={nombreCliente}
                       onChange={(e) => setNombreCliente(e.target.value)}
                       placeholder="Ej: Carlos Rodríguez"
-                      className="w-full bg-[#131722] border border-white/15 focus:border-amber-400 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white outline-none"
+                      className="w-full bg-[#131722] border border-white/15 focus:border-amber-400 rounded-xl px-3.5 py-3 text-xs sm:text-sm font-bold text-white outline-none"
                     />
                   </div>
 
                   <div>
-                    <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-1">
-                      <Phone className="h-3.5 w-3.5 text-emerald-400" />
+                    <label className="text-xs sm:text-sm font-bold text-slate-300 flex items-center gap-1.5 mb-1.5">
+                      <Phone className="h-4 w-4 text-emerald-400" />
                       <span>Teléfono / WhatsApp *</span>
                     </label>
                     <input
@@ -1892,13 +1901,13 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       value={telefonoCliente}
                       onChange={(e) => setTelefonoCliente(e.target.value)}
                       placeholder="Ej: 600 123 456"
-                      className="w-full bg-[#131722] border border-white/15 focus:border-amber-400 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white outline-none"
+                      className="w-full bg-[#131722] border border-white/15 focus:border-amber-400 rounded-xl px-3.5 py-3 text-xs sm:text-sm font-bold text-white outline-none"
                     />
                   </div>
 
                   <div>
-                    <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-1">
-                      <Mail className="h-3.5 w-3.5 text-cyan-400" />
+                    <label className="text-xs sm:text-sm font-bold text-slate-300 flex items-center gap-1.5 mb-1.5">
+                      <Mail className="h-4 w-4 text-cyan-400" />
                       <span>Correo electrónico (Opcional)</span>
                     </label>
                     <input
@@ -1906,16 +1915,16 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                       value={emailCliente}
                       onChange={(e) => setEmailCliente(e.target.value)}
                       placeholder="tu@email.com"
-                      className="w-full bg-[#131722] border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none"
+                      className="w-full bg-[#131722] border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-3 text-xs sm:text-sm text-white outline-none"
                     />
-                    <span className="text-[11px] text-cyan-300/90 mt-1 block">
+                    <span className="text-xs text-cyan-300/90 mt-1 block">
                       ✨ Recibe avisos de nuestros guisos especiales y novedades de la casa
                     </span>
                   </div>
                 </div>
 
                 {errorReserva && (
-                  <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-xs text-rose-300 font-bold">
+                  <div className="p-3.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-xs sm:text-sm text-rose-300 font-bold">
                     ⚠️ {errorReserva}
                   </div>
                 )}
