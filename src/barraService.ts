@@ -8,6 +8,7 @@ import {
   type ConfiguracionFiscal,
   type LineaTicketFiscal
 } from './fiscalService';
+import { actualizarCajaDiariaAtomica } from './concurrencyHelpers';
 
 export interface TicketBarraItem {
   idCarritoUnico?: number;
@@ -428,7 +429,7 @@ export async function cobrarTicketBarra(params: {
         const { data: ultimoTicket } = await supabase
           .from('facturas_tickets')
           .select('hash_actual')
-          .order('id', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         hash_anterior = ultimoTicket?.hash_actual || '';
@@ -493,31 +494,12 @@ export async function cobrarTicketBarra(params: {
     }
   }
 
-  // 2. Actualizar caja_diaria si tenemos cajaHoyId
+  // 2. Actualizar caja_diaria de forma atómica (CAS) si tenemos cajaHoyId
   if (cajaHoyId) {
     try {
-      const { data: cajaData } = await supabase
-        .from('caja_diaria')
-        .select('total_efectivo, total_tarjeta')
-        .eq('id', cajaHoyId)
-        .maybeSingle();
-
-      if (cajaData) {
-        const nuevoEfectivo = redondearMoneda(
-          Number(cajaData.total_efectivo || 0) + (metodo === 'efectivo' ? totalACobrar : 0)
-        );
-        const nuevaTarjeta = redondearMoneda(
-          Number(cajaData.total_tarjeta || 0) + (metodo !== 'efectivo' ? totalACobrar : 0)
-        );
-
-        await supabase
-          .from('caja_diaria')
-          .update({
-            total_efectivo: nuevoEfectivo,
-            total_tarjeta: nuevaTarjeta
-          })
-          .eq('id', cajaHoyId);
-      }
+      const deltaEf = metodo === 'efectivo' ? totalACobrar : 0;
+      const deltaTar = metodo !== 'efectivo' ? totalACobrar : 0;
+      await actualizarCajaDiariaAtomica(cajaHoyId, deltaEf, deltaTar);
     } catch (errCaja) {
       console.warn('Aviso al actualizar caja_diaria:', errCaja);
     }

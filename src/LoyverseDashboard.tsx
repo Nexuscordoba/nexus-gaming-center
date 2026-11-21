@@ -2096,7 +2096,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         const { data: ultimoTicket } = await supabase
           .from('facturas_tickets')
           .select('hash_actual')
-          .order('id', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         hash_anterior = ultimoTicket?.hash_actual || '';
@@ -2246,7 +2246,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         const { data: ultimoTicket } = await supabase
           .from('facturas_tickets')
           .select('hash_actual')
-          .order('id', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         hash_anterior = ultimoTicket?.hash_actual || '';

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
 import { redondearMoneda } from './fiscalService';
+import { descontarStockConCAS } from './concurrencyHelpers';
 import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X, Lock, Mail, Receipt } from 'lucide-react';
 
 interface OpcionCombo {
@@ -560,6 +561,18 @@ export default function TableOrder() {
       const resultados = await Promise.all(promesas);
       const errorInsercion = resultados.find(r => r.error)?.error;
       if (errorInsercion) throw errorInsercion;
+
+      // Descontar stock de forma atómica (CAS) para pedidos QR sin bloquear la respuesta al cliente
+      await Promise.all(
+        carritoActual.map(async (item) => {
+          if (item.id) {
+            await descontarStockConCAS({ tabla: 'productos_carta', id: item.id, cantidad: item.cantidad, permitirNegativo: false });
+          }
+          if (item.articulo_inventario_id) {
+            await descontarStockConCAS({ tabla: 'articulos_cafeteria', id: item.articulo_inventario_id, cantidad: item.cantidad, permitirNegativo: false });
+          }
+        })
+      );
       
       setCarritoActual([]);
       await cargarCuentaDesdeSupabase(mesaNum);

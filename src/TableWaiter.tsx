@@ -23,6 +23,7 @@ import {
   type LineaTicketFiscal,
   type UnidadMedida
 } from './fiscalService';
+import { descontarStockConCAS, actualizarCajaDiariaAtomica } from './concurrencyHelpers';
 import {
   Utensils,
   Plus,
@@ -1322,7 +1323,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         const { data: ultimoTicket } = await supabase
           .from('facturas_tickets')
           .select('hash_actual')
-          .order('id', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         hash_anterior = ultimoTicket?.hash_actual || '';
@@ -1937,34 +1938,30 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           }
         }
 
-        // 1. Descontar stock del artículo directo
+        // 1. Descontar stock del artículo directo de forma atómica (CAS)
         if (productoDB) {
-          const stockActual = Number(productoDB.stock_actual ?? articuloMaestroDB?.stock_actual ?? 0);
-          const nuevoStock = Number((stockActual - cantidadVendida).toFixed(4));
-
-          const { error: updateError } = await supabase
-            .from('productos_carta')
-            .update({ stock_actual: nuevoStock })
-            .eq('id', productoDB.id);
-
-          if (updateError) throw updateError;
+          await descontarStockConCAS({
+            tabla: 'productos_carta',
+            id: productoDB.id,
+            cantidad: cantidadVendida,
+            permitirNegativo: false
+          });
 
           if (artInvId) {
-            const stockBaseMaestro = Number(articuloMaestroDB?.stock_actual ?? productoDB.stock_actual ?? 0);
-            const nuevoStockMaestro = Number((stockBaseMaestro - cantidadVendida).toFixed(4));
-            const { error: updateMaestroError } = await supabase
-              .from('articulos_cafeteria')
-              .update({ stock_actual: nuevoStockMaestro })
-              .eq('id', artInvId);
-
-            if (updateMaestroError) throw updateMaestroError;
+            await descontarStockConCAS({
+              tabla: 'articulos_cafeteria',
+              id: artInvId,
+              cantidad: cantidadVendida,
+              permitirNegativo: false
+            });
           }
         } else if (articuloMaestroDB) {
-          const nuevoStockMaestro = Number((Number(articuloMaestroDB.stock_actual ?? 0) - cantidadVendida).toFixed(4));
-          await supabase
-            .from('articulos_cafeteria')
-            .update({ stock_actual: nuevoStockMaestro })
-            .eq('id', articuloMaestroDB.id);
+          await descontarStockConCAS({
+            tabla: 'articulos_cafeteria',
+            id: articuloMaestroDB.id,
+            cantidad: cantidadVendida,
+            permitirNegativo: false
+          });
         }
 
         // 2. Descontar stock de los ingredientes del escandallo / receta si existen
@@ -2014,17 +2011,19 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
           if (consumoTotalIngrediente <= 0) continue;
 
-          const nuevoStockIng = Number((Number(ingDB.stock_actual ?? 0) - consumoTotalIngrediente).toFixed(4));
+          const resIngCAS = await descontarStockConCAS({
+            tabla: 'articulos_cafeteria',
+            id: ingDB.id,
+            cantidad: consumoTotalIngrediente,
+            permitirNegativo: false
+          });
 
-          await supabase
-            .from('articulos_cafeteria')
-            .update({ stock_actual: nuevoStockIng })
-            .eq('id', ingDB.id);
-
-          await supabase
-            .from('productos_carta')
-            .update({ stock_actual: nuevoStockIng })
-            .eq('articulo_inventario_id', ingDB.id);
+          if (resIngCAS.ok && resIngCAS.nuevoStock !== undefined) {
+            await supabase
+              .from('productos_carta')
+              .update({ stock_actual: resIngCAS.nuevoStock })
+              .eq('articulo_inventario_id', ingDB.id);
+          }
         }
       }
     } catch (invError) {
@@ -2218,7 +2217,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         const { data: ultimoTicket } = await supabase
           .from('facturas_tickets')
           .select('hash_actual')
-          .order('id', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         hash_anterior = ultimoTicket?.hash_actual || '';
@@ -2263,16 +2262,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         .eq('mesa', mesaNombre)
         .eq('pagado', false);
 
-      const nuevoEfectivo = redondearMoneda(Number(cajaHoy.total_efectivo) + (metodo === 'efectivo' ? desglose.totalFinal : 0));
-      const nuevaTarjeta = redondearMoneda(Number(cajaHoy.total_tarjeta) + (metodo !== 'efectivo' ? desglose.totalFinal : 0));
-
-      await supabase
-        .from('caja_diaria')
-        .update({
-          total_efectivo: nuevoEfectivo,
-          total_tarjeta: nuevaTarjeta
-        })
-        .eq('id', cajaHoy.id);
+      const deltaEfectivo = metodo === 'efectivo' ? desglose.totalFinal : 0;
+      const deltaTarjeta = metodo !== 'efectivo' ? desglose.totalFinal : 0;
+      await actualizarCajaDiariaAtomica(cajaHoy.id, deltaEfectivo, deltaTarjeta);
 
       // Paso 3 y Paso 4 (VeriFactu): Calcular SHA-256 y guardar tipo_factura: 'F2' o 'F1', hash_anterior y hash_actual en facturas_tickets
       await encadenarTicketVeriFactu({
@@ -2577,7 +2569,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         const { data: ultimoTicket } = await supabase
           .from('facturas_tickets')
           .select('hash_actual')
-          .order('id', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         hash_anterior = ultimoTicket?.hash_actual || '';
@@ -2719,7 +2711,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         const { data: ultimoTicket } = await supabase
           .from('facturas_tickets')
           .select('hash_actual')
-          .order('id', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
         hash_anterior = ultimoTicket?.hash_actual || '';
