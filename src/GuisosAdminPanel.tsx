@@ -1,6 +1,8 @@
 // src/GuisosAdminPanel.tsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabase';
+import { SelectorAlergenosChips } from './AlergenosUI';
+import { normalizarListaAlergenos } from './alergenos';
 import {
   generarEnlaceWhatsAppAdminAClienteConfirmacion,
   calcularImporteReserva,
@@ -209,6 +211,8 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
   const [precioTakeaway, setPrecioTakeaway] = useState<string>('8.50');
   const [imagenUrl, setImagenUrl] = useState<string>('');
   const [estadoPlato, setEstadoPlato] = useState<EstadoGuiso>('buscando_minimo');
+  const [alergenosPlato, setAlergenosPlato] = useState<string[]>([]);
+  const [trazasPlato, setTrazasPlato] = useState<string[]>([]);
 
   // Selector visual de fotos reales del catálogo existente
   const [mostrarGaleriaCatalogo, setMostrarGaleriaCatalogo] = useState<boolean>(false);
@@ -522,6 +526,8 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     setFechaCorte(calcularFechaCorteMenosDias(ref, 1));
     setHoraCorte('21:00');
     setEstadoPlato('buscando_minimo');
+    setAlergenosPlato([]);
+    setTrazasPlato([]);
   };
 
   // SIEMPRE actualiza descripción, precios, mínimo de raciones y foto (sin dejar pegado el texto anterior)
@@ -657,7 +663,9 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
           precio_barra: Number(pBarra.toFixed(2)),
           precio_takeaway: Number(pTakeaway.toFixed(2)),
           imagen_url: limpiarUrlUnsplashFalsa(imagenUrl),
-          estado: estadoFinal
+          estado: estadoFinal,
+          alergenos: alergenosPlato,
+          trazas: trazasPlato
         };
 
         const { error } = await supabase
@@ -688,7 +696,9 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
           precio_barra: Number(pBarra.toFixed(2)),
           precio_takeaway: Number(pTakeaway.toFixed(2)),
           imagen_url: limpiarUrlUnsplashFalsa(imagenUrl),
-          estado: estadoPlato
+          estado: estadoPlato,
+          alergenos: alergenosPlato,
+          trazas: trazasPlato
         }));
 
         const { error } = await supabase.from('guisos_programados').insert(filasConFechaCorte);
@@ -800,6 +810,8 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
     setPrecioTakeaway(Number(guiso.precio_takeaway || 0).toFixed(2));
     setImagenUrl(limpiarUrlUnsplashFalsa(guiso.imagen_url));
     setEstadoPlato(guiso.estado);
+    setAlergenosPlato(normalizarListaAlergenos(guiso.alergenos));
+    setTrazasPlato(normalizarListaAlergenos(guiso.trazas));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -1690,6 +1702,13 @@ export default function GuisosAdminPanel({ articulosCatalogo, notificar }: Guiso
               </div>
             )}
           </div>
+
+          <SelectorAlergenosChips
+            alergenos={alergenosPlato}
+            trazas={trazasPlato}
+            onChangeAlergenos={setAlergenosPlato}
+            onChangeTrazas={setTrazasPlato}
+          />
 
           <button
             type="submit"

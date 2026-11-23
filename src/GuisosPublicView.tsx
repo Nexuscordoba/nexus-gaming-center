@@ -23,6 +23,8 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { supabase } from './supabase';
+import { cumpleFiltroAlergenos } from './alergenos';
+import { AlergenosBadges, FiltroAlergenosBar, TablaAlergenosModal } from './AlergenosUI';
 import {
   estaEnPlanB,
   haSuperadoFechaHoraCorte,
@@ -174,6 +176,9 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   // Navegación estricta del Calendario Semanal (0 = Esta semana, 1 = Próxima semana)
   const [semanaOffset, setSemanaOffset] = useState<number>(0);
   const [diaSeleccionado, setDiaSeleccionado] = useState<string>('TODOS');
+  const [excluidosAlergenos, setExcluidosAlergenos] = useState<string[]>([]);
+  const [incluirTrazasEnFiltro, setIncluirTrazasEnFiltro] = useState<boolean>(false);
+  const [modalAlergenosAbierto, setModalAlergenosAbierto] = useState<boolean>(false);
 
   // Estado del Modal de Reserva
   const [guisoActivoModal, setGuisoActivoModal] = useState<GuisoProgramado | null>(null);
@@ -321,11 +326,17 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
   }, [guisos, diasProximaSemana]);
 
   // FILTRO ESTRICTO: "Semana completa" muestra ÚNICAMENTE los guisos entre Lunes y Domingo de la semana seleccionada
-  const guisosSemanaActiva = useMemo(() => {
+  const guisosSemanaBase = useMemo(() => {
     const enSemana = guisos.filter((g) => fechasDeLaSemanaSet.has(g.fecha));
     if (diaSeleccionado === 'TODOS') return enSemana;
     return enSemana.filter((g) => g.fecha === diaSeleccionado);
   }, [guisos, fechasDeLaSemanaSet, diaSeleccionado]);
+
+  const guisosSemanaActiva = useMemo(() => {
+    return guisosSemanaBase.filter((g) =>
+      cumpleFiltroAlergenos(g.alergenos, g.trazas, excluidosAlergenos, incluirTrazasEnFiltro)
+    );
+  }, [guisosSemanaBase, excluidosAlergenos, incluirTrazasEnFiltro]);
 
   const rangoSemanaTexto = useMemo(() => {
     if (diasSemana.length < 7) return '';
@@ -1204,6 +1215,23 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
           </div>
         </div>
 
+        <FiltroAlergenosBar
+          excluidos={excluidosAlergenos}
+          onToggleExcluido={(id) =>
+            setExcluidosAlergenos((prev) =>
+              prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+            )
+          }
+          onLimpiarFiltros={() => {
+            setExcluidosAlergenos([]);
+            setIncluirTrazasEnFiltro(false);
+          }}
+          incluirTrazas={incluirTrazasEnFiltro}
+          onToggleIncluirTrazas={() => setIncluirTrazasEnFiltro((v) => !v)}
+          onAbrirTablaAlergenos={() => setModalAlergenosAbierto(true)}
+          totalOcultos={guisosSemanaBase.length - guisosSemanaActiva.length}
+        />
+
         {/* LISTADO COMPACTO DE TARJETAS DE GUISOS O BLOQUES "PLAN B" */}
         {loading ? (
           <div className="rounded-3xl border border-white/10 bg-[#0c0d14] p-12 text-center space-y-3">
@@ -1485,6 +1513,7 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
                             {guiso.descripcion}
                           </p>
                         )}
+                        <AlergenosBadges alergenos={guiso.alergenos} trazas={guiso.trazas} compact />
                       </div>
 
                       {/* BLOQUES DE PRECIO COMPACTOS Y ESTILIZADOS */}
@@ -2579,6 +2608,19 @@ export default function GuisosPublicView({ onIrACartaBar }: GuisosPublicViewProp
           </div>
         </div>
       )}
+      <TablaAlergenosModal
+        abierto={modalAlergenosAbierto}
+        onCerrar={() => setModalAlergenosAbierto(false)}
+        titulo="Tabla de Alérgenos · Guisos de la Casa"
+        productos={guisos.map((g) => ({
+          id: g.id,
+          nombre: g.nombre_plato,
+          categoria: formatearFechaHumana(g.fecha),
+          precioTexto: `${Number(g.precio_barra).toFixed(2).replace('.', ',')} €`,
+          alergenos: g.alergenos,
+          trazas: g.trazas
+        }))}
+      />
     </main>
   );
 }

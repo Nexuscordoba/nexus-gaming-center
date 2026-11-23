@@ -4,6 +4,8 @@ import { supabase } from './supabase';
 import HistorialCajas from './HistorialCajas';
 import GuisosAdminPanel from './GuisosAdminPanel';
 import MesasReservasPanel from './MesasReservasPanel';
+import { SelectorAlergenosChips } from './AlergenosUI';
+import { normalizarListaAlergenos } from './alergenos';
 import {
   CornerDownRight,
   TrendingUp,
@@ -299,6 +301,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
 
   const [artEsCombo, setArtEsCombo] = useState(false);
   const [pasosCombo, setPasosCombo] = useState<PasoComboUI[]>([]);
+  const [artAlergenos, setArtAlergenos] = useState<string[]>([]);
+  const [artTrazas, setArtTrazas] = useState<string[]>([]);
 
   const [ingredienteSelId, setIngredienteSelId] = useState('');
   const [ingredienteCantidad, setIngredienteCantidad] = useState('1');
@@ -2446,6 +2450,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     setLineasEscandallo([]);
     setArtEsCombo(false);
     setPasosCombo([]);
+    setArtAlergenos([]);
+    setArtTrazas([]);
   };
 
   const seleccionarArticuloParaEditar = async (art: any) => {
@@ -2466,6 +2472,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     setArtEsCombo(Boolean(art.es_combo));
     setPasosCombo(art.opciones_combo || []);
     setArtEsCompuesto(Boolean(art.es_compuesto));
+    setArtAlergenos(normalizarListaAlergenos(art.alergenos));
+    setArtTrazas(normalizarListaAlergenos(art.trazas));
 
     if (art.es_compuesto) {
       try {
@@ -2566,6 +2574,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
         vendible_tpv: artVendibleTpv,
         es_combo: artEsCombo,
         opciones_combo: artEsCombo ? pasosCombo : [],
+        alergenos: artAlergenos,
+        trazas: artTrazas,
         activo: true,
         updated_at: new Date().toISOString()
       };
@@ -2632,6 +2642,8 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
           es_combo: artEsCombo,
           opciones_combo: artEsCombo ? pasosCombo : [],
           escandallo_json: lineasEscandallo,
+          alergenos: artAlergenos,
+          trazas: artTrazas,
           articulo_inventario_id: articuloIdFinal
         };
 
@@ -3979,6 +3991,13 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
                   ))}
                 </div>
               )}
+
+              <SelectorAlergenosChips
+                alergenos={artAlergenos}
+                trazas={artTrazas}
+                onChangeAlergenos={setArtAlergenos}
+                onChangeTrazas={setArtTrazas}
+              />
 
               <button
                 type="submit"

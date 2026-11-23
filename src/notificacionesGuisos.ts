@@ -17,6 +17,8 @@ export interface GuisoProgramado {
   precio_takeaway: number;
   imagen_url: string;
   estado: EstadoGuiso;
+  alergenos?: string[];
+  trazas?: string[];
   cierre_procesado?: boolean;
   created_at?: string;
 }

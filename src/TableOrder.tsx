@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 import { supabase } from './supabase';
 import { redondearMoneda } from './fiscalService';
 import { descontarStockConCAS } from './concurrencyHelpers';
-import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X, Lock, Mail, Receipt } from 'lucide-react';
+import { Plus, Minus, Send, MapPin, ReceiptText, CheckCircle2, ShoppingCart, X, Lock, Mail, Receipt, Info } from 'lucide-react';
+import { AVISO_LEGAL_CARTA, cumpleFiltroAlergenos, normalizarListaAlergenos } from './alergenos';
+import { AlergenosBadges, FiltroAlergenosBar, TablaAlergenosModal } from './AlergenosUI';
 
 interface OpcionCombo {
   nombre: string;
@@ -27,6 +29,8 @@ interface Producto {
   articulo_inventario_id?: string;
   porcentaje_iva?: number;
   tipo_iva?: number;
+  alergenos?: string[];
+  trazas?: string[];
 }
 
 type EstadoLineaPedido = 'recibido' | 'preparando' | 'servido';
@@ -40,6 +44,8 @@ interface ItemPedido {
   estado: EstadoLineaPedido;
   porcentaje_iva?: number;
   tipo_iva?: number;
+  alergenos?: string[];
+  trazas?: string[];
 }
 
 export default function TableOrder() {
@@ -69,6 +75,9 @@ export default function TableOrder() {
   const [enviandoEmailTicket, setEnviandoEmailTicket] = useState<boolean>(false);
   const [ticketEnviadoOk, setTicketEnviadoOk] = useState<boolean>(false);
   const [errorEmailTicket, setErrorEmailTicket] = useState<string | null>(null);
+  const [excluidosAlergenos, setExcluidosAlergenos] = useState<string[]>([]);
+  const [incluirTrazasEnFiltro, setIncluirTrazasEnFiltro] = useState<boolean>(false);
+  const [modalAlergenosAbierto, setModalAlergenosAbierto] = useState<boolean>(false);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -170,7 +179,7 @@ export default function TableOrder() {
           .order('id', { ascending: true }),
         supabase
           .from('articulos_cafeteria')
-          .select('id, nombre, destino, tipo_iva, porcentaje_iva')
+          .select('id, nombre, destino, tipo_iva, porcentaje_iva, alergenos, trazas')
       ]);
 
       if (error) {
@@ -195,11 +204,19 @@ export default function TableOrder() {
           );
           const ivaFinal = ivaRaw === 21 ? 21 : 10;
           const destRaw = String(p.destino || artVinculado?.destino || '').trim().toLowerCase();
+          const alergenosProd = normalizarListaAlergenos(
+            Array.isArray(p.alergenos) && p.alergenos.length > 0 ? p.alergenos : artVinculado?.alergenos
+          );
+          const trazasProd = normalizarListaAlergenos(
+            Array.isArray(p.trazas) && p.trazas.length > 0 ? p.trazas : artVinculado?.trazas
+          );
           return {
             ...p,
             destino: destRaw === 'cocina' ? 'cocina' : 'barra',
             porcentaje_iva: ivaFinal,
             tipo_iva: ivaFinal,
+            alergenos: alergenosProd,
+            trazas: trazasProd
           };
         });
 
@@ -845,6 +862,27 @@ export default function TableOrder() {
           </div>
         )}
 
+        <FiltroAlergenosBar
+          excluidos={excluidosAlergenos}
+          onToggleExcluido={(id) =>
+            setExcluidosAlergenos((prev) =>
+              prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+            )
+          }
+          onLimpiarFiltros={() => {
+            setExcluidosAlergenos([]);
+            setIncluirTrazasEnFiltro(false);
+          }}
+          incluirTrazas={incluirTrazasEnFiltro}
+          onToggleIncluirTrazas={() => setIncluirTrazasEnFiltro((v) => !v)}
+          onAbrirTablaAlergenos={() => setModalAlergenosAbierto(true)}
+          totalOcultos={
+            productosCarta.filter(
+              (p) => !cumpleFiltroAlergenos(p.alergenos, p.trazas, excluidosAlergenos, incluirTrazasEnFiltro)
+            ).length
+          }
+        />
+
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
           {categoriasDisponibles.map((cat) => {
             const esCocina = cat.toLowerCase().includes('cocina') || cat.toLowerCase().includes('tapa') || cat.toLowerCase().includes('menu');
@@ -886,8 +924,9 @@ export default function TableOrder() {
               .filter(p => {
                 const catProd = (p.categoria || '').trim().toLowerCase();
                 const catActiva = categoriaActiva.trim().toLowerCase();
-                if (!catProd) return true;
-                return catProd === catActiva || catProd.includes(catActiva) || catActiva.includes(catProd);
+                const matchCat = !catProd || catProd === catActiva || catProd.includes(catActiva) || catActiva.includes(catProd);
+                if (!matchCat) return false;
+                return cumpleFiltroAlergenos(p.alergenos, p.trazas, excluidosAlergenos, incluirTrazasEnFiltro);
               })
               .map((prod) => {
                 const cantidadEnCarrito = obtenerCantidadEnCarrito(prod);
@@ -923,6 +962,7 @@ export default function TableOrder() {
                         <span className="font-mono text-cyan-400 font-bold text-xs mt-1 block">
                           {Number(prod.precio).toFixed(2)} €
                         </span>
+                        <AlergenosBadges alergenos={prod.alergenos} trazas={prod.trazas} compact />
                       </div>
                     </div>
 
@@ -972,9 +1012,26 @@ export default function TableOrder() {
           <div className="p-4 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 text-xs text-center font-semibold flex items-center justify-center gap-2">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>{mensaje}</span>
+            <div className="mt-6 rounded-2xl border border-white/10 bg-[#0d0f17] p-3.5 flex items-start gap-2.5 text-[11px] text-slate-400 leading-relaxed">
+              <Info className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+              <p>{AVISO_LEGAL_CARTA}</p>
+            </div>
           </div>
         )}
       </main>
+
+      <TablaAlergenosModal
+        abierto={modalAlergenosAbierto}
+        onCerrar={() => setModalAlergenosAbierto(false)}
+        productos={productosCarta.map((p) => ({
+          id: p.id,
+          nombre: p.nombre,
+          categoria: p.categoria,
+          precioTexto: `${Number(p.precio).toFixed(2).replace('.', ',')} €`,
+          alergenos: p.alergenos,
+          trazas: p.trazas
+        }))}
+      />
 
       {carritoActual.length > 0 && (
         <div className="fixed bottom-0 left-0 right-0 bg-[#0c0e17]/95 backdrop-blur-md border-t border-cyan-500/40 p-4 shadow-2xl z-50 animate-slide-up">

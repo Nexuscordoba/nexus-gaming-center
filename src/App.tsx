@@ -2,7 +2,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Coffee, 
-  UtensilsCrossed, 
   Clock, 
   MapPin, 
   ArrowRight, 
@@ -33,9 +32,11 @@ import TableQrGenerator from './TableQrGenerator';
 import TableOrder from './TableOrder';
 import TableWaiter from './TableWaiter';
 import GuisosPublicView from './GuisosPublicView';
+import CartaBarPublicView from './CartaBarPublicView';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'bar' | 'guisos'>('home');
+  const [abrirAlergenosEnBar, setAbrirAlergenosEnBar] = useState(false);
   const [subdomainRoute, setSubdomainRoute] = useState<'main' | 'staff' | 'escape' | 'ventas' | 'cocina' | 'barra' | 'qr-generator' | 'mesa' | 'waiter'>('main');
   const [backofficeTab, setBackofficeTab] = useState<'resumen' | 'tickets' | 'articulos' | 'inventario' | 'guisos' | 'mesas' | 'empleados' | 'configuracion' | 'gastos'>('resumen');
   const [menuModalOpen, setMenuModalOpen] = useState(false);
@@ -529,10 +530,21 @@ export default function App() {
         setSubdomainRoute('main');
       }
 
-      if (hash === '#bar' || hash === '#/bar') {
+      const [hashBase, hashQuery] = hash.split('?');
+      const hashParams = new URLSearchParams(hashQuery || '');
+      const searchParams = new URLSearchParams(window.location.search);
+      const quiereAlergenos =
+        hashParams.get('tab') === 'alergenos' ||
+        hashParams.get('alergenos') === '1' ||
+        searchParams.get('tab') === 'alergenos' ||
+        searchParams.get('alergenos') === '1';
+
+      if (hashBase === '#bar' || hashBase === '#/bar') {
+        setAbrirAlergenosEnBar(quiereAlergenos);
         setCurrentView('bar');
         window.scrollTo(0, 0);
-      } else if (hash === '#guisos' || hash === '#/guisos') {
+      } else if (hashBase === '#guisos' || hashBase === '#/guisos') {
+        setAbrirAlergenosEnBar(false);
         setCurrentView('guisos');
         window.scrollTo(0, 0);
       } else if (hash === '#staff' || hash === '#equipo') {
@@ -917,93 +929,11 @@ export default function App() {
       {currentView === 'guisos' ? (
         <GuisosPublicView onIrACartaBar={() => navigateTo('bar')} />
       ) : currentView === 'bar' ? (
-        <main className="flex-grow">
-          <section className="relative overflow-hidden py-16 sm:py-24 border-b border-white/[0.06]">
-            <div className="absolute inset-0 z-0">
-              <img
-                src="https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=2000&q=80"
-                alt="Café Bar Nexus"
-                className="w-full h-full object-cover object-center opacity-40"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/80 to-[#08090d]/60" />
-            </div>
-
-            <div className="max-w-4xl mx-auto px-5 text-center relative z-10">
-              <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-950/80 backdrop-blur-md px-4 py-1.5 text-xs text-amber-300 mb-6">
-                <Clock className="w-3.5 h-3.5 text-amber-400" />
-                <span>Lunes a Viernes de 7:00 a 17:00 · Polígono Chinales</span>
-              </div>
-
-              <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight uppercase">
-                Café Bar <span className="text-amber-400 drop-shadow-[0_0_25px_rgba(245,158,11,0.5)]">Nexus</span>
-              </h1>
-              <p className="mt-4 text-base sm:text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
-                Desayunos completos y menú del día casero disponibles a diario en Chinales 45.
-              </p>
-
-              <div className="mt-8 flex flex-wrap justify-center gap-4">
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setMenuModalOpen(true);
-                  }}
-                  className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-8 py-3.5 text-slate-950 text-sm font-bold uppercase tracking-wider shadow-[0_0_25px_rgba(245,158,11,0.35)] hover:opacity-95 transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <FileText className="h-4 w-4" />
-                  Ver carta y avisos
-                </a>
-                <button
-                  onClick={() => navigateTo('guisos')}
-                  className="rounded-xl bg-amber-950/80 border border-amber-500/40 text-amber-300 px-8 py-3.5 text-sm font-bold uppercase tracking-wider hover:bg-amber-900/60 transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <span>🍲 Ver Guisos de la Casa (#guisos)</span>
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section className="max-w-6xl mx-auto px-5 py-16">
-            <div className="text-center max-w-3xl mx-auto mb-10">
-              <div className="inline-flex items-center gap-2 text-cyan-400 text-xs font-bold uppercase tracking-wider mb-2">
-                <UtensilsCrossed className="h-4 w-4" />
-                Carta & Menú
-              </div>
-              <h2 className="text-3xl font-black text-white">Nuestra Selección</h2>
-            </div>
-
-            {/* SECCIÓN "PRÓXIMAMENTE" REEMPLAZANDO A LOS PRODUCTOS */}
-            <div className="max-w-4xl mx-auto text-center py-20 px-6 sm:px-12 rounded-3xl border border-amber-500/20 bg-gradient-to-b from-[#131722] to-[#08090d] shadow-[0_0_50px_rgba(0,0,0,0.5)] relative overflow-hidden">
-              <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1495474472296-pe0a88a29580?auto=format&fit=crop&w=1000&q=20')] opacity-5 bg-cover bg-center"></div>
-              
-              <div className="relative z-10 space-y-6">
-                <div className="inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 mb-2">
-                  <ChefHat className="h-8 w-8" />
-                </div>
-                
-                <h3 className="text-2xl sm:text-3xl font-black text-white">
-                  🌟 Nueva Experiencia Gastronómica en Preparación
-                </h3>
-                
-                <p className="text-slate-400 text-base sm:text-lg max-w-2xl mx-auto leading-relaxed">
-                  Muy pronto desvelaremos nuestra nueva carta. Mientras tanto, ya puedes apuntarte a nuestros Guisos de la Casa bajo demanda cada semana.
-                </p>
-                
-                <div className="pt-6 flex flex-wrap justify-center gap-3">
-                  <button
-                    onClick={() => navigateTo('guisos')}
-                    className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 text-xs text-slate-950 font-black uppercase tracking-widest cursor-pointer shadow-lg"
-                  >
-                    <span>🍲 Ir a Guisos Bajo Demanda</span>
-                  </button>
-                  <span className="inline-block px-4 py-2 rounded-full border border-white/10 bg-white/5 text-xs text-slate-300 font-semibold uppercase tracking-widest">
-                    Carta General Próximamente
-                  </span>
-                </div>
-              </div>
-            </div>
-          </section>
-        </main>
+        <CartaBarPublicView
+          key={abrirAlergenosEnBar ? 'bar-alergenos' : 'bar'}
+          onIrAGuisos={() => navigateTo('guisos')}
+          abrirAlergenosInicial={abrirAlergenosEnBar}
+        />
       ) : (
         /* VISTA PRINCIPAL / PORTAL GENERAL */
         <main className="flex-grow">
