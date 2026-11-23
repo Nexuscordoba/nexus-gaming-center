@@ -411,7 +411,7 @@ export default function App() {
                     numero_factura_legal: docEmitido?.numero_completo,
                     descuento_aplicado: descuentoTotalImporte
                   })
-                  .eq('mesa', pedido.mesa)
+                  .ilike('mesa', pedido.mesa)
                   .eq('pagado', false);
               }
 
@@ -523,7 +523,12 @@ export default function App() {
       } else if (hostname.startsWith('barra.')) {
         setSubdomainRoute('barra');
         return;
-      } else if (hash.startsWith('#/mesa/') || hash.startsWith('#mesa/')) {
+      } else if (
+        hash.startsWith('#/mesa/') ||
+        hash.startsWith('#mesa/') ||
+        hash.startsWith('#/terraza/') ||
+        hash.startsWith('#terraza/')
+      ) {
         setSubdomainRoute('mesa');
         return;
       } else {

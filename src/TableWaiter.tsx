@@ -261,8 +261,9 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       const { data, error } = await supabase
         .from('mesas_local')
         .select('*')
+        .order('zona', { ascending: true })
         .order('id', { ascending: true });
-      if (!error && data && data.length > 0) {
+      if (!error && data) {
         setMesasLocal(data);
         const primeraActiva = data.find((m: any) => m.activa !== false);
         if (primeraActiva) {
@@ -290,7 +291,16 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
   const listaBotonesMesas = useMemo<BotonMesaConfig[]>(() => {
     if (mesasLocal.length > 0) {
-      const activas = mesasLocal.filter((m) => m.activa !== false);
+      const activas = mesasLocal
+        .filter((m) => m.activa !== false)
+        .sort((a, b) => {
+          const zA = a.zona === 'terraza' ? 1 : 0;
+          const zB = b.zona === 'terraza' ? 1 : 0;
+          if (zA !== zB) return zA - zB;
+          const nA = parseInt(((a.nombre || '').match(/\d+/) || [String(a.id)])[0], 10) || 0;
+          const nB = parseInt(((b.nombre || '').match(/\d+/) || [String(b.id)])[0], 10) || 0;
+          return nA - nB;
+        });
       const mapeadas: BotonMesaConfig[] = activas.map((m) => {
         const nom = (m.nombre || '').trim();
         const zona = m.zona === 'terraza' ? 'terraza' : 'interior';
@@ -298,7 +308,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
         const num = numMatch ? numMatch[0] : String(m.id);
         const etiqueta = zona === 'terraza' ? `T${num}` : `M${num}`;
         const val = zona === 'terraza' ? `T${num}` : num;
-        const nombreMesaDB = zona === 'terraza' ? `TERRAZA ${num}` : `MESA ${num}`;
+        const nombreMesaDB = nom || (zona === 'terraza' ? `Terraza ${num}` : `Mesa ${num}`);
         return {
           val,
           nombreMesaDB,
@@ -1340,7 +1350,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       });
       if (rpcError) throw rpcError;
 
-      const { data: comandasPendientes } = await supabase.from('comandas_cocina').select('*').eq('mesa', modalCobroParcial.mesaNombre).eq('pagado', false);
+      const { data: comandasPendientes } = await supabase.from('comandas_cocina').select('*').ilike('mesa', modalCobroParcial.mesaNombre).eq('pagado', false);
       
       const itemsRestantesA_Descontar = itemsA_Cobrar.map(i => ({ nombre: i.nombre, pendienteDescontar: i.cantidadSeleccionada }));
       
@@ -2259,7 +2269,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           numero_factura_legal: docEmitido.numero_completo,
           descuento_aplicado: desglose.descuentoTotalImporte
         })
-        .eq('mesa', mesaNombre)
+        .ilike('mesa', mesaNombre)
         .eq('pagado', false);
 
       const deltaEfectivo = metodo === 'efectivo' ? desglose.totalFinal : 0;

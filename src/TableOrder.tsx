@@ -50,6 +50,8 @@ interface ItemPedido {
 
 export default function TableOrder() {
   const [mesaNum, setMesaNum] = useState<string>('1');
+  const [esTerraza, setEsTerraza] = useState<boolean>(false);
+  const [mesaNombre, setMesaNombre] = useState<string>('Mesa 1');
   const [productosCarta, setProductosCarta] = useState<Producto[]>([]);
   const [categoriasDisponibles, setCategoriasDisponibles] = useState<string[]>(['Cafetería', 'Cocina / Tapas', 'Menús y Combos']);
   const [categoriaActiva, setCategoriaActiva] = useState<string>('Cafetería');
@@ -92,37 +94,95 @@ export default function TableOrder() {
 
   useEffect(() => {
     const hash = window.location.hash;
-    const match = hash.match(/mesa\/(\d+)/);
-    let mNum = '1';
-    if (match && match[1]) {
-      mNum = match[1];
-    } else {
-      const params = new URLSearchParams(window.location.search);
-      const m = params.get('mesa');
-      if (m) mNum = m;
-    }
-    setMesaNum(mNum);
+    const params = new URLSearchParams(window.location.search);
 
-    cargarConfiguracion();
-    cargarProductosCarta();
-    cargarCuentaDesdeSupabase(mNum);
-    cargarUltimoTicketCobrado(mNum);
+    let zonaDetectada: 'interior' | 'terraza' = 'interior';
+    let mNum = '1';
+
+    const matchTerraza = hash.match(/terraza\/(\d+)/i);
+    const matchMesa = hash.match(/mesa\/(\d+)/i);
+
+    if (matchTerraza && matchTerraza[1]) {
+      zonaDetectada = 'terraza';
+      mNum = matchTerraza[1];
+    } else if (matchMesa && matchMesa[1]) {
+      zonaDetectada = 'interior';
+      mNum = matchMesa[1];
+    } else if (params.get('terraza')) {
+      zonaDetectada = 'terraza';
+      mNum = params.get('terraza')!.replace(/\D+/g, '') || '1';
+    } else if (params.get('mesa')) {
+      const mParam = params.get('mesa')!.trim();
+      if (/terraza/i.test(mParam)) {
+        zonaDetectada = 'terraza';
+      }
+      mNum = mParam.replace(/\D+/g, '') || '1';
+    }
+
+    const nombreFallback = zonaDetectada === 'terraza' ? `Terraza ${mNum}` : `Mesa ${mNum}`;
+    setMesaNum(mNum);
+    setEsTerraza(zonaDetectada === 'terraza');
+    setMesaNombre(nombreFallback);
+
+    let activo = true;
+    let nombreActual = nombreFallback;
+
+    const inicializarMesa = async () => {
+      try {
+        const { data: mesasData } = await supabase
+          .from('mesas_local')
+          .select('id, nombre, zona, activa')
+          .eq('zona', zonaDetectada);
+
+        if (activo && mesasData && mesasData.length > 0) {
+          const encontrada = mesasData.find((m: any) => {
+            const nom = String(m.nombre || '').trim();
+            const numMatch = nom.match(/\d+/);
+            return (numMatch && numMatch[0] === mNum) || nom.toLowerCase() === nombreFallback.toLowerCase();
+          });
+          if (encontrada && encontrada.nombre) {
+            nombreActual = String(encontrada.nombre).trim();
+            setMesaNombre(nombreActual);
+          }
+        }
+      } catch (err) {
+        console.warn('No se pudo resolver nombre exacto desde mesas_local:', err);
+      }
+
+      if (!activo) return;
+      cargarConfiguracion();
+      cargarProductosCarta();
+      cargarCuentaDesdeSupabase(nombreActual);
+      cargarUltimoTicketCobrado(nombreActual, mNum);
+    };
+
+    inicializarMesa();
 
     const channel = supabase
-      .channel(`mesa-${mNum}`)
+      .channel(`mesa-${zonaDetectada}-${mNum}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'comandas_cocina', filter: `mesa=eq.MESA ${mNum}` },
+        { event: '*', schema: 'public', table: 'comandas_cocina' },
         (payload: any) => {
-          const comanda = payload.new;
-          if (comanda && ((comanda.tipo_destino === 'cuenta' && comanda.estado === 'servido') || comanda.pagado === true)) {
+          const comanda = payload.new || payload.old;
+          if (
+            !comanda ||
+            String(comanda.mesa || '').trim().toLowerCase() !== nombreActual.toLowerCase()
+          ) {
+            return;
+          }
+          if (
+            payload.new &&
+            ((payload.new.tipo_destino === 'cuenta' && payload.new.estado === 'servido') ||
+              payload.new.pagado === true)
+          ) {
             setCuentaMesa([]);
             setCarritoActual([]);
-            localStorage.removeItem(`nexus_mesa_${mNum}_cuenta`);
+            localStorage.removeItem(`nexus_mesa_${zonaDetectada}_${mNum}_cuenta`);
             setMensaje('¡Cuenta cobrada con éxito! Gracias por vuestra visita.');
-            cargarUltimoTicketCobrado(mNum);
+            cargarUltimoTicketCobrado(nombreActual, mNum);
           } else {
-            cargarCuentaDesdeSupabase(mNum);
+            cargarCuentaDesdeSupabase(nombreActual);
           }
         }
       )
@@ -143,6 +203,7 @@ export default function TableOrder() {
       .subscribe();
 
     return () => {
+      activo = false;
       supabase.removeChannel(channel);
     };
   }, []);
@@ -234,12 +295,12 @@ export default function TableOrder() {
     }
   };
 
-  const cargarCuentaDesdeSupabase = async (mNum: string) => {
+  const cargarCuentaDesdeSupabase = async (nombreMesa: string) => {
     try {
       const { data, error } = await supabase
         .from('comandas_cocina')
         .select('*')
-        .eq('mesa', `MESA ${mNum}`)
+        .ilike('mesa', nombreMesa)
         .neq('tipo_destino', 'cuenta')
         .eq('pagado', false)
         .order('created_at', { ascending: true });
@@ -309,12 +370,12 @@ export default function TableOrder() {
     }
   };
 
-  const cargarUltimoTicketCobrado = async (mNum: string) => {
+  const cargarUltimoTicketCobrado = async (nombreMesa: string, mNum: string) => {
     try {
       const { data, error } = await supabase
         .from('facturas_tickets')
         .select('*')
-        .or(`mesa.eq.MESA ${mNum},mesa.eq.${mNum}`)
+        .or(`mesa.ilike.${nombreMesa},mesa.eq.${mNum}`)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -553,7 +614,7 @@ export default function TableOrder() {
         promesas.push(
           supabase.from('comandas_cocina').insert([{
             ticket_number: ticketNum,
-            mesa: `MESA ${mesaNum}`,
+            mesa: mesaNombre,
             tipo_destino: 'cocina',
             estado: 'pendiente',
             pagado: false,
@@ -566,7 +627,7 @@ export default function TableOrder() {
         promesas.push(
           supabase.from('comandas_cocina').insert([{
             ticket_number: ticketNum,
-            mesa: `MESA ${mesaNum}`,
+            mesa: mesaNombre,
             tipo_destino: 'barra',
             estado: 'pendiente',
             pagado: false,
@@ -592,7 +653,7 @@ export default function TableOrder() {
       );
       
       setCarritoActual([]);
-      await cargarCuentaDesdeSupabase(mesaNum);
+      await cargarCuentaDesdeSupabase(mesaNombre);
       setMensaje('¡Pedido enviado correctamente! Tu cuenta ha sido actualizada.');
     } catch (err: any) {
       try {
@@ -606,7 +667,7 @@ export default function TableOrder() {
           id_local: `offline_qr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           fecha: new Date().toISOString(),
           tipo_operacion: 'comanda',
-          mesa: `MESA ${mesaNum}`,
+          mesa: mesaNombre,
           ticket_number: ticketNum,
           total: totalCarritoActual,
           pagado: false,
@@ -633,7 +694,7 @@ export default function TableOrder() {
       const ticketNum = Math.floor(1000 + Math.random() * 9000).toString();
       const { error } = await supabase.from('comandas_cocina').insert([{
         ticket_number: ticketNum,
-        mesa: `MESA ${mesaNum}`,
+        mesa: mesaNombre,
         tipo_destino: 'cuenta',
         estado: 'pendiente',
         pagado: false,
@@ -717,12 +778,12 @@ export default function TableOrder() {
       <header className="border-b border-white/10 bg-[#08090d]/90 backdrop-blur px-5 py-4 sticky top-0 z-40 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-black">
-            M{mesaNum}
+            {esTerraza ? `T${mesaNum}` : `M${mesaNum}`}
           </div>
           <div>
             <h1 className="font-bold text-white text-base">NEXUS MESA DIGITAL</h1>
             <p className="text-[11px] text-slate-400 flex items-center gap-1">
-              <MapPin className="h-3 w-3 text-cyan-400" /> Mesa {mesaNum} · Chinales 45
+              <MapPin className="h-3 w-3 text-cyan-400" /> {mesaNombre} · Chinales 45
             </p>
           </div>
         </div>
@@ -758,7 +819,7 @@ export default function TableOrder() {
                     Ticket #{ultimoTicketCobrado.numero_completo} · {Number(ultimoTicketCobrado.total_final).toFixed(2)} €
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Mesa {mesaNum} · {new Date(ultimoTicketCobrado.fecha_expedicion || ultimoTicketCobrado.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                    {mesaNombre} · {new Date(ultimoTicketCobrado.fecha_expedicion || ultimoTicketCobrado.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
                   </p>
                 </div>
               </div>
