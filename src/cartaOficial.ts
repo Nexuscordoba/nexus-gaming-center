@@ -1,11 +1,10 @@
 // src/cartaOficial.ts
-// Definición oficial de las 5 familias y productos de Café Bar Nexus (Carta_Cafe_Bar_Nexus.pdf)
+// Definición oficial de las 4 familias y productos de Café Bar Nexus (Carta_Cafe_Bar_Nexus.pdf)
 
 export type FamiliaCartaId =
-  | 'desayunos'
   | 'menu_dia'
+  | 'desayunos'
   | 'bocadillos'
-  | 'tapas'
   | 'bebidas';
 
 export interface FamiliaCartaDef {
@@ -34,6 +33,11 @@ export interface ItemCartaPublica {
 
 export const FAMILIAS_OFICIALES: readonly FamiliaCartaDef[] = [
   {
+    id: 'menu_dia',
+    nombre: 'Menú del Día',
+    subtitulo: 'Cocina casera diaria · Lunes a Viernes'
+  },
+  {
     id: 'desayunos',
     nombre: 'Desayunos y Cafés',
     subtitulo: 'Cafés de especialidad, zumos naturales, combos y tostadas',
@@ -41,21 +45,9 @@ export const FAMILIAS_OFICIALES: readonly FamiliaCartaDef[] = [
     columnaPrecio2: 'Entera'
   },
   {
-    id: 'menu_dia',
-    nombre: 'Menú del Día',
-    subtitulo: 'Cocina casera diaria · Lunes a Viernes'
-  },
-  {
     id: 'bocadillos',
     nombre: 'Bocadillos y Sándwiches',
     subtitulo: 'Recién hechos al momento'
-  },
-  {
-    id: 'tapas',
-    nombre: 'Tapas y Raciones',
-    subtitulo: 'Para picar o compartir',
-    columnaPrecio1: 'Tapa',
-    columnaPrecio2: 'Ración'
   },
   {
     id: 'bebidas',
@@ -201,16 +193,6 @@ export const ITEMS_CARTA_OFICIAL: ItemCartaPublica[] = [
 
   // 3. BOCADILLOS Y SÁNDWICHES
   {
-    id: 'of-sandwich-mixto',
-    nombre: 'Sándwich Mixto',
-    descripcion: 'Jamón y queso',
-    familia: 'bocadillos',
-    categoriaNombre: 'Bocadillos y Sándwiches',
-    precio: 3.5,
-    alergenos: ['Gluten', 'Lácteos'],
-    trazas: ['Huevos', 'Soja', 'Sésamo']
-  },
-  {
     id: 'of-sandwich-vegetal',
     nombre: 'Sándwich Vegetal',
     descripcion: 'Atún, huevo, lechuga, tomate, mayonesa',
@@ -249,14 +231,14 @@ export const ITEMS_CARTA_OFICIAL: ItemCartaPublica[] = [
     trazas: ['Sésamo']
   },
   {
-    id: 'of-bocadillo-pollo',
-    nombre: 'Bocadillo de Pechuga de pollo',
-    descripcion: 'Con alioli o queso',
+    id: 'of-vegetal-pollo',
+    nombre: 'Vegetal de pollo',
+    descripcion: 'Lechuga, tomate, queso, pollo y mayonesa',
     familia: 'bocadillos',
     categoriaNombre: 'Bocadillos y Sándwiches',
     precio: 5.0,
     alergenos: ['Gluten', 'Huevos', 'Lácteos'],
-    trazas: ['Mostaza', 'Sésamo']
+    trazas: ['Soja', 'Mostaza', 'Sésamo']
   },
   {
     id: 'of-serranito',
@@ -278,61 +260,7 @@ export const ITEMS_CARTA_OFICIAL: ItemCartaPublica[] = [
     trazas: ['Sésamo']
   },
 
-  // 4. TAPAS Y RACIONES
-  {
-    id: 'of-salmorejo',
-    nombre: 'Salmorejo cordobés',
-    descripcion: 'Con jamón y huevo',
-    familia: 'tapas',
-    categoriaNombre: 'Tapas y Raciones',
-    precio1: 3.5,
-    precio2: 8.5,
-    alergenos: ['Gluten', 'Huevos'],
-    trazas: []
-  },
-  {
-    id: 'of-ensaladilla',
-    nombre: 'Ensaladilla rusa',
-    familia: 'tapas',
-    categoriaNombre: 'Tapas y Raciones',
-    precio1: 3.5,
-    precio2: 8.0,
-    alergenos: ['Huevos', 'Pescado'],
-    trazas: ['Mostaza']
-  },
-  {
-    id: 'of-tortilla',
-    nombre: 'Tortilla de patatas',
-    familia: 'tapas',
-    categoriaNombre: 'Tapas y Raciones',
-    precio1: 3.0,
-    precio2: 7.5,
-    alergenos: ['Huevos'],
-    trazas: []
-  },
-  {
-    id: 'of-bravas',
-    nombre: 'Patatas bravas / Alioli',
-    familia: 'tapas',
-    categoriaNombre: 'Tapas y Raciones',
-    precio1: 3.5,
-    precio2: 7.5,
-    alergenos: ['Huevos'],
-    trazas: ['Gluten', 'Mostaza', 'Apio', 'Sulfitos']
-  },
-  {
-    id: 'of-croquetas',
-    nombre: 'Croquetas caseras',
-    descripcion: 'Jamón / puchero',
-    familia: 'tapas',
-    categoriaNombre: 'Tapas y Raciones',
-    precio1: 3.5,
-    precio2: 9.5,
-    alergenos: ['Gluten', 'Lácteos', 'Huevos'],
-    trazas: ['Apio']
-  },
-
-  // 5. BEBIDAS
+  // 4. BEBIDAS
   {
     id: 'of-agua',
     nombre: 'Agua mineral (50 cl)',
@@ -375,7 +303,7 @@ export const ITEMS_CARTA_OFICIAL: ItemCartaPublica[] = [
     descripcion: 'Coca-Cola, Fanta, Aquarius, Nestea, Tónica',
     familia: 'bebidas',
     categoriaNombre: 'Bebidas',
-    precio: 2.4,
+    precio: 2.0,
     alergenos: [],
     trazas: []
   },
@@ -454,20 +382,14 @@ export function inferirFamiliaDesdeProducto(nombre: string, categoria: string): 
   if (txt.includes('menú') || txt.includes('menu') || txt.includes('guiso')) {
     return 'menu_dia';
   }
-  if (txt.includes('bocadillo') || txt.includes('sándwich') || txt.includes('sandwich') || txt.includes('serranito')) {
-    return 'bocadillos';
-  }
   if (
-    txt.includes('tapa') ||
-    txt.includes('ración') ||
-    txt.includes('racion') ||
-    txt.includes('salmorejo') ||
-    txt.includes('ensaladilla') ||
-    txt.includes('croqueta') ||
-    txt.includes('brava') ||
-    txt.includes('tortilla de patatas')
+    txt.includes('bocadillo') ||
+    txt.includes('sándwich') ||
+    txt.includes('sandwich') ||
+    txt.includes('serranito') ||
+    txt.includes('vegetal de pollo')
   ) {
-    return 'tapas';
+    return 'bocadillos';
   }
   if (
     txt.includes('bebida') ||
@@ -487,7 +409,7 @@ export function inferirFamiliaDesdeProducto(nombre: string, categoria: string): 
   ) {
     return 'bebidas';
   }
-  return 'tapas';
+  return 'bocadillos';
 }
 
 export function formatearPrecioEuro(precio?: number): string {
@@ -521,10 +443,14 @@ export function construirCartaPublica(productosDB: ProductoCartaDB[]): ItemCarta
       .trim();
 
   for (const dbProd of productosDB || []) {
-    if (dbProd.activo === false) continue;
+    if (dbProd.activo !== true) continue;
+    const catNorm = normalizar(String(dbProd.categoria || ''));
+    if (catNorm.includes('tapa') || catNorm.includes('racion')) continue;
+
     const nombreDB = String(dbProd.nombre || '').trim();
     if (!nombreDB) continue;
     const nombreNorm = normalizar(nombreDB);
+    if (nombreNorm.includes('sandwich mixto') || nombreNorm.includes('pechuga de pollo')) continue;
 
     const alergenosDB = Array.isArray(dbProd.alergenos) ? dbProd.alergenos : undefined;
     const trazasDB = Array.isArray(dbProd.trazas) ? dbProd.trazas : undefined;

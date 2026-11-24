@@ -256,33 +256,49 @@ export default function TableOrder() {
           if (art.nombre) mapaPorNombre.set(String(art.nombre).trim().toLowerCase(), art);
         });
 
-        const productosNormalizados: Producto[] = data.map((p: any) => {
-          const artVinculado =
-            (p.articulo_inventario_id && mapaPorId.get(String(p.articulo_inventario_id))) ||
-            mapaPorNombre.get(String(p.nombre || '').trim().toLowerCase());
-          const ivaRaw = Number(
-            p.porcentaje_iva ?? p.tipo_iva ?? artVinculado?.porcentaje_iva ?? artVinculado?.tipo_iva ?? 10
-          );
-          const ivaFinal = ivaRaw === 21 ? 21 : 10;
-          const destRaw = String(p.destino || artVinculado?.destino || '').trim().toLowerCase();
-          const alergenosProd = normalizarListaAlergenos(
-            Array.isArray(p.alergenos) && p.alergenos.length > 0 ? p.alergenos : artVinculado?.alergenos
-          );
-          const trazasProd = normalizarListaAlergenos(
-            Array.isArray(p.trazas) && p.trazas.length > 0 ? p.trazas : artVinculado?.trazas
-          );
-          return {
-            ...p,
-            destino: destRaw === 'cocina' ? 'cocina' : 'barra',
-            porcentaje_iva: ivaFinal,
-            tipo_iva: ivaFinal,
-            alergenos: alergenosProd,
-            trazas: trazasProd
-          };
-        });
+        const productosNormalizados: Producto[] = data
+          .filter((p: any) => {
+            if (p.activo !== true) return false;
+            const catNorm = String(p.categoria || '').toLowerCase();
+            if (catNorm.includes('tapa') || catNorm.includes('racion') || catNorm.includes('ración')) {
+              return false;
+            }
+            return true;
+          })
+          .map((p: any) => {
+            const artVinculado =
+              (p.articulo_inventario_id && mapaPorId.get(String(p.articulo_inventario_id))) ||
+              mapaPorNombre.get(String(p.nombre || '').trim().toLowerCase());
+            const ivaRaw = Number(
+              p.porcentaje_iva ?? p.tipo_iva ?? artVinculado?.porcentaje_iva ?? artVinculado?.tipo_iva ?? 10
+            );
+            const ivaFinal = ivaRaw === 21 ? 21 : 10;
+            const destRaw = String(p.destino || artVinculado?.destino || '').trim().toLowerCase();
+            const alergenosProd = normalizarListaAlergenos(
+              Array.isArray(p.alergenos) && p.alergenos.length > 0 ? p.alergenos : artVinculado?.alergenos
+            );
+            const trazasProd = normalizarListaAlergenos(
+              Array.isArray(p.trazas) && p.trazas.length > 0 ? p.trazas : artVinculado?.trazas
+            );
+            return {
+              ...p,
+              destino: destRaw === 'cocina' ? 'cocina' : 'barra',
+              porcentaje_iva: ivaFinal,
+              tipo_iva: ivaFinal,
+              alergenos: alergenosProd,
+              trazas: trazasProd
+            };
+          });
 
         setProductosCarta(productosNormalizados);
-        const catsUnicas = Array.from(new Set(productosNormalizados.map((p) => p.categoria || 'Cafetería'))) as string[];
+        const ordenPreferido = ['menú del día', 'menu del dia', 'desayunos', 'bocadillos', 'bebidas'];
+        const prioridadCat = (cat: string) => {
+          const lower = cat.toLowerCase();
+          const idx = ordenPreferido.findIndex((p) => lower.includes(p));
+          return idx === -1 ? 99 : idx;
+        };
+        const catsUnicas = (Array.from(new Set(productosNormalizados.map((p) => p.categoria || 'Cafetería'))) as string[])
+          .sort((a, b) => prioridadCat(a) - prioridadCat(b));
         if (catsUnicas.length > 0) {
           setCategoriasDisponibles(catsUnicas);
           setCategoriaActiva(prev => catsUnicas.includes(prev) ? prev : catsUnicas[0]);

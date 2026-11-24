@@ -220,7 +220,7 @@ export default function CartaBarPublicView({
                 : 'bg-white/[0.04] text-slate-300 border-white/10 hover:border-white/25'
             }`}
           >
-            Todas las Familias (5)
+            Todas las Familias (4)
           </button>
           {FAMILIAS_OFICIALES.map((fam) => (
             <button
