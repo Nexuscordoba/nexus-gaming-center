@@ -333,7 +333,7 @@ export function imprimirComandaTicketBarra(
     razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
     nombre_comercial: 'NEXUS',
     nif_cif: 'B00000000',
-    direccion_fiscal: 'Córdoba, España',
+    direccion_fiscal: 'Polígono Chinales 45, Córdoba',
     telefono: '',
     iva_defecto: 10,
     pin_administrador: '1234'
@@ -398,7 +398,7 @@ export async function cobrarTicketBarra(params: {
     razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
     nombre_comercial: 'NEXUS',
     nif_cif: 'B00000000',
-    direccion_fiscal: 'Córdoba, España',
+    direccion_fiscal: 'Polígono Chinales 45, Córdoba',
     telefono: '',
     iva_defecto: 10,
     pin_administrador: '1234'

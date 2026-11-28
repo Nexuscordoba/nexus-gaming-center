@@ -255,7 +255,7 @@ export default function LoyverseDashboard({ onBack, initialTab = 'resumen' }: Ba
     razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
     nombre_comercial: 'NEXUS',
     nif_cif: 'B00000000',
-    direccion_fiscal: 'Córdoba, España',
+    direccion_fiscal: 'Polígono Chinales 45, Córdoba',
     telefono: '',
     iva_defecto: 10,
     pin_administrador: '1234'

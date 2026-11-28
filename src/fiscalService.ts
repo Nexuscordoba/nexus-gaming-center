@@ -192,7 +192,7 @@ export async function obtenerConfiguracionFiscal(): Promise<ConfiguracionFiscal>
     razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.',
     nombre_comercial: 'NEXUS',
     nif_cif: 'B00000000',
-    direccion_fiscal: 'Córdoba, España',
+    direccion_fiscal: 'Polígono Chinales 45, Córdoba',
     telefono: '',
     iva_defecto: 10,
     pin_administrador: '1234'
@@ -265,8 +265,39 @@ export function sanitizarParaRawBT(texto: any): string {
 }
 
 /**
+ * Resuelve el título legal del documento conforme al RD 1619/2012.
+ * Normaliza 'SIMPLIFICADA' a 'FACTURA SIMPLIFICADA'.
+ */
+function obtenerTituloLegalDocumento(factura: any): {
+  tituloLegal: string;
+  esRectificativa: boolean;
+  esNominativa: boolean;
+  esPreTicket: boolean;
+} {
+  const esRectificativa = factura.serie === 'R' || factura.tipo_documento === 'RECTIFICATIVA';
+  const esNominativa = factura.serie === 'F' || factura.tipo_documento === 'NOMINATIVA';
+  const esPreTicket =
+    factura.serie === 'PROFORMA' ||
+    String(factura.tipo_documento || '').toUpperCase().includes('PRE-TICKET') ||
+    String(factura.tipo_documento || '').toUpperCase().includes('CUENTA MESA');
+
+  const tipoDocUpper = String(factura.tipo_documento || '').trim().toUpperCase();
+  const tituloLegal = esRectificativa
+    ? 'FACTURA RECTIFICATIVA SIMPLIFICADA'
+    : esNominativa
+    ? 'FACTURA COMPLETA NOMINATIVA'
+    : esPreTicket
+    ? 'PRE-TICKET / CUENTA MESA'
+    : !tipoDocUpper || tipoDocUpper === 'SIMPLIFICADA' || tipoDocUpper === 'FACTURA SIMPLIFICADA'
+    ? 'FACTURA SIMPLIFICADA'
+    : String(factura.tipo_documento);
+
+  return { tituloLegal, esRectificativa, esNominativa, esPreTicket };
+}
+
+/**
  * Genera el ticket estructurado en texto plano puro de 7-bit ASCII, formateado para rollos térmicos de 80mm o 58mm.
- * Sin códigos de escape binarios crudos que puedan corromper el búfer de la impresora térmica con RawBT.
+ * Diseño minimalista con saltos de línea limpios, sin separadores ASCII.
  */
 export function generarTicketTextoRawBT(
   factura: any,
@@ -291,23 +322,9 @@ export function generarTicketTextoRawBT(
     return tIzq + ' '.repeat(espacios) + tDer;
   };
 
-  const separador = '-'.repeat(ancho);
-  const separadorDoble = '='.repeat(ancho);
-
-  const esRectificativa = factura.serie === 'R' || factura.tipo_documento === 'RECTIFICATIVA';
-  const esNominativa = factura.serie === 'F' || factura.tipo_documento === 'NOMINATIVA';
-  const esPreTicket =
-    factura.serie === 'PROFORMA' ||
-    String(factura.tipo_documento || '').toUpperCase().includes('PRE-TICKET') ||
-    String(factura.tipo_documento || '').toUpperCase().includes('CUENTA MESA');
-
-  const tituloLegal = esRectificativa
-    ? 'FACTURA RECTIFICATIVA SIMPLIFICADA'
-    : esNominativa
-    ? 'FACTURA COMPLETA NOMINATIVA'
-    : esPreTicket
-    ? 'PRE-TICKET / CUENTA MESA'
-    : sanitizarParaRawBT(factura.tipo_documento || 'FACTURA SIMPLIFICADA');
+  const { tituloLegal: tituloLegalRaw, esRectificativa, esNominativa, esPreTicket } =
+    obtenerTituloLegalDocumento(factura);
+  const tituloLegal = sanitizarParaRawBT(tituloLegalRaw);
 
   const fechaFormateada = new Date(factura.fecha_expedicion || new Date()).toLocaleString('es-ES', {
     day: '2-digit',
@@ -338,18 +355,18 @@ export function generarTicketTextoRawBT(
   if (config.direccion_fiscal) buf.push(cPadCenter(config.direccion_fiscal));
   if (config.telefono) buf.push(cPadCenter(`Tel: ${config.telefono}`));
 
-  buf.push(separador);
+  buf.push('');
   buf.push(cPadCenter(tituloLegal));
   if (esPreTicket) {
     buf.push(cPadCenter('(NO VALIDO COMO FACTURA)'));
   }
-  buf.push(separador);
+  buf.push('');
 
   buf.push(cPadLR(`Doc: ${factura.numero_completo || 'T-0000'}`, `Mesa: ${factura.mesa || 'Barra'}`));
   buf.push(cPadLR(`Fecha: ${fechaFormateada}`, `Vend: ${factura.vendedor_nombre || 'Camarero'}`));
 
   if (esRectificativa && factura.ticket_origen_numero) {
-    buf.push(separador);
+    buf.push('');
     buf.push(`DOC. RECTIFICADO: ${sanitizarParaRawBT(factura.ticket_origen_numero)}`);
     if (factura.motivo_rectificacion) {
       buf.push(`MOTIVO: ${sanitizarParaRawBT(factura.motivo_rectificacion)}`);
@@ -357,14 +374,14 @@ export function generarTicketTextoRawBT(
   }
 
   if (esNominativa) {
-    buf.push(separador);
+    buf.push('');
     buf.push('DATOS CLIENTE:');
     if (factura.cliente_nombre_razon) buf.push(`R.Social: ${sanitizarParaRawBT(factura.cliente_nombre_razon)}`);
     if (factura.cliente_nif) buf.push(`NIF/CIF: ${sanitizarParaRawBT(factura.cliente_nif)}`);
     if (factura.cliente_direccion) buf.push(`Direccion: ${sanitizarParaRawBT(factura.cliente_direccion)}`);
   }
 
-  buf.push(separador);
+  buf.push('');
   const colCant = 4;
   const colTotal = 9;
   const colConcepto = Math.max(10, ancho - colCant - colTotal - 2);
@@ -374,7 +391,7 @@ export function generarTicketTextoRawBT(
     'Concepto'.padEnd(colConcepto) + ' ' +
     'Total'.padStart(colTotal)
   );
-  buf.push(separador);
+  buf.push('');
 
   for (const l of lineas) {
     const cantStr = `${Number(l.cantidad || 0)}x`.padEnd(colCant);
@@ -389,7 +406,7 @@ export function generarTicketTextoRawBT(
     }
   }
 
-  buf.push(separador);
+  buf.push('');
 
   if (Math.abs(Number(factura.descuento_total_importe || 0)) > 0) {
     buf.push(cPadLR('Subtotal Bruto:', `${Number(factura.subtotal_bruto).toFixed(2)} EUR`));
@@ -407,16 +424,16 @@ export function generarTicketTextoRawBT(
     buf.push(cPadLR('Cuota IVA (21%):', `${iva21Print.toFixed(2)} EUR`));
   }
 
-  buf.push(separadorDoble);
+  buf.push('');
   buf.push(cPadLR('TOTAL (IVA INC):', `${Number(factura.total_final).toFixed(2)} EUR`));
-  buf.push(separadorDoble);
+  buf.push('');
 
   buf.push(cPadLR('Forma de Pago:', sanitizarParaRawBT(String(factura.metodo_pago || 'EFECTIVO').toUpperCase())));
   if (factura.autorizado_por) {
     buf.push(`Autorizado: ${sanitizarParaRawBT(factura.autorizado_por)}`);
   }
 
-  buf.push(separador);
+  buf.push('');
   if (esPreTicket) {
     buf.push(cPadCenter('DOCUMENTO NO VALIDO COMO FACTURA'));
     buf.push(cPadCenter('Pendiente de cobro definitivo'));
@@ -450,6 +467,7 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
 /**
  * Genera el búfer de bytes para impresión en formato Uint8Array limpio.
  * Convierte el ticket a bytes puros sin conversiones UTF-8 intermedias.
+ * Incluye el pulso ESC/POS de apertura de cajón portamonedas cuando el pago es en efectivo.
  */
 export function generarBytesTicketRawBT(
   factura: any,
@@ -477,8 +495,13 @@ export function generarBytesTicketRawBT(
   // 4 avances de línea para que el pie del ticket libre la cuchilla térmica
   bytesList.push(0x0A, 0x0A, 0x0A, 0x0A);
 
-  // Comando de corte de papel ESC/POS si no se fuerza modo solo texto plano
+  // Comandos finales ESC/POS (apertura de cajón si es efectivo + corte de papel)
   if (!factura?.solo_texto_plano && !config?.solo_texto_plano) {
+    const metodoNormalizado = String(factura?.metodo_pago || '').trim().toLowerCase();
+    const debeAbrirCajon = metodoNormalizado === 'efectivo' || Boolean(factura?.abrir_cajon);
+    if (debeAbrirCajon) {
+      bytesList.push(0x1B, 0x70, 0x00, 0x19, 0xFA); // ESC p 0 25 250: Apertura de cajón portamonedas
+    }
     bytesList.push(0x1D, 0x56, 0x42, 0x00); // GS V 66 0: Corte de papel parcial
   }
 
@@ -486,16 +509,10 @@ export function generarBytesTicketRawBT(
 }
 
 /**
- * Conecta e imprime directamente a la aplicación Android RawBT mediante el esquema oficial
- * rawbt:base64,{base64String} garantizando que los bytes binarios no sufran alteraciones.
+ * Envía una trama de bytes binarios ESC/POS a RawBT mediante rawbt:base64,{base64String}.
  */
-export function imprimirConRawBT(
-  factura: any,
-  config: ConfiguracionFiscal,
-  onComplete?: () => void
-): boolean {
+function enviarBytesARawBT(bytes: Uint8Array, onComplete?: () => void): boolean {
   try {
-    const bytes = generarBytesTicketRawBT(factura, config);
     const base64String = uint8ArrayToBase64(bytes);
     const rawbtUrl = 'rawbt:base64,' + base64String;
 
@@ -524,10 +541,31 @@ export function imprimirConRawBT(
 
     return true;
   } catch (err) {
-    console.error('Error al enviar ticket a RawBT:', err);
+    console.error('Error al enviar trama a RawBT:', err);
     if (onComplete) onComplete();
     return false;
   }
+}
+
+/**
+ * Conecta e imprime directamente a la aplicación Android RawBT mediante el esquema oficial
+ * rawbt:base64,{base64String} garantizando que los bytes binarios no sufran alteraciones.
+ */
+export function imprimirConRawBT(
+  factura: any,
+  config: ConfiguracionFiscal,
+  onComplete?: () => void
+): boolean {
+  const bytes = generarBytesTicketRawBT(factura, config);
+  return enviarBytesARawBT(bytes, onComplete);
+}
+
+/**
+ * Envía el pulso ESC/POS estándar (\x1B\x70\x00\x19\xFA) a RawBT para abrir manualmente el cajón portamonedas.
+ */
+export function abrirCajonPortamonedasRawBT(onComplete?: () => void): boolean {
+  const bytes = new Uint8Array([0x1B, 0x40, 0x1B, 0x70, 0x00, 0x19, 0xFA]);
+  return enviarBytesARawBT(bytes, onComplete);
 }
 
 /**
@@ -560,20 +598,8 @@ export function imprimirDocumentoFiscalHTML(
   const anchoMm = Number(factura?.ancho_papel_mm || config?.ancho_papel_mm || 80) === 58 ? 58 : 80;
   const anchoImprimibleMm = anchoMm === 58 ? 48 : 72;
 
-  const esRectificativa = factura.serie === 'R' || factura.tipo_documento === 'RECTIFICATIVA';
-  const esNominativa = factura.serie === 'F' || factura.tipo_documento === 'NOMINATIVA';
-  const esPreTicket =
-    factura.serie === 'PROFORMA' ||
-    String(factura.tipo_documento || '').toUpperCase().includes('PRE-TICKET') ||
-    String(factura.tipo_documento || '').toUpperCase().includes('CUENTA MESA');
-
-  const tituloLegal = esRectificativa
-    ? 'FACTURA RECTIFICATIVA SIMPLIFICADA'
-    : esNominativa
-    ? 'FACTURA COMPLETA NOMINATIVA'
-    : esPreTicket
-    ? 'PRE-TICKET / CUENTA MESA'
-    : (factura.tipo_documento || 'FACTURA SIMPLIFICADA');
+  const { tituloLegal, esRectificativa, esNominativa, esPreTicket } =
+    obtenerTituloLegalDocumento(factura);
 
   const fechaFormateada = new Date(factura.fecha_expedicion || new Date()).toLocaleString('es-ES', {
     day: '2-digit',
@@ -990,23 +1016,8 @@ export function generarTicketTextoPlano(
     return tIzq + ' '.repeat(espacios) + tDer;
   };
 
-  const separador = '-'.repeat(anchoCaracteres);
-  const separadorDoble = '='.repeat(anchoCaracteres);
-
-  const esRectificativa = factura.serie === 'R' || factura.tipo_documento === 'RECTIFICATIVA';
-  const esNominativa = factura.serie === 'F' || factura.tipo_documento === 'NOMINATIVA';
-  const esPreTicket =
-    factura.serie === 'PROFORMA' ||
-    String(factura.tipo_documento || '').toUpperCase().includes('PRE-TICKET') ||
-    String(factura.tipo_documento || '').toUpperCase().includes('CUENTA MESA');
-
-  const tituloLegal = esRectificativa
-    ? 'FACTURA RECTIFICATIVA SIMPLIFICADA'
-    : esNominativa
-    ? 'FACTURA COMPLETA NOMINATIVA'
-    : esPreTicket
-    ? 'PRE-TICKET / CUENTA MESA'
-    : (factura.tipo_documento || 'FACTURA SIMPLIFICADA');
+  const { tituloLegal, esRectificativa, esNominativa, esPreTicket } =
+    obtenerTituloLegalDocumento(factura);
 
   const fechaFormateada = new Date(factura.fecha_expedicion || new Date()).toLocaleString('es-ES', {
     day: '2-digit',
@@ -1037,18 +1048,18 @@ export function generarTicketTextoPlano(
   if (config.direccion_fiscal) buf.push(cPadCenter(config.direccion_fiscal, anchoCaracteres));
   if (config.telefono) buf.push(cPadCenter(`Tel: ${config.telefono}`, anchoCaracteres));
 
-  buf.push(separador);
+  buf.push('');
   buf.push(cPadCenter(tituloLegal, anchoCaracteres));
   if (esPreTicket) {
     buf.push(cPadCenter('(DOCUMENTO NO VALIDO COMO FACTURA)', anchoCaracteres));
   }
-  buf.push(separador);
+  buf.push('');
 
   buf.push(cPadLR(`Doc: ${factura.numero_completo || 'T-0000'}`, `Mesa: ${factura.mesa || 'Barra'}`, anchoCaracteres));
   buf.push(cPadLR(`Fecha: ${fechaFormateada}`, `Vendedor: ${factura.vendedor_nombre || 'Camarero'}`, anchoCaracteres));
 
   if (esRectificativa && factura.ticket_origen_numero) {
-    buf.push(separador);
+    buf.push('');
     buf.push(`DOC. RECTIFICADO: ${limpiarTextoTermico(factura.ticket_origen_numero)}`);
     if (factura.motivo_rectificacion) {
       buf.push(`MOTIVO: ${limpiarTextoTermico(factura.motivo_rectificacion)}`);
@@ -1056,14 +1067,14 @@ export function generarTicketTextoPlano(
   }
 
   if (esNominativa) {
-    buf.push(separador);
+    buf.push('');
     buf.push('DATOS CLIENTE:');
     if (factura.cliente_nombre_razon) buf.push(`R.Social: ${limpiarTextoTermico(factura.cliente_nombre_razon)}`);
     if (factura.cliente_nif) buf.push(`NIF/CIF: ${limpiarTextoTermico(factura.cliente_nif)}`);
     if (factura.cliente_direccion) buf.push(`Direccion: ${limpiarTextoTermico(factura.cliente_direccion)}`);
   }
 
-  buf.push(separador);
+  buf.push('');
   const colCant = 4;
   const colTotal = 8;
   const colConcepto = Math.max(10, anchoCaracteres - colCant - colTotal - 2);
@@ -1072,7 +1083,7 @@ export function generarTicketTextoPlano(
     'Concepto'.padEnd(colConcepto) + ' ' +
     'Total'.padStart(colTotal)
   );
-  buf.push(separador);
+  buf.push('');
 
   for (const l of lineas) {
     const cantStr = `${Number(l.cantidad || 0)}x`.padEnd(colCant);
@@ -1084,7 +1095,7 @@ export function generarTicketTextoPlano(
     }
   }
 
-  buf.push(separador);
+  buf.push('');
 
   if (Math.abs(Number(factura.descuento_total_importe || 0)) > 0) {
     buf.push(cPadLR('Subtotal Bruto:', `${Number(factura.subtotal_bruto).toFixed(2)} EUR`, anchoCaracteres));
@@ -1102,16 +1113,16 @@ export function generarTicketTextoPlano(
     buf.push(cPadLR('Cuota IVA (21%):', `${iva21Print.toFixed(2)} EUR`, anchoCaracteres));
   }
 
-  buf.push(separadorDoble);
+  buf.push('');
   buf.push(cPadLR('TOTAL (IVA INCLUIDO):', `${Number(factura.total_final).toFixed(2)} EUR`, anchoCaracteres));
-  buf.push(separadorDoble);
+  buf.push('');
 
   buf.push(cPadLR('Forma de Pago:', String(factura.metodo_pago || 'EFECTIVO').toUpperCase(), anchoCaracteres));
   if (factura.autorizado_por) {
     buf.push(`Autorizado por: ${limpiarTextoTermico(factura.autorizado_por)}`);
   }
 
-  buf.push(separador);
+  buf.push('');
   if (esPreTicket) {
     buf.push(cPadCenter('DOCUMENTO NO VALIDO COMO FACTURA', anchoCaracteres));
     buf.push(cPadCenter('Pendiente de cobro definitivo', anchoCaracteres));

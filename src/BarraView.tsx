@@ -14,6 +14,7 @@ import {
 } from './barraService';
 import {
   type ConfiguracionFiscal,
+  abrirCajonPortamonedasRawBT,
   redondearMoneda
 } from './fiscalService';
 import CobroModal from './CobroModal';
@@ -369,6 +370,17 @@ export default function BarraView({
         </div>
 
         <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              abrirCajonPortamonedasRawBT();
+              onAlerta?.('Pulso de apertura enviado al cajón portamonedas.', 'exito');
+            }}
+            title="Abrir cajón portamonedas (ESC/POS Raw Print)"
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold text-xs cursor-pointer transition-all"
+          >
+            <span>Abrir cajón</span>
+          </button>
           <button
             type="button"
             onClick={limpiarBorrador}

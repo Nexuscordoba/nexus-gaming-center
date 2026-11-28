@@ -18,6 +18,7 @@ import {
   calcularDesgloseImpuestosLineas,
   obtenerFactorConversion,
   imprimirDocumentoFiscalHTML,
+  abrirCajonPortamonedasRawBT,
   redondearMoneda,
   type ConfiguracionFiscal,
   type LineaTicketFiscal,
@@ -1214,7 +1215,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
       console.error('Error al verificar PIN de empleado admin:', err);
     }
 
-    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Polígono Chinales 45, Córdoba', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
     const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
     if (cfg.pin_administrador === pinLimpio) {
       return 'Administrador Maestro';
@@ -1319,7 +1320,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }));
 
     const desglose = calcularDesgloseMesa(modalCobroParcial.mesaNombre, itemsProcesados);
-    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Polígono Chinales 45, Córdoba', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
     const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
     try {
@@ -2208,7 +2209,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     setCobrandoMesa(mesaNombre);
 
     const desglose = calcularDesgloseMesa(mesaNombre, itemsACobrar);
-    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+    const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Polígono Chinales 45, Córdoba', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
     const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
     const esFacturaCompleta = Boolean(datosFiscales && datosFiscales.nifCif && datosFiscales.razonSocial);
@@ -2561,7 +2562,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
     try {
       const orig = modalRectificativa.factura;
-      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Polígono Chinales 45, Córdoba', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
       const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
       const importeNegativo = redondearMoneda(-Math.abs(Number(orig.total_final)));
       const brutoNegativo = redondearMoneda(-Math.abs(Number(orig.subtotal_bruto)));
@@ -2713,7 +2714,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
 
     try {
       const orig = modalFacturaNominativa.factura;
-      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Polígono Chinales 45, Córdoba', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
       const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
 
       let hash_anterior = '';
@@ -2854,7 +2855,7 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
     }
     setImprimiendoPreTicket(true);
     try {
-      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Córdoba, España', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
+      const cfgFallback = configFiscal || { razon_social: 'NEXUS CAFETERÍA Y EVENTOS S.L.', nombre_comercial: 'NEXUS', nif_cif: 'B00000000', direccion_fiscal: 'Polígono Chinales 45, Córdoba', telefono: '', iva_defecto: 10, pin_administrador: '1234' };
       const cfg = configFiscal || (navigator.onLine ? await obtenerConfiguracionFiscal().catch(() => cfgFallback) : cfgFallback) || cfgFallback;
       const ivaPorc = cfg.iva_defecto || 10;
 
@@ -4142,6 +4143,19 @@ export default function TableWaiter({ onBack }: TableWaiterProps) {
           >
             <Clock className="h-4 w-4 text-cyan-400" />
             <span>⏱️ Fichar</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              abrirCajonPortamonedasRawBT();
+              mostrarAlerta('Pulso de apertura enviado al cajón portamonedas.', 'exito');
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 text-xs font-bold shadow-md transition-all cursor-pointer"
+            title="Abrir cajón portamonedas (ESC/POS Raw Print)"
+          >
+            <DollarSign className="h-4 w-4 text-amber-400" />
+            <span>Abrir cajón</span>
           </button>
 
           {/* BOTÓN DESTACADO: NUEVO TICKET DE BARRA */}
